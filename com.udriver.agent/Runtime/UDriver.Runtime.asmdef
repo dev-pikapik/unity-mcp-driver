@@ -1,0 +1,29 @@
+{
+  "name": "UDriver.Runtime",
+  "rootNamespace": "UDriver",
+  "references": [
+    "Unity.InputSystem",
+    "UnityEngine.UI"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "autoReferenced": true,
+  "defineConstraints": [
+    "!UDRIVER_DISABLE"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.unity.inputsystem",
+      "expression": "1.0.0",
+      "define": "UDRV_INPUTSYSTEM"
+    },
+    {
+      "name": "com.unity.ugui",
+      "expression": "1.0.0",
+      "define": "UDRV_UGUI"
+    }
+  ],
+  "noEngineReferences": false
+}

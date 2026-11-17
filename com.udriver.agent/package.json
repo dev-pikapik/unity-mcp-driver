@@ -1,0 +1,15 @@
+{
+  "name": "com.udriver.agent",
+  "version": "0.7.0",
+  "displayName": "UDriver - agent test driver",
+  "description": "In-game driver that lets an LLM agent (via MCP) see and operate a Unity client: UI Toolkit tree, input, screenshots, events, logs, reflection, probes, profiler.",
+  "unity": "6000.0",
+  "license": "MIT",
+  "dependencies": {
+    "com.unity.nuget.newtonsoft-json": "3.2.1",
+    "com.unity.modules.uielements": "1.0.0",
+    "com.unity.modules.imgui": "1.0.0",
+    "com.unity.modules.imageconversion": "1.0.0",
+    "com.unity.modules.screencapture": "1.0.0"
+  }
+}

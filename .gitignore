@@ -1,0 +1,12 @@
+bin/
+obj/
+Builds/
+mcp-config.json
+run-server.sh
+run-server.cmd
+*.token
+remote.env
+.DS_Store
+.vs/
+.idea/
+*.user
