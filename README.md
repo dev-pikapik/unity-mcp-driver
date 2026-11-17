@@ -94,6 +94,9 @@ flowchart LR
 3. A setup page opens in your browser. Enter your Cloudflare domain, pick your Unity project folder (or choose **Game build** and pick the `.app`) and click **Install**.
 4. The page turns into the control panel, which shows the connector address and the owner password.
 5. In your MCP client add a custom connector with that address and sign in with the owner password.
+   Works with Claude (claude.ai, Claude Desktop) and Gemini (Settings → Connectors → Custom; leave Client ID and
+   Client secret empty). For another web client, add its sign-in hosts to `UDRIVER_OAUTH_REDIRECT_HOSTS` in
+   `~/.udriver/remote.env`, separated by commas.
 
 The launcher installs missing tools (.NET and `cloudflared`) into `~/.udriver`, builds the server,
 creates a Cloudflare tunnel and copies the package into your Unity project. Nothing is added to

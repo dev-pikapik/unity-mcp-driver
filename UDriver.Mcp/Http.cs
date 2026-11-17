@@ -28,7 +28,12 @@ internal static partial class HttpMode
     static readonly Dictionary<string, Code> Codes = new();
     static Store _store = new();
     static string _public = "", _password = "", _urlSecret = "", _storeFile = "";
-    static readonly List<string> RedirectHosts = new() { "claude.ai", "claude.com" };
+    static readonly List<string> RedirectHosts = new()
+    {
+        "claude.ai", "claude.com",
+        // Gemini: the app page, its per-user OAuth callback, and the Gemini Enterprise callback.
+        "gemini.google.com", "oauth-redirect.googleusercontent.com", "vertexaisearch.cloud.google.com",
+    };
     static int _port;
 
     // Wrong-password lockout, per client address, plus a much higher global cap so guessing from many addresses stays limited too.
@@ -184,6 +189,23 @@ internal static partial class HttpMode
         string origin = ctx.Request.Headers["Origin"].ToString();
         if (origin.Length > 0 && origin != _public && !(Uri.TryCreate(origin, UriKind.Absolute, out var ou) && RedirectHosts.Contains(ou.Host)))
         { await OAuthError(ctx, 403, "forbidden", "origin not allowed"); return; }
+
+        // Connectors that call from the browser (Gemini) need CORS. Bearer tokens only, no cookies, so no credentials flag.
+        if (origin.Length > 0 && origin != _public)
+        {
+            var h = ctx.Response.Headers;
+            h["Access-Control-Allow-Origin"] = origin;
+            h["Vary"] = "Origin";
+            h["Access-Control-Expose-Headers"] = "WWW-Authenticate, Mcp-Session-Id";
+            if (verb == "OPTIONS")
+            {
+                h["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS";
+                h["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Accept, Mcp-Protocol-Version, Mcp-Session-Id, Last-Event-ID";
+                h["Access-Control-Max-Age"] = "600";
+                ctx.Response.StatusCode = 204;
+                return;
+            }
+        }
 
         if (secretMode)
         {
@@ -381,6 +403,10 @@ internal static partial class HttpMode
     {
         var p = await Form(ctx);
         string grant = p.GetValueOrDefault("grant_type", ""), clientId = p.GetValueOrDefault("client_id", "");
+        // Some clients send the id with HTTP Basic (client_secret_basic). Clients are public: PKCE proves the caller, any secret is ignored.
+        string basic = ctx.Request.Headers["Authorization"].ToString();
+        if (clientId.Length == 0 && basic.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase))
+            try { clientId = Uri.UnescapeDataString(Encoding.UTF8.GetString(Convert.FromBase64String(basic.Substring(6).Trim())).Split(':')[0]); } catch { }
         if (grant == "authorization_code")
         {
             Code? c;
