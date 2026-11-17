@@ -134,7 +134,7 @@ namespace UDriver
             return t;
         }
 
-#if UNITY_EDITOR_OSX || UNITY_EDITOR_LINUX || UNITY_STANDALONE_OSX || UNITY_STANDALONE_LINUX
+#if (UNITY_EDITOR_OSX || UNITY_EDITOR_LINUX || UNITY_STANDALONE_OSX || UNITY_STANDALONE_LINUX) && !UNITY_EDITOR_WIN
         [DllImport("libc", EntryPoint = "chmod")] static extern int ChmodLibc(string path, int mode);
         [DllImport("libc.so.6", EntryPoint = "chmod")] static extern int ChmodGlibc(string path, int mode);
 

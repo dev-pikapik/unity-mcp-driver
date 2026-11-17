@@ -106,7 +106,7 @@ internal static class Program
         {
             string? outPath = (string?)args["path"];
             if (BuildDirs.Length == 0) return "editor_build is not enabled: a human must set UDRIVER_BUILDS_DIR (the folder builds may be written to) in the MCP server configuration.";
-            if (outPath == null || !Path.IsPathRooted(outPath) || !Approved(outPath, out _))
+            if (outPath == null || !Path.IsPathFullyQualified(outPath) || !Approved(outPath, out _))
                 return $"editor_build refused: the output path must be an absolute path inside the approved build folders ({string.Join(", ", BuildDirs)}).";
         }
         if (!ReadOnly || ObserveTools.Contains(name)) return null;

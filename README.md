@@ -229,6 +229,7 @@ Mono only. Everything else works without Harmony.
 - IL2CPP: everything works except `trace_add`; disable code stripping for reflection.
 - `method=input` affects UI only while the game window is focused — Unity ignores device input in the background. `method=event` works in the background.
 - World-space UI Toolkit panels: element coordinates are unreliable.
+- Windows and Linux: the local (stdio) mode compiles and is reviewed for these platforms, but end-to-end testing so far was on macOS. The launcher, web panel and remote mode are macOS-only. Reports are welcome.
 - While the editor builds or reloads scripts it does not respond; the server waits up to 25 seconds.
 
 ## Uninstall

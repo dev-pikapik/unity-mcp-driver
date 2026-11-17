@@ -5,7 +5,7 @@ rem Game build only (no Unity project): pass the build folder or .exe, e.g.  set
 set "BUILD=%~1"
 if not defined BUILD set "BUILD=%UDRIVER_BUILD%"
 if defined BUILD if not exist "%BUILD%" (
-  echo Build not found: %BUILD%
+  echo Build not found: "%BUILD%"
   pause
   exit /b 1
 )
@@ -54,6 +54,6 @@ echo === Other agents: paste this block into their MCP settings (also saved in %
 echo.
 type "%OUT%"
 echo.
-if defined BUILD echo Then ask Claude to start the game with app_launch and the .exe inside %BUILD%, or start it yourself and ask Claude to use app_connect.
+if defined BUILD echo Then ask Claude to start the game with app_launch and the .exe inside "%BUILD%", or start it yourself and ask Claude to use app_connect.
 if defined BUILD echo.
 pause
