@@ -91,7 +91,7 @@ flowchart LR
 
 1. Put the `udriver` folder somewhere permanent, for example `~/Documents`.
 2. Double-click `UDriver.command`. If macOS blocks it, right-click it and choose **Open**.
-3. A setup page opens in your browser. Enter your Cloudflare domain, pick your Unity project folder and click **Install**.
+3. A setup page opens in your browser. Enter your Cloudflare domain, pick your Unity project folder (or choose **Game build** and pick the `.app`) and click **Install**.
 4. The page turns into the control panel, which shows the connector address and the owner password.
 5. In your MCP client add a custom connector with that address and sign in with the owner password.
 
@@ -104,6 +104,30 @@ autostart and no background services are installed: the server runs only while t
 **Observe only**, **Disconnect agent** and **Stop everything** buttons.
 
 > Calls through a remote connector are limited to 60–90 seconds because the proxy drops longer requests.
+
+### Use with a game build only (no Unity project)
+
+You can drive a game build without its project or the Unity editor, as long as the build already contains UDriver.
+
+**Requirements.** A **Development Build** made with `com.udriver.agent` in its project. The driver starts itself only
+in the editor and in development builds; a release build stays silent unless it was built with the scripting symbol
+`UDRIVER_FORCE`. Check: the build contains `UDriver.Runtime.dll` in `Contents/Resources/Data/Managed` (macOS) or
+`<Name>_Data/Managed` (Windows/Linux). IL2CPP builds have no DLLs there; they work too.
+
+**Steps.**
+1. Same computer: `sh setup-local.sh /path/to/MyGame.app` (Windows: `setup-local.cmd "C:\Games\MyGame"`). The build is
+   added to `UDRIVER_BUILDS_DIR`; add the printed config to your agent. Remote access: in the setup page choose **Game build**.
+2. Ask the agent to start the game with `app_launch`, or start it yourself and ask for `app_connect`. `app_connect` finds a
+   running game by itself, also when it was started on another port with `-udriver-port`. In the control panel, **Launch**
+   starts the configured build.
+
+**Limits.** `editor_*` tools and edit-mode inspection need the editor and are unavailable. `trace_add` works only in Mono
+builds (with Harmony in the build). IL2CPP strips unused code: `state_get`, `state_call` and `types_find` reach only what
+survived stripping; ask for a build with *Managed Stripping Level* set to Minimal (or a `link.xml`).
+
+**Shipping such a build (project owners).** Keep `com.udriver.agent` in the project and make a Development Build for
+testers. For player-facing builds define `UDRIVER_DISABLE` in *Player Settings → Scripting Define Symbols*: the package
+is then left out of the build completely.
 
 ## Tools (51)
 

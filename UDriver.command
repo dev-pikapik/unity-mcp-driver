@@ -8,11 +8,21 @@ PORT=8787
 mkdir -p "$U/bin" "$U/logs" && chmod 700 "$U"
 fail() { printf '\nERROR: %s\n\nPress Enter to close.\n' "$1"; read -r _; exit 1; }
 
+# Keep a private copy of the Unity package under ~/.udriver. Setup then works even if this folder is moved or deleted
+# later, or sits in a place macOS protects (Desktop, Documents, Downloads).
+if [ -d "$DIR/com.udriver.agent" ]; then
+  rm -rf "$U/package" && mkdir -p "$U/package" && cp -R "$DIR/com.udriver.agent" "$U/package/" || fail "could not copy the Unity package from $DIR"
+fi
+
 # Already running? Then just open the panel.
-if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/panel"; then
-  echo "UDriver is already running. Opening the panel."
-  command -v open >/dev/null 2>&1 && open "http://127.0.0.1:$PORT/panel"
-  exit 0
+if curl -s --max-time 2 "http://127.0.0.1:$PORT/panel" 2>/dev/null | grep -q UDriver; then
+  echo "UDriver was already running. Restarting it with the files from this folder."
+  # Only the panel server listening on $PORT: other udriver-mcp.dll processes are agents' stdio servers and must keep running.
+  PIDS="$(lsof -ti "tcp:$PORT" -sTCP:LISTEN 2>/dev/null)"
+  [ -n "$PIDS" ] || fail "could not find the running UDriver server. Close its window, then start UDriver.command again."
+  kill $PIDS 2>/dev/null
+  pkill -f "cloudflared.* run udriver" 2>/dev/null
+  sleep 2
 fi
 
 # Remove the startup item left by older versions, if any.
@@ -56,11 +66,12 @@ fi
 
 # Build the server if it is missing or the sources are newer.
 DLL="$U/server/udriver-mcp.dll"
-if [ ! -f "$DLL" ] || [ -n "$(find "$DIR/UDriver.Mcp" \( -name '*.cs' -o -name '*.csproj' \) -newer "$DLL" 2>/dev/null | head -1)" ]; then
+HASH="$(cat "$DIR"/UDriver.Mcp/*.cs "$DIR"/UDriver.Mcp/*.csproj 2>/dev/null | (shasum -a 256 2>/dev/null || sha256sum) | cut -d' ' -f1)"
+if [ ! -f "$DLL" ] || [ "$(cat "$U/server/.source-hash" 2>/dev/null)" != "$HASH" ]; then
   echo "Building the server (about a minute)..."
   DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 "$DOTNET" publish "$DIR/UDriver.Mcp" -c Release -o "$U/server" -v q >"$U/logs/build.log" 2>&1 \
     || { tail -15 "$U/logs/build.log"; fail "server build failed, full log in $U/logs/build.log"; }
-  touch "$DLL"
+  printf '%s' "$HASH" > "$U/server/.source-hash"
 fi
 
 echo
@@ -77,7 +88,7 @@ while :; do
       export "$K=$V"
     done < "$U/remote.env"
   fi
-  UDRIVER_HTTP_PORT="$PORT" UDRIVER_PANEL=1 UDRIVER_DIST="$DIR" UDRIVER_CLOUDFLARED="$CF" UDRIVER_OPEN_PANEL="$OPEN" \
+  UDRIVER_HTTP_PORT="$PORT" UDRIVER_PANEL=1 UDRIVER_DIST="$U/package" UDRIVER_CLOUDFLARED="$CF" UDRIVER_OPEN_PANEL="$OPEN" \
     DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 "$DOTNET" "$DLL"
   CODE=$?
   OPEN=0

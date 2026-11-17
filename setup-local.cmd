@@ -1,6 +1,16 @@
 @echo off
 rem Builds the UDriver MCP server and writes a ready-to-paste config block to mcp-config.json
 cd /d "%~dp0"
+rem Game build only (no Unity project): pass the build folder or .exe, e.g.  setup-local.cmd "C:\Games\MyGame"  (or set UDRIVER_BUILD)
+set "BUILD=%~1"
+if not defined BUILD set "BUILD=%UDRIVER_BUILD%"
+if defined BUILD if not exist "%BUILD%" (
+  echo Build not found: %BUILD%
+  pause
+  exit /b 1
+)
+if defined BUILD for %%I in ("%BUILD%") do if exist "%%~fI\" (set "BUILD=%%~fI") else (set "BUILD=%%~dpI")
+if defined BUILD if "%BUILD:~-1%"=="\" set "BUILD=%BUILD:~0,-1%"
 dotnet build UDriver.Mcp -c Release
 if errorlevel 1 (
   echo.
@@ -13,6 +23,7 @@ set "DLL=%~dp0UDriver.Mcp\bin\Release\net8.0\udriver-mcp.dll"
 set "DLL=%DLL:\=/%"
 set "BLD=%~dp0Builds"
 set "BLD=%BLD:\=/%"
+if defined BUILD set "BLD=%BLD%;%BUILD:\=/%"
 set "OUT=%~dp0mcp-config.json"
 > "%OUT%" echo {
 >> "%OUT%" echo   "mcpServers": {
@@ -31,7 +42,7 @@ set "RUN=%~dp0run-server.cmd"
 echo.
 echo DONE.
 echo.
-echo === Claude Code: open a terminal in your Unity project folder and run this one command ===
+echo === Claude Code: open a terminal in your Unity project folder (any folder for a game build) and run this one command ===
 echo.
 echo claude mcp add udriver -e UDRIVER_BUILDS_DIR="%BLD%" -- dotnet "%DLL%"
 echo.
@@ -43,4 +54,6 @@ echo === Other agents: paste this block into their MCP settings (also saved in %
 echo.
 type "%OUT%"
 echo.
+if defined BUILD echo Then ask Claude to start the game with app_launch and the .exe inside %BUILD%, or start it yourself and ask Claude to use app_connect.
+if defined BUILD echo.
 pause

@@ -259,19 +259,35 @@ internal static partial class HttpMode
                 KillTunnel(); await Task.Delay(500); StartTunnel();
                 ctx.Response.Redirect("/panel"); return;
             case "/panel/choose-folder" when local:
-                await Json(ctx, 200, new JsonObject { ["path"] = await ChooseFolder() });
+                await Json(ctx, 200, new JsonObject { ["path"] = await ChooseFolder(form.GetValueOrDefault("kind") == "build") });
                 return;
             case "/panel/setup" when local:
                 if (_setupRunning) { await Json(ctx, 200, new JsonObject { ["ok"] = true }); return; }
                 lock (SetupLog) SetupLog.Clear();
                 _setupRunning = true; _setupError = null; _setupDone = false;
-                string d = form.GetValueOrDefault("domain", ""), pr = form.GetValueOrDefault("project", "");
-                _ = Task.Run(() => RunSetup(d, pr));
+                string d = form.GetValueOrDefault("domain", ""), pr = form.GetValueOrDefault("path", "");
+                bool asBuild = form.GetValueOrDefault("mode") == "build";
+                _ = Task.Run(() => RunSetup(d, pr, asBuild));
                 await Json(ctx, 200, new JsonObject { ["ok"] = true });
+                return;
+            case "/panel/launch":
+                string exe = BuildPath();
+                var res = exe.Length == 0 ? null : await Program.Launch(new JsonObject { ["path"] = exe, ["waitSec"] = 60 });
+                await Json(ctx, 200, new JsonObject
+                {
+                    ["ok"] = res != null && !(res["isError"]?.GetValue<bool>() ?? false),
+                    ["text"] = (string?)res?["content"]?[0]?["text"] ?? "No game build is set up. Use Change domain, project or build.",
+                });
                 return;
             default:
                 await Write(ctx, 404, "text/plain", "not found"); return;
         }
+    }
+
+    /// <summary>The game build chosen in setup (build-only mode), or "" when a Unity project is used.</summary>
+    static string BuildPath()
+    {
+        try { return File.ReadAllText(Path.Combine(HomeDir, "build")).Trim(); } catch { return ""; }
     }
 
     static JsonObject StatusJson()
@@ -286,16 +302,18 @@ internal static partial class HttpMode
             ["publicOk"] = _publicOk, ["editor"] = _editorUp, ["game"] = _gameUp,
             ["sessions"] = sessions, ["calls"] = Program.CallCount, ["lastTool"] = Program.LastTool,
             ["lastAgoSec"] = Program.LastCallUtc == default ? null : (int)(DateTime.UtcNow - Program.LastCallUtc).TotalSeconds,
-            ["readOnly"] = Program.ReadOnly,
+            ["readOnly"] = Program.ReadOnly, ["buildOnly"] = BuildPath().Length > 0,
         };
     }
 
     // ---------------- setup (runs on this computer only) ----------------
 
-    static async Task<string> ChooseFolder()
+    static async Task<string> ChooseFolder(bool build)
     {
         if (!OperatingSystem.IsMacOS()) return "";
-        var r = await RunTool("osascript", TimeSpan.FromMinutes(5), "-e", "POSIX path of (choose folder with prompt \"Choose your Unity project folder (the one containing Assets and Packages)\")");
+        var r = await RunTool("osascript", TimeSpan.FromMinutes(5), "-e", build
+            ? "POSIX path of (choose file with prompt \"Choose the game build (the .app file)\" of type {\"com.apple.application-bundle\"})"
+            : "POSIX path of (choose folder with prompt \"Choose your Unity project folder (the one containing Assets and Packages)\")");
         return r.Code == 0 ? r.Out.Trim().TrimEnd('/') : "";
     }
 
@@ -337,7 +355,34 @@ internal static partial class HttpMode
         foreach (var d in Directory.GetDirectories(from)) CopyDir(d, Path.Combine(to, Path.GetFileName(d)));
     }
 
-    static async Task RunSetup(string domain, string project)
+    /// <summary>
+    /// Checks that a path is a Unity player that contains the UDriver runtime. Returns the entry to approve in UDRIVER_BUILDS_DIR
+    /// (the .app bundle itself, or the folder with the game file) and the file app_launch should start.
+    /// </summary>
+    static (string Dir, string Exe) CheckBuild(string path, Action<string> warn)
+    {
+        path = path.Trim().TrimEnd('/', '\\');
+        bool app = path.EndsWith(".app", StringComparison.OrdinalIgnoreCase) && Directory.Exists(path);
+        string dir = app || Directory.Exists(path) ? path : File.Exists(path) ? Path.GetDirectoryName(path)! : "";
+        if (path.Length == 0 || dir.Length == 0) throw new Exception("Nothing was found at this path: " + path);
+        if (dir.Contains(Path.PathSeparator)) throw new Exception("The build path cannot contain '" + Path.PathSeparator + "'. Move or rename the build");
+        string[] data = app ? new[] { Path.Combine(path, "Contents", "Resources", "Data") } : Directory.GetDirectories(dir, "*_Data");
+        string? d = data.FirstOrDefault(x => Directory.Exists(Path.Combine(x, "Managed")) || Directory.Exists(Path.Combine(x, "il2cpp_data")));
+        if (d == null) throw new Exception("This does not look like a Unity game build. Choose the .app on macOS, the folder with the .exe on Windows, or the game file on Linux");
+        string exe = app || File.Exists(path) ? path
+            : Directory.GetFiles(dir).FirstOrDefault(f => Path.GetFileNameWithoutExtension(f) == Path.GetFileName(d)[..^5] && Path.GetExtension(f) is ".exe" or ".x86_64" or "") ?? "";
+        if (exe.Length == 0) throw new Exception("The game file next to " + Path.GetFileName(d) + " was not found");
+        if (File.Exists(Path.Combine(d, "Managed", "UDriver.Runtime.dll"))) return (dir, exe);
+        // IL2CPP builds have no managed DLLs; their metadata still lists the names of the compiled assemblies.
+        string meta = Path.Combine(d, "il2cpp_data", "Metadata", "global-metadata.dat");
+        if (!File.Exists(meta))
+            throw new Exception("This build does not include the UDriver runtime (UDriver.Runtime.dll is missing). Ask for a Development Build made with the com.udriver.agent package");
+        if (File.ReadAllBytes(meta).AsSpan().IndexOf("UDriver.Runtime"u8) < 0)
+            warn("Warning: could not confirm that this IL2CPP build includes UDriver. If Claude can't connect, ask for a Development Build with the com.udriver.agent package");
+        return (dir, exe);
+    }
+
+    static async Task RunSetup(string domain, string project, bool asBuild)
     {
         void L(string s) { lock (SetupLog) SetupLog.Add(s); }
         try
@@ -347,11 +392,21 @@ internal static partial class HttpMode
             if (!Regex.IsMatch(d, @"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")) throw new Exception("Could not read the domain. It should look like example.org");
             string host = d.StartsWith("udriver.") ? d : "udriver." + d;
 
-            project = project.Trim().TrimEnd('/');
-            if (project.Length == 0 || !Directory.Exists(Path.Combine(project, "Assets")) || !Directory.Exists(Path.Combine(project, "Packages")))
-                throw new Exception("This is not a Unity project folder: it must contain the Assets and Packages folders");
-            string pkg = Path.Combine(Env("UDRIVER_DIST"), "com.udriver.agent");
-            if (!Directory.Exists(pkg)) throw new Exception("The com.udriver.agent folder was not found next to the launch file");
+            string pkg = "";
+            (string Dir, string Exe) build = ("", "");
+            if (asBuild) build = CheckBuild(project, L);
+            else
+            {
+                project = project.Trim().TrimEnd('/');
+                if (project.Length == 0 || !Directory.Exists(Path.Combine(project, "Assets")) || !Directory.Exists(Path.Combine(project, "Packages")))
+                    throw new Exception("This is not a Unity project folder: it must contain the Assets and Packages folders");
+                // The launcher keeps a copy of the package in ~/.udriver/package; UDRIVER_DIST may point to a folder that was moved since.
+                string[] places = { Path.Combine(Env("UDRIVER_DIST"), "com.udriver.agent"), Path.Combine(HomeDir, "package", "com.udriver.agent") };
+                pkg = places.FirstOrDefault(Directory.Exists) ?? "";
+                if (pkg.Length == 0)
+                    throw new Exception("The Unity package (com.udriver.agent) was not found. Looked in: " + string.Join(" and ", places)
+                                        + ". Stop the server, then start UDriver.command again from the folder that contains com.udriver.agent.");
+            }
 
             string cfHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cloudflared");
             if (!File.Exists(Path.Combine(cfHome, "cert.pem")))
@@ -386,16 +441,29 @@ internal static partial class HttpMode
             SetSetting("UDRIVER_HTTP_PORT", _port.ToString());
             SetSetting("UDRIVER_PUBLIC_URL", "https://" + host);
             SetSetting("UDRIVER_OWNER_PASSWORD", pass);
-            if (GetSetting("UDRIVER_BUILDS_DIR") == null)
+            if (asBuild)
             {
-                string builds = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "UDriverBuilds");
-                Directory.CreateDirectory(builds);
-                SetSetting("UDRIVER_BUILDS_DIR", builds);
+                // Build-only: nothing is copied; the build is added to the folders app_launch may start games from.
+                var dirs = (GetSetting("UDRIVER_BUILDS_DIR") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries).ToList();
+                if (!dirs.Contains(build.Dir)) dirs.Add(build.Dir);
+                SetSetting("UDRIVER_BUILDS_DIR", string.Join(Path.PathSeparator, dirs));
+                File.WriteAllText(Path.Combine(HomeDir, "build"), build.Exe);
+                File.Delete(Path.Combine(HomeDir, "project"));
+                L("Game build approved: Claude can start it");
             }
-
-            CopyDir(pkg, Path.Combine(project, "Packages", "com.udriver.agent"));
-            File.WriteAllText(Path.Combine(HomeDir, "project"), project);
-            L("Package copied into the Unity project");
+            else
+            {
+                if (GetSetting("UDRIVER_BUILDS_DIR") == null)
+                {
+                    string builds = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "UDriverBuilds");
+                    Directory.CreateDirectory(builds);
+                    SetSetting("UDRIVER_BUILDS_DIR", builds);
+                }
+                CopyDir(pkg, Path.Combine(project, "Packages", "com.udriver.agent"));
+                File.WriteAllText(Path.Combine(HomeDir, "project"), project);
+                File.Delete(Path.Combine(HomeDir, "build"));
+                L("Package copied into the Unity project");
+            }
 
             L("Done. Restarting the server…");
             _setupDone = true;
@@ -417,12 +485,12 @@ internal static partial class HttpMode
         :root{color-scheme:light dark;
           --bg:#F2F2F7;--surface:#FFFFFF;--surface-2:#F2F2F7;--label:#000;--label-2:rgba(60,60,67,.6);--sep:rgba(60,60,67,.29);--fill:rgba(120,120,128,.16);
           --accent:#007AFF;--accent-2:#5AC8FA;--accent-tint:rgba(0,122,255,.12);--ring:rgba(0,122,255,.4);
-          --green:#34C759;--orange:#FF9500;--red:#FF3B30;--red-tint:rgba(255,59,48,.12);--gray:#8E8E93;--bar:rgba(242,242,247,.8);
+          --green:#34C759;--orange:#FF9500;--red:#FF3B30;--red-tint:rgba(255,59,48,.12);--gray:#8E8E93;--bar:rgba(242,242,247,.8);--seg:#FFFFFF;
           --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",system-ui,sans-serif;--mono:ui-monospace,"SF Mono",Menlo,monospace}
         @media (prefers-color-scheme:dark){:root{
           --bg:#000000;--surface:#1C1C1E;--surface-2:#2C2C2E;--label:#FFF;--label-2:rgba(235,235,245,.6);--sep:rgba(84,84,88,.65);--fill:rgba(120,120,128,.32);
           --accent:#0A84FF;--accent-2:#64D2FF;--accent-tint:rgba(10,132,255,.18);--ring:rgba(10,132,255,.5);
-          --green:#30D158;--orange:#FF9F0A;--red:#FF453A;--red-tint:rgba(255,69,58,.18);--gray:#8E8E93;--bar:rgba(0,0,0,.72)}}
+          --green:#30D158;--orange:#FF9F0A;--red:#FF453A;--red-tint:rgba(255,69,58,.18);--gray:#8E8E93;--bar:rgba(0,0,0,.72);--seg:#636366}}
         *,*::before,*::after{box-sizing:border-box} [hidden]{display:none!important}
         html{-webkit-text-size-adjust:100%;background:var(--bg)}
         body{margin:0;background:var(--bg);color:var(--label);font:17px/1.35 var(--font);letter-spacing:-.01em;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
@@ -483,6 +551,11 @@ internal static partial class HttpMode
         .path .h{flex:0 1 auto;min-width:2ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
         .path .t{flex:0 0 auto;max-width:85%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
         .path .ph{font-family:var(--font);font-size:17px;letter-spacing:-.01em;color:var(--label-2)}
+        .seg{display:flex;padding:2px;border-radius:9px;background:var(--fill)}
+        .seg label{flex:1;display:flex;align-items:center;justify-content:center;min-height:32px;padding:4px 8px;border-radius:7px;font-size:15px;font-weight:500;text-align:center;cursor:pointer;transition:background .2s}
+        .seg input{position:absolute;opacity:0;pointer-events:none}
+        .seg label:has(input:checked){background:var(--seg);box-shadow:0 3px 8px rgba(0,0,0,.12),0 3px 1px rgba(0,0,0,.04)}
+        .seg label:has(input:focus-visible){outline:3px solid var(--ring)}
         .linkbtn{padding:0;border:0;background:none;color:var(--accent);font:inherit;cursor:pointer}
         .spin{width:18px;height:18px;flex:none;border-radius:50%;border:2.5px solid var(--fill);border-top-color:var(--label-2);animation:spin .8s linear infinite}
         .ck,.xk{position:relative;width:18px;height:18px;flex:none;border-radius:50%;background:var(--green)}
@@ -535,21 +608,30 @@ internal static partial class HttpMode
     static string SetupPage()
     {
         string host = GetSetting("UDRIVER_PUBLIC_URL")?.Replace("https://", "") ?? "";
-        string project = "";
+        string project = "", build = BuildPath();
         try { project = File.ReadAllText(Path.Combine(HomeDir, "project")).Trim(); } catch { }
+        bool asBuild = build.Length > 0;
         return Shell($$"""
             <main class="narrow">
-            <header class="hero">{{Icon}}<h1 class="title">Set up Unity MCP Driver</h1><p class="subtitle">Connect Claude to your Unity project. Fill in two things, the rest is automatic.</p></header>
+            <header class="hero">{{Icon}}<h1 class="title">Set up Unity MCP Driver</h1><p class="subtitle">Connect Claude to your Unity project or game build. Fill in two things, the rest is automatic.</p></header>
             <section><h2 class="sec-h"><label for="domain">Your Cloudflare domain</label></h2>
               <div class="group pad"><input class="field" type="text" id="domain" placeholder="example.org" value="{{H(host)}}" autocapitalize="off" autocomplete="off" spellcheck="false" aria-describedby="domainhelp"></div>
               <p class="foot" id="domainhelp">The tunnel will be available at <span id="tunnelhost">udriver.your-domain</span>.</p></section>
-            <section><h2 class="sec-h">Unity project</h2>
+            <section><h2 class="sec-h" id="modeh">What do you have?</h2>
+              <div class="seg" role="radiogroup" aria-labelledby="modeh">
+                <label><input type="radio" name="mode" value="project"{{(asBuild ? "" : " checked")}}>Unity project</label>
+                <label><input type="radio" name="mode" value="build"{{(asBuild ? " checked" : "")}}>Game build</label>
+              </div></section>
+            <section><h2 class="sec-h" id="kindh">Unity project</h2>
               <div class="group">
                 <div class="row"><span class="path" id="pathview"></span><button class="btn tinted" type="button" id="pick">Choose…</button></div>
-                <div class="row" id="manual" hidden><label class="sr" for="project">Unity project folder</label><input class="field mono" type="text" id="project" placeholder="/Users/you/Projects/MyGame" value="{{H(project)}}" autocapitalize="off" autocomplete="off" spellcheck="false"></div>
+                <div class="row" id="manual" hidden>
+                  <div class="k" data-kind="project"><label class="sr" for="project">Unity project folder</label><input class="field mono" type="text" id="project" placeholder="/Users/you/Projects/MyGame" value="{{H(project)}}" autocapitalize="off" autocomplete="off" spellcheck="false"></div>
+                  <div class="k" data-kind="build"><label class="sr" for="build">Game build</label><input class="field mono" type="text" id="build" placeholder="/Users/you/Builds/MyGame.app" value="{{H(build)}}" autocapitalize="off" autocomplete="off" spellcheck="false"></div>
+                </div>
               </div>
-              <p class="foot err" id="pickmsg" hidden>No folder was chosen. You can type the path below instead.</p>
-              <p class="foot">The folder that contains Assets and Packages. The driver is copied into its Packages folder. <button class="linkbtn" type="button" id="typepath">Type a path instead</button></p></section>
+              <p class="foot err" id="pickmsg" hidden>Nothing was chosen. You can type the path below instead.</p>
+              <p class="foot"><span id="kindhelp"></span> <button class="linkbtn" type="button" id="typepath">Type a path instead</button></p></section>
             <div class="actions"><button class="btn primary" type="button" id="go">Install</button></div>
             <section id="progress" hidden><h2 class="sec-h">Installing</h2><div class="group" id="log" aria-live="polite"></div><p class="foot err" id="err" role="alert" hidden></p></section>
             </main>
@@ -558,26 +640,34 @@ internal static partial class HttpMode
             const csrf="{{LocalCsrf}}", $=id=>document.getElementById(id);
             const post=(u,d)=>fetch(u,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({csrf,...d})});
             const el=(tag,cls,text)=>{ const e=document.createElement(tag); if(cls) e.className=cls; if(text!=null) e.textContent=text; return e; };
-            const domain=$("domain"), project=$("project"), go=$("go");
+            const domain=$("domain"), project=$("project"), build=$("build"), go=$("go");
+            const isBuild=()=>document.querySelector("input[name=mode]:checked").value==="build", field=()=>isBuild()?build:project;
             const showHost=()=>{ const d=domain.value.trim().toLowerCase().replace(/^https?:\/\//,"").replace(/\/.*$/,""); $("tunnelhost").textContent=d?(d.startsWith("udriver.")?d:"udriver."+d):"udriver.your-domain"; };
-            const showPath=()=>{ const p=project.value.trim().replace(/\/+$/,""), v=$("pathview"); v.title=p;
+            const showPath=()=>{ const p=field().value.trim().replace(/\/+$/,""), v=$("pathview"); v.title=p;
               if(!p){ v.replaceChildren(el("span","ph","No folder chosen")); return; }
               const i=p.lastIndexOf("/"); v.replaceChildren(el("span","h",p.slice(0,i+1)),el("span","t",p.slice(i+1))); };
-            const manual=()=>{ $("manual").hidden=false; $("typepath").hidden=true; project.focus(); };
-            domain.addEventListener("input",showHost); project.addEventListener("input",showPath); showHost(); showPath();
+            const manual=()=>{ $("manual").hidden=false; $("typepath").hidden=true; field().focus(); };
+            const showMode=()=>{ const b=isBuild();
+              $("kindh").textContent=b?"Game build":"Unity project";
+              $("kindhelp").textContent=b?"A Development Build that already includes UDriver: the .app on macOS, or the folder with the .exe on Windows. Nothing is copied into it; Claude is allowed to start it."
+                :"The folder that contains Assets and Packages. The driver is copied into its Packages folder.";
+              document.querySelectorAll("[data-kind]").forEach(e=>{ e.hidden=e.dataset.kind!==(b?"build":"project"); });
+              $("pickmsg").hidden=true; showPath(); };
+            document.querySelectorAll("input[name=mode]").forEach(r=>r.addEventListener("change",showMode));
+            domain.addEventListener("input",showHost); project.addEventListener("input",showPath); build.addEventListener("input",showPath); showHost(); showMode();
             $("typepath").addEventListener("click",manual);
             $("pick").addEventListener("click",async()=>{
               const b=$("pick"); b.disabled=true; let r={};
-              try{ r=await (await post("/panel/choose-folder",{})).json(); }catch(e){}
+              try{ r=await (await post("/panel/choose-folder",{kind:isBuild()?"build":"project"})).json(); }catch(e){}
               b.disabled=false;
-              if(r.path){ project.value=r.path; showPath(); $("pickmsg").hidden=true; } else { $("pickmsg").hidden=false; manual(); }
+              if(r.path){ field().value=r.path; showPath(); $("pickmsg").hidden=true; } else { $("pickmsg").hidden=false; manual(); }
             });
             const step=(icon,text)=>{ const r=el("div","row"); r.append(icon,el("span","k",text)); return r; };
             const fail=msg=>{ $("err").textContent="Installation stopped: "+msg; $("err").hidden=false; go.disabled=false; go.textContent="Try Again"; };
             go.addEventListener("click",async()=>{
               go.disabled=true; go.textContent="Installing…"; $("progress").hidden=false; $("err").hidden=true;
               $("log").replaceChildren(step(el("span","spin"),"Starting…"));
-              try{ await post("/panel/setup",{domain:domain.value,project:project.value}); }catch(e){ fail("the server did not answer."); return; }
+              try{ await post("/panel/setup",{domain:domain.value,mode:isBuild()?"build":"project",path:field().value}); }catch(e){ fail("the server did not answer."); return; }
               const t=setInterval(async()=>{
                 let s; try{ s=await (await fetch("/panel/progress")).json(); }catch(e){ return; }
                 const n=s.lines.length;
@@ -592,7 +682,13 @@ internal static partial class HttpMode
 
     static string StatusPage(bool local, string csrf)
     {
-        string token = $"<input type=\"hidden\" name=\"csrf\" value=\"{csrf}\">";
+        string token = $"<input type=\"hidden\" name=\"csrf\" value=\"{csrf}\">", build = BuildPath();
+        // Build-only mode: there is no Unity project, so the editor is not expected and the game can be started from here.
+        string game = build.Length == 0 ? "" : $"""
+            <section><h2 class="sec-h">Game build</h2><div class="group">
+              <div class="row"><div class="k">{H(Path.GetFileName(build))}<code>{H(Path.GetDirectoryName(build))}</code></div><button class="btn tinted" type="button" id="launch">Launch</button></div>
+            </div><p class="foot" id="launchmsg" aria-live="polite">Starts the game so Claude can use it right away. Claude can also start it by itself.</p></section>
+            """;
         string Act(string action, string label, string cls = "") =>
             $"<form method=\"post\" action=\"{action}\">{token}<button class=\"act {cls}\" type=\"submit\">{label}</button></form>";
         string secret = local
@@ -605,7 +701,7 @@ internal static partial class HttpMode
             ? $"""
               <section><h2 class="sec-h">This computer</h2><div class="group">
                 {Act("/panel/tunnel", "Restart tunnel")}
-                <a class="act nav" href="/panel?setup=1">Change domain or project<span class="chev" aria-hidden="true">›</span></a>
+                <a class="act nav" href="/panel?setup=1">Change domain, project or build<span class="chev" aria-hidden="true">›</span></a>
               </div><p class="foot">These settings are only available on the computer running UDriver.</p></section>
               """
             : $"""<section><div class="group">{Act("/panel/logout", "Sign Out")}</div></section>""";
@@ -622,10 +718,11 @@ internal static partial class HttpMode
               <div class="row"><span class="k">Cloudflare tunnel</span><span class="v" id="tunnel">…</span></div>
               <div class="row"><span class="k">Reachable from the internet</span><span class="v" id="public">…</span></div>
               <div class="row"><span class="k">Unity Editor</span><span class="v" id="editor">…</span></div>
-              <div class="row"><span class="k">Game (Play Mode or build)</span><span class="v" id="game">…</span></div>
+              <div class="row"><span class="k">{{(build.Length > 0 ? "Game" : "Game (Play Mode or build)")}}</span><span class="v" id="game">…</span></div>
               <div class="row"><span class="k">Claude</span><span class="v" id="claude">…</span></div>
               <div class="row"><span class="k">Last action</span><span class="v" id="last">…</span></div>
             </div><p class="foot">Updates automatically every few seconds.</p><p class="foot" id="tunnelnote" hidden></p></section>
+            {{game}}
             <section><h2 class="sec-h">Access</h2><div class="group">
               <form method="post" action="/panel/readonly" id="roform">{{token}}<input type="hidden" name="on" id="roon" value="{{(Program.ReadOnly ? "0" : "1")}}">
                 <label class="row" for="ro"><span class="k">Observe only</span><input class="switch" type="checkbox" role="switch" id="ro"{{(Program.ReadOnly ? " checked" : "")}}></label></form>
@@ -658,6 +755,14 @@ internal static partial class HttpMode
             $("stopform").addEventListener("submit",e=>{ e.preventDefault(); dlg.showModal(); });
             $("stopcancel").addEventListener("click",()=>dlg.close());
             $("stopyes").addEventListener("click",()=>{ dlg.close(); $("stopform").submit(); });
+            const launch=$("launch"); let launching=false, gameUp=false;
+            if(launch) launch.addEventListener("click",async()=>{
+              launching=true; launch.disabled=true; launch.textContent="Launching…"; $("launchmsg").textContent="Starting the game. This can take up to a minute.";
+              let r={text:"The server did not answer."};
+              try{ r=await (await fetch("/panel/launch",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({csrf:document.querySelector("[name=csrf]").value})})).json(); }catch(e){}
+              launching=false; launch.textContent="Launch"; launch.disabled=gameUp;
+              $("launchmsg").textContent=(r.ok?"":"Could not launch: ")+(r.text||"").split("\n")[0];
+            });
             const dur=s=>s<60?s+" s":s<3600?Math.floor(s/60)+" min":Math.floor(s/3600)+" h";
             async function tick(){
               let s; try{ const r=await fetch("/panel/status.json"); if(r.status==401){ location.reload(); return; } s=await r.json(); }
@@ -667,8 +772,9 @@ internal static partial class HttpMode
               set("tunnel", ...(!s.tunnelAlive?["bad","Not running"]:s.tunnelConnections>0?["ok","Connected"]:["warn","Connecting…"]));
               $("tunnelnote").hidden=!s.tunnelNote; $("tunnelnote").textContent=s.tunnelNote?"Tunnel message: "+s.tunnelNote:"";
               set("public", ...(s.publicOk===null?["","Checking…"]:s.publicOk?["ok","Yes"]:["bad","No"]));
-              set("editor", ...(s.editor?["ok","Open"]:["bad","Not found"]));
+              set("editor", ...(s.editor?["ok","Open"]:s.buildOnly?["","Not used"]:["bad","Not found"]));
               set("game", ...(s.game?["ok","Running"]:["","Not running"]));
+              gameUp=s.game; if(launch&&!launching) launch.disabled=s.game;
               set("claude", ...(s.sessions>0?["ok","Signed in"]:["","Not connected"]));
               $("last").textContent=s.lastTool?s.lastTool+", "+dur(s.lastAgoSec)+" ago · "+s.calls+" total":"Nothing yet";
               if(!busy) ro.checked=s.readOnly;

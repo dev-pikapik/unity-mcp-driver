@@ -91,7 +91,9 @@ internal static class Program
         try { real = RealPath(path); } catch { real = ""; return false; }
         var cmp = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         string r = real;
-        return BuildDirs.Any(d => r.StartsWith(d.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar, cmp));
+        // An approved entry may also be a single macOS .app bundle (build-only setup approves just that game).
+        return BuildDirs.Select(d => d.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            .Any(d => r.Equals(d, cmp) || r.StartsWith(d + Path.DirectorySeparatorChar, cmp));
     }
 
     /// <summary>Why a call is refused by policy, or null if allowed.</summary>
@@ -184,7 +186,7 @@ internal static class Program
         new() { Name = "app_kill", Desc = "Terminate the build started by app_launch.", Params = Array.Empty<ToolParam>() },
         new() { Name = "app_status", Desc = "Is the launched process alive and is the in-game driver reachable?", Params = Array.Empty<ToolParam>() },
         new() { Name = "app_connect", Desc = "Attach to an already running game or editor Play Mode instead of launching one.",
-            Params = new[] { P("port", "integer", "Game driver port (default 17890)."), P("editorPort", "integer", "Editor bridge port (default 17891).") } },
+            Params = new[] { P("port", "integer", "Game driver port (default 17890; if nothing answers there, a running game on another port is found automatically)."), P("editorPort", "integer", "Editor bridge port (default 17891).") } },
     };
 
     // Names the control panel may show; any other name is shown generically. Must stay below LocalTools (static fields initialize in order).
@@ -404,7 +406,7 @@ internal static class Program
 
     // ---------------- process tools ----------------
 
-    static async Task<JsonNode> Launch(JsonObject args)
+    internal static async Task<JsonNode> Launch(JsonObject args)
     {
         string path = (string?)args["path"] ?? throw new ArgumentException("path is required");
         // The model may only start executables from folders a human has approved. Checked before touching the file system at all.
@@ -518,17 +520,36 @@ internal static class Program
         return Result($"{proc}; game driver on port {_port}: {(up ? "reachable" : "NOT reachable")}; editor bridge on port {_editorPort}: {(ed ? "reachable" : "not reachable")}");
     }
 
+    /// <summary>A running game on another port, found through the token files games publish in ~/.udriver and confirmed with that token.</summary>
+    static async Task<int?> FindGame()
+    {
+        string[] files;
+        try { files = Directory.GetFiles(HomeDir, "*.token"); } catch { return null; }
+        foreach (var f in files.OrderByDescending(File.GetLastWriteTimeUtc))
+        {
+            if (!int.TryParse(Path.GetFileNameWithoutExtension(f), out int p) || p < 1024 || p > 65535 || p == _port || p == _editorPort || !await Ping(p)) continue;
+            // Only a game answers /tools (the editor bridge does not), and only with the right token.
+            try { if ((await Http2(HttpMethod.Get, p, "/tools", null, 1.5)).status == 200) return p; } catch { }
+        }
+        return null;
+    }
+
     static async Task<JsonNode> Connect(JsonObject args)
     {
         int wantPort = IntArg(args, "port", _port), wantEditor = IntArg(args, "editorPort", _editorPort);
-        // Only talk to ports where a UDriver instance has published a token: never poke arbitrary local services.
+        // Only talk to new ports where a UDriver instance has published a token: never poke arbitrary local services.
+        // The current ports (from the configuration, app_launch or an earlier app_connect) are already trusted.
         foreach (int p in new[] { wantPort, wantEditor })
-            if ((p != 17890 && p != 17891) && TokenFor(p, true).Length == 0)
+            if (p != 17890 && p != 17891 && p != _port && p != _editorPort && TokenFor(p, true).Length == 0)
                 return Result($"refused: no UDriver instance has registered on port {p} (no token file).", true);
         _port = wantPort; _editorPort = wantEditor;
-        // Entering Play Mode reloads scripts, so give the driver a few seconds to come up.
+        // Entering Play Mode reloads scripts, so give the driver a few seconds to come up. Without an explicit port, a game on another port also counts.
         var sw = Stopwatch.StartNew();
-        while (!await Ping() && sw.Elapsed.TotalSeconds < 12) await Task.Delay(500);
+        while (!await Ping() && sw.Elapsed.TotalSeconds < 12)
+        {
+            if (args["port"] == null && await FindGame() is int found) { _port = found; break; }
+            await Task.Delay(500);
+        }
         if (!await Ping())
             return Result($"Nothing answers on game port {_port}." + (await Ping(_editorPort)
                 ? " The editor bridge is reachable: the editor is open but not in Play Mode (editor_play action=play), or still loading."
