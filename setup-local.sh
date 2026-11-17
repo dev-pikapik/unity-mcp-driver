@@ -41,7 +41,7 @@ echo "claude mcp add udriver -e UDRIVER_BUILDS_DIR=\"$BLD\" -- dotnet \"$DIR/UDr
 echo
 echo "=== Claude Code on ANOTHER computer: run this there instead (replace USER and THIS-PC; SSH key login required) ==="
 echo
-echo "claude mcp add udriver -- ssh -o BatchMode=yes USER@THIS-PC \"$DIR/run-server.sh\""
+echo "claude mcp add udriver -- ssh -o BatchMode=yes USER@THIS-PC '\"$DIR/run-server.sh\"'"
 echo
 echo "=== Other agents: paste this block into their MCP settings (also saved in $DIR/mcp-config.json) ==="
 echo

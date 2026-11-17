@@ -337,7 +337,7 @@ namespace UDriver.Editor
         {
             if (a.Str("action", "status") != "build") { r.Text("build: " + SessionState.GetString(KBuild, "never built")); return; }
             string path = a.Str("path");
-            if (path == null) throw new ToolException("path is required, e.g. Builds/QA/Game.exe");
+            if (path == null) throw new ToolException("path is required: Game.exe on Windows, Game.app on macOS, Game.x86_64 on Linux, e.g. C:/Builds/QA/Game.exe");
             if (EditorApplication.isPlaying) throw new ToolException("leave Play Mode first (editor_play action=stop)");
             if (EditorUtility.scriptCompilationFailed) throw new ToolException("scripts have compile errors (editor_compile)");
             var scenes = new List<string>();

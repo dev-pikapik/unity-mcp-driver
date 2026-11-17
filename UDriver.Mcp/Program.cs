@@ -177,7 +177,7 @@ internal static class Program
         new() { Name = "app_launch", Desc = "Start a Unity build (Development Build with the UDriver package) and wait until its driver answers. Returns the app status.",
             Params = new[]
             {
-                P("path", "string", "Path to the executable (.exe, Linux binary, or macOS .app).", true),
+                P("path", "string", "The game to start: on Windows the .exe or its build folder, on Linux the game file (.x86_64) or its folder, on macOS the .app.", true),
                 P("args", "array", "Extra command-line arguments for the game, e.g. [\"-screen-width\",\"1280\",\"-screen-height\",\"720\",\"-screen-fullscreen\",\"0\"]."),
                 P("port", "integer", "Driver port (default 17890 or $UDRIVER_PORT)."),
                 P("startup", "array", "Tool calls to run inside the game at boot, before the first scene - for probes that must exist from the start. Items: {\"tool\":\"trace_add\",\"args\":{...}}."),
@@ -415,12 +415,14 @@ internal static class Program
                           "environment variable UDRIVER_BUILDS_DIR (several folders separated by '" + Path.PathSeparator + "'). Until then, start the game manually and use app_connect.", true);
         string refused = $"refused: {path} is outside the approved build folders ({string.Join(", ", BuildDirs)}). Only a human can change UDRIVER_BUILDS_DIR.";
         if (!Approved(path, out string real)) return Result(refused, true);
-        if (real.EndsWith(".app", StringComparison.OrdinalIgnoreCase) && Directory.Exists(real))
+        if (Directory.Exists(real))
         {
-            path = Directory.GetFiles(Path.Combine(real, "Contents", "MacOS")).FirstOrDefault() ?? real;
+            path = real.EndsWith(".app", StringComparison.OrdinalIgnoreCase)
+                ? Directory.GetFiles(Path.Combine(real, "Contents", "MacOS")).FirstOrDefault() ?? real
+                : GameFile(real) ?? real;
             if (!Approved(path, out real)) return Result(refused, true);
         }
-        if (!File.Exists(real)) return Result("file not found: " + path, true);
+        if (!File.Exists(real)) return Result(Directory.Exists(real) ? "no Unity game file (NAME.exe or NAME.x86_64 next to a NAME_Data folder) was found in " + path : "file not found: " + path, true);
         // Game arguments: only known window/graphics switches with plain values. Unity switches such as -logFile take a file path and could overwrite any file.
         if (args["args"] is JsonArray given)
         {
@@ -491,7 +493,7 @@ internal static class Program
         var sw = Stopwatch.StartNew();
         while (sw.Elapsed.TotalSeconds < waitSec)
         {
-            if (_proc.HasExited) return Result($"The game exited during startup with code {_proc.ExitCode}. Check its Player.log.", true);
+            if (_proc.HasExited) return Result($"The game exited during startup with code {_proc.ExitCode}. Check its log: {PlayerLog(real)}", true);
             if (await Ping())
             {
                 Send(new JsonObject { ["jsonrpc"] = "2.0", ["method"] = "notifications/tools/list_changed" });
@@ -503,6 +505,24 @@ internal static class Program
         }
         return Result($"The game started (pid {_proc.Id}) but its driver did not answer on port {_port} within {waitSec}s. " +
                       "Check that this is a Development Build containing the UDriver package (the driver stays off in release builds), then retry app_connect.", true);
+    }
+
+    /// <summary>The game file in a Windows/Linux build folder: the one named after its NAME_Data folder, so UnityCrashHandler*.exe and other tools are skipped.</summary>
+    static string? GameFile(string dir) => Directory.GetDirectories(dir, "*_Data")
+        .SelectMany(d => new[] { ".exe", ".x86_64", ".x86", "" }.Select(ext => d[..^5] + ext))
+        .FirstOrDefault(File.Exists);
+
+    /// <summary>Where Unity writes Player.log for this game on this OS; company and product names come from the build's app.info.</summary>
+    static string PlayerLog(string exe)
+    {
+        string data = OperatingSystem.IsMacOS() ? Path.GetFullPath(Path.Combine(exe, "..", "..", "Resources", "Data")) : Path.ChangeExtension(exe, null) + "_Data";
+        string[] info = { "<company>", "<product>" };
+        try { var l = File.ReadAllLines(Path.Combine(data, "app.info")); if (l.Length >= 2) info = l; } catch { }
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        string dir = OperatingSystem.IsWindows() ? Path.Combine(home, "AppData", "LocalLow")
+            : OperatingSystem.IsMacOS() ? Path.Combine(home, "Library", "Logs")
+            : Path.Combine(home, ".config", "unity3d");
+        return Path.Combine(dir, info[0].Trim(), info[1].Trim(), "Player.log");
     }
 
     static JsonNode Kill()

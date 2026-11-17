@@ -16,6 +16,7 @@ internal static partial class HttpMode
     static string EnvFile => Path.Combine(HomeDir, "remote.env");
     static string TunnelYml => Path.Combine(HomeDir, "cloudflared.yml");
     static string CfPath => Env("UDRIVER_CLOUDFLARED").Length > 0 ? Env("UDRIVER_CLOUDFLARED") : "cloudflared";
+    static readonly string Launcher = OperatingSystem.IsWindows() ? "UDriver.cmd" : "UDriver.command";
 
     static bool _panel, _setupMode;
     static readonly DateTime Started = DateTime.UtcNow;
@@ -310,16 +311,30 @@ internal static partial class HttpMode
 
     static async Task<string> ChooseFolder(bool build)
     {
-        if (!OperatingSystem.IsMacOS()) return "";
-        var r = await RunTool("osascript", TimeSpan.FromMinutes(5), "-e", build
-            ? "POSIX path of (choose file with prompt \"Choose the game build (the .app file)\" of type {\"com.apple.application-bundle\"})"
-            : "POSIX path of (choose folder with prompt \"Choose your Unity project folder (the one containing Assets and Packages)\")");
-        return r.Code == 0 ? r.Out.Trim().TrimEnd('/') : "";
+        const string projectPrompt = "Choose your Unity project folder (the one containing Assets and Packages)";
+        var wait = TimeSpan.FromMinutes(5);
+        try
+        {
+            var r = OperatingSystem.IsMacOS()
+                ? await RunTool("osascript", wait, "-e", build
+                    ? "POSIX path of (choose file with prompt \"Choose the game build (the .app file)\" of type {\"com.apple.application-bundle\"})"
+                    : "POSIX path of (choose folder with prompt \"" + projectPrompt + "\")")
+                : OperatingSystem.IsWindows()
+                ? await RunTool("powershell", wait, "-NoProfile", "-STA", "-Command", "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Add-Type -AssemblyName System.Windows.Forms; " + (build
+                    ? "$d = New-Object System.Windows.Forms.OpenFileDialog; $d.Title = 'Choose the game (the .exe file)'; $d.Filter = 'Game (*.exe)|*.exe'; $p = 'FileName'"
+                    : "$d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = '" + projectPrompt + "'; $p = 'SelectedPath'")
+                    + "; $f = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true }; if ($d.ShowDialog($f) -eq 'OK') { $d.$p }")
+                : build
+                ? await RunTool("zenity", wait, "--file-selection", "--title=Choose the game file")
+                : await RunTool("zenity", wait, "--file-selection", "--directory", "--title=" + projectPrompt);
+            return r.Code == 0 ? r.Out.Trim().TrimEnd('/', '\\') : "";
+        }
+        catch { return ""; }   // no dialog tool on this system: the page falls back to typing the path
     }
 
     static async Task<(int Code, string Out)> RunTool(string exe, TimeSpan timeout, params string[] args)
     {
-        var psi = new ProcessStartInfo(exe) { UseShellExecute = false, RedirectStandardError = true, RedirectStandardOutput = true, RedirectStandardInput = true };
+        var psi = new ProcessStartInfo(exe) { UseShellExecute = false, RedirectStandardError = true, RedirectStandardOutput = true, RedirectStandardInput = true, StandardOutputEncoding = Encoding.UTF8 };
         foreach (var a in args) psi.ArgumentList.Add(a);
         using var p = Process.Start(psi) ?? throw new Exception("could not start " + exe);
         var so = p.StandardOutput.ReadToEndAsync(); var se = p.StandardError.ReadToEndAsync();
@@ -369,7 +384,8 @@ internal static partial class HttpMode
         string[] data = app ? new[] { Path.Combine(path, "Contents", "Resources", "Data") } : Directory.GetDirectories(dir, "*_Data");
         string? d = data.FirstOrDefault(x => Directory.Exists(Path.Combine(x, "Managed")) || Directory.Exists(Path.Combine(x, "il2cpp_data")));
         if (d == null) throw new Exception("This does not look like a Unity game build. Choose the .app on macOS, the folder with the .exe on Windows, or the game file on Linux");
-        string exe = app || File.Exists(path) ? path
+        // A picked file is not trusted to be the game (it may be UnityCrashHandler64.exe): the game is the file named after its _Data folder.
+        string exe = app ? path
             : Directory.GetFiles(dir).FirstOrDefault(f => Path.GetFileNameWithoutExtension(f) == Path.GetFileName(d)[..^5] && Path.GetExtension(f) is ".exe" or ".x86_64" or "") ?? "";
         if (exe.Length == 0) throw new Exception("The game file next to " + Path.GetFileName(d) + " was not found");
         if (File.Exists(Path.Combine(d, "Managed", "UDriver.Runtime.dll"))) return (dir, exe);
@@ -397,7 +413,7 @@ internal static partial class HttpMode
             if (asBuild) build = CheckBuild(project, L);
             else
             {
-                project = project.Trim().TrimEnd('/');
+                project = project.Trim().TrimEnd('/', '\\');
                 if (project.Length == 0 || !Directory.Exists(Path.Combine(project, "Assets")) || !Directory.Exists(Path.Combine(project, "Packages")))
                     throw new Exception("This is not a Unity project folder: it must contain the Assets and Packages folders");
                 // The launcher keeps a copy of the package in ~/.udriver/package; UDRIVER_DIST may point to a folder that was moved since.
@@ -405,7 +421,7 @@ internal static partial class HttpMode
                 pkg = places.FirstOrDefault(Directory.Exists) ?? "";
                 if (pkg.Length == 0)
                     throw new Exception("The Unity package (com.udriver.agent) was not found. Looked in: " + string.Join(" and ", places)
-                                        + ". Stop the server, then start UDriver.command again from the folder that contains com.udriver.agent.");
+                                        + $". Stop the server, then start {Launcher} again from the folder that contains com.udriver.agent.");
             }
 
             string cfHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cloudflared");
@@ -600,7 +616,7 @@ internal static partial class HttpMode
         <main class="narrow">
         <header class="hero">{Icon}<h1 class="title">UDriver stopped</h1><p class="subtitle">The server and the tunnel are off. Claude can no longer reach Unity.</p></header>
         <section><h2 class="sec-h">To start again</h2>
-        <div class="group"><div class="row"><span class="k">Double-click <code>UDriver.command</code> in the <code>udriver</code> folder on the computer with Unity.</span></div></div>
+        <div class="group"><div class="row"><span class="k">Double-click <code>{Launcher}</code> in the <code>udriver</code> folder on the computer with Unity.</span></div></div>
         <p class="foot">This page on your domain won't open while the server is off. That's expected.</p></section>
         </main>
         """, "UDriver stopped");
@@ -626,8 +642,8 @@ internal static partial class HttpMode
               <div class="group">
                 <div class="row"><span class="path" id="pathview"></span><button class="btn tinted" type="button" id="pick">Choose…</button></div>
                 <div class="row" id="manual" hidden>
-                  <div class="k" data-kind="project"><label class="sr" for="project">Unity project folder</label><input class="field mono" type="text" id="project" placeholder="/Users/you/Projects/MyGame" value="{{H(project)}}" autocapitalize="off" autocomplete="off" spellcheck="false"></div>
-                  <div class="k" data-kind="build"><label class="sr" for="build">Game build</label><input class="field mono" type="text" id="build" placeholder="/Users/you/Builds/MyGame.app" value="{{H(build)}}" autocapitalize="off" autocomplete="off" spellcheck="false"></div>
+                  <div class="k" data-kind="project"><label class="sr" for="project">Unity project folder</label><input class="field mono" type="text" id="project" placeholder="{{(OperatingSystem.IsWindows() ? @"C:\Projects\MyGame" : OperatingSystem.IsMacOS() ? "/Users/you/Projects/MyGame" : "/home/you/Projects/MyGame")}}" value="{{H(project)}}" autocapitalize="off" autocomplete="off" spellcheck="false"></div>
+                  <div class="k" data-kind="build"><label class="sr" for="build">Game build</label><input class="field mono" type="text" id="build" placeholder="{{(OperatingSystem.IsWindows() ? @"C:\Games\MyGame\MyGame.exe" : OperatingSystem.IsMacOS() ? "/Users/you/Builds/MyGame.app" : "/home/you/Builds/MyGame/MyGame.x86_64")}}" value="{{H(build)}}" autocapitalize="off" autocomplete="off" spellcheck="false"></div>
                 </div>
               </div>
               <p class="foot err" id="pickmsg" hidden>Nothing was chosen. You can type the path below instead.</p>
@@ -643,13 +659,13 @@ internal static partial class HttpMode
             const domain=$("domain"), project=$("project"), build=$("build"), go=$("go");
             const isBuild=()=>document.querySelector("input[name=mode]:checked").value==="build", field=()=>isBuild()?build:project;
             const showHost=()=>{ const d=domain.value.trim().toLowerCase().replace(/^https?:\/\//,"").replace(/\/.*$/,""); $("tunnelhost").textContent=d?(d.startsWith("udriver.")?d:"udriver."+d):"udriver.your-domain"; };
-            const showPath=()=>{ const p=field().value.trim().replace(/\/+$/,""), v=$("pathview"); v.title=p;
+            const showPath=()=>{ const p=field().value.trim().replace(/[\/\\]+$/,""), v=$("pathview"); v.title=p;
               if(!p){ v.replaceChildren(el("span","ph","No folder chosen")); return; }
-              const i=p.lastIndexOf("/"); v.replaceChildren(el("span","h",p.slice(0,i+1)),el("span","t",p.slice(i+1))); };
+              const i=Math.max(p.lastIndexOf("/"),p.lastIndexOf("\\")); v.replaceChildren(el("span","h",p.slice(0,i+1)),el("span","t",p.slice(i+1))); };
             const manual=()=>{ $("manual").hidden=false; $("typepath").hidden=true; field().focus(); };
             const showMode=()=>{ const b=isBuild();
               $("kindh").textContent=b?"Game build":"Unity project";
-              $("kindhelp").textContent=b?"A Development Build that already includes UDriver: the .app on macOS, or the folder with the .exe on Windows. Nothing is copied into it; Claude is allowed to start it."
+              $("kindhelp").textContent=b?"A Development Build that already includes UDriver: the .exe (or its folder) on Windows, the .app on macOS, the game file on Linux. Nothing is copied into it; Claude is allowed to start it."
                 :"The folder that contains Assets and Packages. The driver is copied into its Packages folder.";
               document.querySelectorAll("[data-kind]").forEach(e=>{ e.hidden=e.dataset.kind!==(b?"build":"project"); });
               $("pickmsg").hidden=true; showPath(); };

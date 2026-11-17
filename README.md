@@ -47,7 +47,7 @@ flowchart LR
 |---|---|
 | `com.udriver.agent/` | Unity package. Runs a small HTTP endpoint on `127.0.0.1` inside the game or editor. |
 | `UDriver.Mcp/` | MCP server. Speaks MCP to the agent and routes calls to the game or the editor. |
-| `UDriver.command` | macOS one-click launcher with a web control panel and optional remote access. |
+| `UDriver.command` / `UDriver.cmd` | One-click launcher for macOS / Windows: sets everything up, with a web control panel and optional remote access. |
 | `setup-local.sh` / `setup-local.cmd` | Local setup for an agent running on the same machine. |
 
 ## Features
@@ -66,10 +66,16 @@ flowchart LR
 ### Requirements
 
 - Unity **6000.0** or newer
-- .NET **8** SDK (the macOS launcher installs it for you)
+- .NET **8** SDK (the launchers install it for you)
 - An MCP client (for example Claude, Claude Code, or any other MCP-capable agent)
 
 ### Option A — agent on the same computer
+
+**Windows, Claude Code:** double-click `UDriver.cmd` and type **1**. It installs .NET if needed, builds the server and
+adds it to Claude Code. When asked, drag your Unity project folder into the window (the package is copied into its
+`Packages` folder), or the game's `.exe` for a game build only. Then open Unity and ask Claude to run `self_test`.
+
+**Any system, any agent:**
 
 1. Copy `com.udriver.agent` into your Unity project's `Packages/` folder.
 2. Build the server and get a ready-to-paste config:
@@ -78,7 +84,8 @@ flowchart LR
    sh setup-local.sh
    ```
 
-   On Windows run `setup-local.cmd`.
+   On Windows double-click `setup-local.cmd`. It also writes `run-server.cmd` and prints an `ssh` command, so Claude Code on
+   another computer can use this one over SSH.
 3. Add the printed command or JSON block to your MCP client. For Claude Code it looks like:
 
    ```bash
@@ -87,18 +94,19 @@ flowchart LR
 
 4. Open the project in Unity and ask the agent to run `self_test` once — it reports which capabilities work in your project.
 
-### Option B — macOS launcher with remote access
+### Option B — launcher with remote access (macOS, Windows)
 
-1. Put the `udriver` folder somewhere permanent, for example `~/Documents`.
-2. Double-click `UDriver.command`. If macOS blocks it, right-click it and choose **Open**.
-3. A setup page opens in your browser. Enter your Cloudflare domain, pick your Unity project folder (or choose **Game build** and pick the `.app`) and click **Install**.
+1. Put the `udriver` folder somewhere permanent, for example `Documents`.
+2. macOS: double-click `UDriver.command`. If macOS blocks it, right-click it and choose **Open**.
+   Windows: double-click `UDriver.cmd` and type **2**. If Windows warns about the file, choose **More info → Run anyway**.
+3. A setup page opens in your browser. Enter your Cloudflare domain, pick your Unity project folder (or choose **Game build** and pick the `.app` on macOS or the `.exe` on Windows) and click **Install**.
 4. The page turns into the control panel, which shows the connector address and the owner password.
 5. In your MCP client add a custom connector with that address and sign in with the owner password.
    Works with Claude (claude.ai, Claude Desktop) and Gemini (Settings → Connectors → Custom; leave Client ID and
    Client secret empty). For another web client, add its sign-in hosts to `UDRIVER_OAUTH_REDIRECT_HOSTS` in
-   `~/.udriver/remote.env`, separated by commas.
+   `~/.udriver/remote.env`, separated by commas. On Windows `~/.udriver` means `%USERPROFILE%\.udriver`.
 
-The launcher installs missing tools (.NET and `cloudflared`) into `~/.udriver`, builds the server,
+The launcher installs missing tools into `~/.udriver` (.NET and `cloudflared`; on Windows `cloudflared` is installed with `winget`), builds the server,
 creates a Cloudflare tunnel and copies the package into your Unity project. Nothing is added to
 autostart and no background services are installed: the server runs only while the launcher window is open.
 
@@ -118,8 +126,9 @@ in the editor and in development builds; a release build stays silent unless it 
 `<Name>_Data/Managed` (Windows/Linux). IL2CPP builds have no DLLs there; they work too.
 
 **Steps.**
-1. Same computer: `sh setup-local.sh /path/to/MyGame.app` (Windows: `setup-local.cmd "C:\Games\MyGame"`). The build is
-   added to `UDRIVER_BUILDS_DIR`; add the printed config to your agent. Remote access: in the setup page choose **Game build**.
+1. Same computer: `sh setup-local.sh /path/to/MyGame.app` (Windows: `setup-local.cmd "C:\Games\MyGame"`, the folder or the
+   `.exe`, or `UDriver.cmd` option 1). The build is added to `UDRIVER_BUILDS_DIR`; add the printed config to your agent.
+   Remote access: in the setup page choose **Game build**.
 2. Ask the agent to start the game with `app_launch`, or start it yourself and ask for `app_connect`. `app_connect` finds a
    running game by itself, also when it was started on another port with `-udriver-port`. In the control panel, **Launch**
    starts the configured build.
@@ -232,7 +241,7 @@ Mono only. Everything else works without Harmony.
 - IL2CPP: everything works except `trace_add`; disable code stripping for reflection.
 - `method=input` affects UI only while the game window is focused — Unity ignores device input in the background. `method=event` works in the background.
 - World-space UI Toolkit panels: element coordinates are unreliable.
-- Windows and Linux: the local (stdio) mode compiles and is reviewed for these platforms, but end-to-end testing so far was on macOS. The launcher, web panel and remote mode are macOS-only. Reports are welcome.
+- Windows: `setup-local.cmd` has been run on a real PC; `UDriver.cmd` and remote mode on Windows are reviewed but not yet tested end to end. Linux: use `setup-local.sh` or `sh UDriver.command`; tested less than macOS. Reports are welcome.
 - While the editor builds or reloads scripts it does not respond; the server waits up to 25 seconds.
 
 ## Uninstall
@@ -242,6 +251,9 @@ sh uninstall.sh
 ```
 
 It stops UDriver and prints the commands to remove settings, the Cloudflare tunnel and the Unity package.
+
+On Windows: close the UDriver window, run `claude mcp remove udriver -s user` (if you used option 1), delete the folder
+`%USERPROFILE%\.udriver`, and remove the tunnel with `cloudflared tunnel delete udriver` if you used remote access.
 
 ## License
 

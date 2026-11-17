@@ -154,7 +154,7 @@ namespace UDriver
                 P("names", "array", "Full test names to run."), P("groups", "array", "Regex groups (e.g. namespace or fixture names)."), P("categories", "array", "NUnit categories."), P("assemblies", "array", "Test assembly names."),
                 P("onlyFailed", "boolean", "For results: only failed tests (default true)."), P("limit", "integer", "For results: max tests listed (default 30).")),
             T("editor_build", "Build a player from the editor (Development Build by default so the driver is active). The editor is blocked while building; poll with action=status.",
-                P("action", "string", "build | status.", true), P("path", "string", "Output path, e.g. Builds/QA/Game.exe."), P("development", "boolean", "Default true."), P("scenes", "array", "Scene paths (default: enabled scenes from Build Settings).")),
+                P("action", "string", "build | status.", true), P("path", "string", "Absolute output path inside an approved build folder: Game.exe on Windows, Game.app on macOS, Game.x86_64 on Linux, e.g. C:/Builds/QA/Game.exe."), P("development", "boolean", "Default true."), P("scenes", "array", "Scene paths (default: enabled scenes from Build Settings).")),
             T("editor_scene", "Scenes in the editor: list (open scenes + Build Settings), open a scene by asset path, or save open scenes.",
                 P("action", "string", "list | open | save.", true), P("path", "string", "Scene asset path for open.")),
             T("editor_assets", "Search project assets (AssetDatabase.FindAssets syntax, e.g. 't:VisualTreeAsset order', 't:Scene', 't:Script Trade').",
