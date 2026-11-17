@@ -32,7 +32,8 @@ internal static partial class HttpMode
     {
         "claude.ai", "claude.com",
         // Gemini: the app page, its per-user OAuth callback, and the Gemini Enterprise callback.
-        "gemini.google.com", "oauth-redirect.googleusercontent.com", "vertexaisearch.cloud.google.com",
+        "gemini.google.com", "oauth-redirect.googleusercontent.com", "oauth-redirect-sandbox.googleusercontent.com",
+        "oauth-redirect-test.googleusercontent.com", "vertexaisearch.cloud.google.com",
     };
     static int _port;
 
@@ -227,7 +228,7 @@ internal static partial class HttpMode
                 ["issuer"] = _public, ["authorization_endpoint"] = _public + "/authorize", ["token_endpoint"] = _public + "/token",
                 ["registration_endpoint"] = _public + "/register", ["response_types_supported"] = new JsonArray("code"),
                 ["grant_types_supported"] = new JsonArray("authorization_code", "refresh_token"), ["code_challenge_methods_supported"] = new JsonArray("S256"),
-                ["token_endpoint_auth_methods_supported"] = new JsonArray("none"),
+                ["token_endpoint_auth_methods_supported"] = new JsonArray("none", "client_secret_post", "client_secret_basic"),
             });
         }
         else if (path == "/register" && verb == "POST") await Register(ctx);
@@ -304,8 +305,10 @@ internal static partial class HttpMode
         JsonObject? req;
         using (var rd = new StreamReader(ctx.Request.Body, Encoding.UTF8))
             try { req = JsonNode.Parse(await rd.ReadToEndAsync()) as JsonObject; } catch { req = null; }
-        var uris = (req?["redirect_uris"] as JsonArray)?.Select(x => x?.ToString() ?? "").ToList() ?? new List<string>();
-        if (uris.Count == 0 || uris.Count > 10 || !uris.All(RedirectAllowed))
+        var all = (req?["redirect_uris"] as JsonArray)?.Select(x => x?.ToString() ?? "").ToList() ?? new List<string>();
+        // Gemini sends its production callbacks together with Google's sandbox/test ones: keep the allowed URIs, drop the rest.
+        var uris = all.Where(RedirectAllowed).ToList();
+        if (uris.Count == 0 || all.Count > 10)
         { await OAuthError(ctx, 400, "invalid_redirect_uri", "redirect URIs must point to " + string.Join(", ", RedirectHosts) + " or to localhost"); return; }
         string id = "c_" + Rand(16), name = ((string?)req?["client_name"] ?? "MCP client");
         if (name.Length > 80) name = name.Substring(0, 80);
@@ -326,11 +329,16 @@ internal static partial class HttpMode
             }
         }
         if (id.Length == 0) { await OAuthError(ctx, 429, "too_many_requests", "too many app registrations, try again in a few minutes"); return; }
-        await Json(ctx, 201, new JsonObject
+        // A client that asks for a secret (Gemini asks for client_secret_post) gets one, but it is never checked: PKCE and the owner password protect sign-in.
+        string method = (string?)req?["token_endpoint_auth_method"] ?? "none";
+        if (method != "client_secret_post" && method != "client_secret_basic") method = "none";
+        var reply = new JsonObject
         {
             ["client_id"] = id, ["client_name"] = name, ["redirect_uris"] = new JsonArray(uris.Select(u => (JsonNode)u!).ToArray()),
-            ["token_endpoint_auth_method"] = "none", ["grant_types"] = new JsonArray("authorization_code", "refresh_token"), ["response_types"] = new JsonArray("code"),
-        });
+            ["token_endpoint_auth_method"] = method, ["grant_types"] = new JsonArray("authorization_code", "refresh_token"), ["response_types"] = new JsonArray("code"),
+        };
+        if (method != "none") { reply["client_secret"] = Rand(24); reply["client_secret_expires_at"] = 0; }
+        await Json(ctx, 201, reply);
     }
 
     static string Page(Dictionary<string, string> p, string clientName, string redirectHost, string? error)
