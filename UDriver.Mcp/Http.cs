@@ -317,15 +317,16 @@ internal static partial class HttpMode
         var hidden = new StringBuilder();
         foreach (var k in new[] { "response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method", "state", "scope", "resource" })
             if (p.TryGetValue(k, out var v)) hidden.Append($"<input type=\"hidden\" name=\"{k}\" value=\"{H(v)}\">");
-        return "<!doctype html><html lang=\"ru\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>UDriver</title>" +
-               "<style>body{font-family:system-ui,sans-serif;background:#16181c;color:#e8e8e8;display:flex;justify-content:center;padding:48px 16px}main{max-width:420px;width:100%}" +
-               "input[type=password]{width:100%;padding:12px;font-size:16px;border-radius:8px;border:1px solid #555;background:#22252b;color:#fff;box-sizing:border-box}" +
-               "button{margin-top:16px;width:100%;padding:12px;font-size:16px;border-radius:8px;border:0;background:#d97757;color:#fff}.e{color:#ff8a80}.m{color:#9aa0a6;font-size:14px}</style></head><body><main>" +
-               "<h2>Access to UDriver</h2>" +
-               $"<p>The app “{H(clientName)}” is asking to control Unity on this computer.</p><p class=\"m\">After you sign in, it will be redirected to: {H(redirectHost)}</p>" +
-               (error != null ? $"<p class=\"e\">{H(error)}</p>" : "") +
-               $"<form method=\"post\" action=\"/authorize\">{hidden}<label>Owner password<br><br><input type=\"password\" name=\"password\" autofocus autocomplete=\"current-password\"></label>" +
-               "<button type=\"submit\">Allow</button></form><p class=\"m\">If you did not start this connection yourself, close this page.</p></main></body></html>";
+        return Shell($"""
+            <main class="narrow">
+            <header class="hero">{Icon}<h1 class="title">Allow access?</h1><p class="subtitle">The app “{H(clientName)}” wants to control Unity on this computer.</p></header>
+            <form method="post" action="/authorize">{hidden}<section>
+            <div class="group pad"><label class="sr" for="password">Owner password</label><input class="field" type="password" id="password" name="password" placeholder="Owner password" autofocus autocomplete="current-password"></div>
+            {(error != null ? $"<p class=\"foot err\" role=\"alert\">{H(error)}</p>" : "")}
+            </section><div class="actions"><button class="btn primary" type="submit">Allow</button></div></form>
+            <p class="foot center">After you allow, you'll be sent back to {H(redirectHost)}.<br>If you didn't start this connection yourself, close this page.</p>
+            </main>
+            """, "Allow access · UDriver");
     }
 
     static async Task Authorize(HttpContext ctx)
