@@ -5,7 +5,7 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http;
 
-/// <summary>Remote access: the Cloudflare tunnel run by this server, and one-time codes for remote agents. Changed only from the panel.</summary>
+/// <summary>Remote access: the Cloudflare tunnel run by this server, and one-time codes for remote agents and devices. Changed only from the panel.</summary>
 internal static partial class HttpMode
 {
     // Our own Cloudflare sign-in lives in ~/.udriver/cloudflare (cloudflared runs with HOME there); a sign-in made outside UDriver is used but never removed.
@@ -298,7 +298,7 @@ internal static partial class HttpMode
             ["signedIn"] = Cert != null, ["ownSignIn"] = File.Exists(OwnCert), ["saved"] = saved,
             ["host"] = host, ["domain"] = host.Contains('.') ? host[(host.IndexOf('.') + 1)..] : "", ["address"] = host.Length > 0 ? "https://" + host + "/mcp" : "",
             ["onlineSec"] = since == default ? null : (int)(DateTime.UtcNow - since).TotalSeconds,
-            ["loginUrl"] = _loginUrl, ["passwordSet"] = _password.Length > 0,
+            ["loginUrl"] = _loginUrl,
         };
     }
 
@@ -313,7 +313,7 @@ internal static partial class HttpMode
         {
             case "/panel/api/remote/code":
                 if (_public.Length == 0) error = "Turn on remote access first.";
-                else reply = new JsonObject { ["ok"] = true, ["code"] = NewCode(), ["address"] = _public + "/mcp", ["expiresSec"] = 600 };
+                else reply = new JsonObject { ["ok"] = true, ["code"] = NewCode(), ["address"] = _public + "/mcp", ["panel"] = _public + "/panel", ["expiresSec"] = 600 };
                 break;
             case "/panel/api/remote/off":
                 TurnOff(true); reply = ok;
@@ -337,13 +337,10 @@ internal static partial class HttpMode
                 else reply = new JsonObject { ["ok"] = true, ["note"] = SignOut() };
                 break;
             case "/panel/api/remote/on" when local:
-                string host = form.GetValueOrDefault("host", "").Trim().ToLowerInvariant(), pass = form.GetValueOrDefault("password", "");
+                string host = form.GetValueOrDefault("host", "").Trim().ToLowerInvariant();
                 error = host.Length > 0 ? HostError(host) : File.Exists(TunnelYml) && Host().Length > 0 ? null : "Choose the address first.";
-                if (error == null && pass.Length > 0 && pass.Length < 12) error = "The panel password must be at least 12 characters long.";
-                if (error == null && pass.Length == 0 && _password.Length == 0) error = "Set a panel password of at least 12 characters.";
                 if (error == null && CfExe() == null) error = "Install cloudflared first.";
                 if (error != null) break;
-                if (pass.Length > 0) SetPassword(pass);
                 error = Busy("setting-up", () => TurnOn(host.Length > 0 ? host : null)) ? null : busy;
                 break;
             default:

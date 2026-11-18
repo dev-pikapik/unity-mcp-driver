@@ -1,7 +1,8 @@
 #!/bin/sh
 # Stops the UDriver panel and removes UDriver from this computer. Leaves the Cloudflare tunnel and the packages in Unity projects in place.
 U="$HOME/.udriver"
-PORT="${UDRIVER_HTTP_PORT:-8787}"
+PORT="${UDRIVER_HTTP_PORT:-$(sed -n 's/^UDRIVER_HTTP_PORT="\{0,1\}\([0-9]*\)"\{0,1\}$/\1/p' "$U/remote.env" 2>/dev/null | head -n 1)}"
+PORT="${PORT:-8787}"
 
 # Startup item of older versions.
 command -v launchctl >/dev/null 2>&1 && launchctl bootout "gui/$(id -u)/org.udriver.remote" 2>/dev/null
@@ -34,7 +35,7 @@ fi
 
 if [ -d "$U" ]; then
   echo
-  echo "$U holds your UDriver settings, the panel password, the remote access setup and the built server."
+  echo "$U holds your UDriver settings, the remote access setup and the built server."
   printf 'Delete it? This cannot be undone. Type yes to delete: '
   read -r A
   if [ "$A" = yes ]; then rm -rf "$U" && echo "Deleted."; else echo "Kept."; fi

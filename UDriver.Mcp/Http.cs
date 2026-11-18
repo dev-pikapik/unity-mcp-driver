@@ -25,7 +25,7 @@ internal static partial class HttpMode
     static readonly object Gate = new();
     static readonly Dictionary<string, Code> Codes = new();
     static Store _store = new();
-    static string _public = "", _password = "", _urlSecret = "", _storeFile = "";
+    static string _public = "", _urlSecret = "", _storeFile = "";
     static readonly List<string> RedirectHosts = new()
     {
         "claude.ai", "claude.com",
@@ -41,7 +41,7 @@ internal static partial class HttpMode
     };
     static int _port;
 
-    // Wrong passwords and codes are counted per address and in total; over the limit the answer is 429 before any hashing.
+    // Wrong codes are counted per address and in total; over the limit the answer is 429 before any hashing.
     static readonly Dictionary<string, (int Fails, DateTime Seen)> Failures = new();
     static int _globalFails; static DateTime _globalWindowStart;
     static readonly SemaphoreSlim Checking = new(1, 1);
@@ -50,7 +50,6 @@ internal static partial class HttpMode
     const string CheckBusy = "Another sign-in is being checked. Try again in a moment.";
     static readonly Dictionary<string, Program.Session> Agents = new();
     static readonly Dictionary<string, (DateTime Until, string Client, JsonObject Reply)> Rotated = new();   // sha256(old refresh token) -> its replacement
-    const string Pbkdf = "pbkdf2-sha256:";
     static readonly Queue<(DateTime At, string Ip)> Registrations = new();
 
     static string Env(string k) => Environment.GetEnvironmentVariable(k) ?? "";
@@ -58,57 +57,22 @@ internal static partial class HttpMode
     static string Hash(string s) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(s)));
     static bool Same(string a, string b) => CryptographicOperations.FixedTimeEquals(SHA256.HashData(Encoding.UTF8.GetBytes(a)), SHA256.HashData(Encoding.UTF8.GetBytes(b)));
 
-    static string HashPassword(string password)
-    {
-        const int iterations = 600000;
-        byte[] salt = RandomNumberGenerator.GetBytes(16);
-        byte[] hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, iterations, HashAlgorithmName.SHA256, 32);
-        return $"{Pbkdf}{iterations}:{Convert.ToBase64String(salt)}:{Convert.ToBase64String(hash)}";
-    }
-
-    static bool PasswordOk(string given, string stored)
-    {
-        if (!stored.StartsWith(Pbkdf)) return stored.Length > 0 && Same(given, stored);
-        var p = stored[Pbkdf.Length..].Split(':');
-        try
-        {
-            byte[] want = Convert.FromBase64String(p[2]);
-            return p.Length == 3 && int.TryParse(p[0], out int n) && n is >= 10000 and <= 10000000
-                   && CryptographicOperations.FixedTimeEquals(Rfc2898DeriveBytes.Pbkdf2(given, Convert.FromBase64String(p[1]), n, HashAlgorithmName.SHA256, want.Length), want);
-        }
-        catch { return false; }
-    }
-
-    /// <summary>Stores the owner password as a PBKDF2 hash only; a plain one left in remote.env is replaced.</summary>
-    static void SetPassword(string plain)
-    {
-        _password = HashPassword(plain);
-        SetSetting("UDRIVER_OWNER_PASSWORD", _password);
-    }
-
     public static async Task Run(int port)
     {
         _public = Env("UDRIVER_PUBLIC_URL").TrimEnd('/');
-        _password = Env("UDRIVER_OWNER_PASSWORD") is { Length: > 0 } envPass ? envPass : GetSetting("UDRIVER_OWNER_PASSWORD") ?? "";
-        if (_password.Length >= 12 && !_password.StartsWith(Pbkdf))
-        {
-            string plain = _password;
-            _password = HashPassword(plain);
-            try { if (GetSetting("UDRIVER_OWNER_PASSWORD") == plain) SetSetting("UDRIVER_OWNER_PASSWORD", _password); }
-            catch (Exception e) { Console.Error.WriteLine("UDriver: could not replace the plain password in " + EnvFile + ": " + e.Message); }
-        }
+        try { if (GetSetting("UDRIVER_OWNER_PASSWORD") != null) SetSetting("UDRIVER_OWNER_PASSWORD", null); }
+        catch (Exception e) { Console.Error.WriteLine("UDriver: could not remove the old password from " + EnvFile + ": " + e.Message); }
         Program.Solo.Label = "owner (panel)";
         _urlSecret = Env("UDRIVER_URL_SECRET");
         bool secretMode = Env("UDRIVER_AUTH") == "secret-url";
         _panel = Env("UDRIVER_PANEL") == "1";
         _port = port;
         if (_panel) _public = RemoteSaved() ? (GetSetting("UDRIVER_PUBLIC_URL") ?? "").TrimEnd('/') : "";
-        bool configured = _password.Length >= 12 && _public.StartsWith("http");
-        if (secretMode ? _urlSecret.Length < 32 : !_panel && !configured)
+        if (secretMode ? _urlSecret.Length < 32 : !_panel)
         {
             Console.Error.WriteLine(secretMode
                 ? "UDRIVER_URL_SECRET must be at least 32 characters."
-                : "HTTP mode needs UDRIVER_PUBLIC_URL (the public https address) and UDRIVER_OWNER_PASSWORD (at least 12 characters).");
+                : "HTTP mode needs UDRIVER_PANEL=1 (agents sign in with one-time codes from the panel) or UDRIVER_AUTH=secret-url.");
             Environment.Exit(2);
         }
         foreach (var h in Env("UDRIVER_OAUTH_REDIRECT_HOSTS").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) RedirectHosts.Add(h);
@@ -136,7 +100,8 @@ internal static partial class HttpMode
         if (_panel)
         {
             StartPanel();
-            Console.Error.WriteLine($"UDriver IS RUNNING. Panel: http://127.0.0.1:{port}/panel" + (_public.Length > 0 ? $"  and  {_public}/panel" : "") + "\nTo stop: use the button in the panel or close this window.");
+            Console.Error.WriteLine($"UDriver is running. Its panel opens in your browser: http://127.0.0.1:{port}/panel" + (_public.Length > 0 ? $"\nFrom another device: {_public}/panel" : "")
+                + "\n\nKeep this window open. Closing it stops UDriver.");
         }
         else Console.Error.WriteLine($"UDriver MCP (HTTP) on http://127.0.0.1:{port}  auth: {(secretMode ? "secret URL" : "OAuth")}  public: {_public}");
         await app.RunAsync();
@@ -179,8 +144,6 @@ internal static partial class HttpMode
     }
 
     static int StatusOf(string? error) => error is TooMany or CheckBusy ? 429 : 200;
-
-    static Task<string?> CheckPassword(HttpContext ctx, string given) => Slow(ctx, () => PasswordOk(given, _password), "Wrong password.");
 
     /// <summary>Runs one check at a time; refuses without running it once this address or everyone together failed too often.</summary>
     static async Task<string?> Slow(HttpContext ctx, Func<bool> check, string error)
@@ -419,7 +382,7 @@ internal static partial class HttpMode
             }
         }
         if (id.Length == 0) { await OAuthError(ctx, 429, "too_many_requests", "too many app registrations, try again in a few minutes"); return; }
-        // A requested client secret is issued but never checked: PKCE and the owner password protect sign-in.
+        // A requested client secret is issued but never checked: PKCE and the one-time code protect sign-in.
         string method = (string?)req?["token_endpoint_auth_method"] ?? "none";
         if (method != "client_secret_post" && method != "client_secret_basic") method = "none";
         var reply = new JsonObject
@@ -431,8 +394,7 @@ internal static partial class HttpMode
         await Json(ctx, 201, reply);
     }
 
-    const string CodeField = """<label class="sr" for="otc">One-time code</label><input class="field mono" type="text" id="otc" name="otc" placeholder="One-time code" autofocus autocomplete="one-time-code" autocapitalize="characters" spellcheck="false">""";
-    const string PasswordField = """<label class="sr" for="password">Owner password</label><input class="field" type="password" id="password" name="password" placeholder="Owner password" autofocus autocomplete="current-password">""";
+    const string CodeField = """<input class="otc" type="text" id="otc" name="otc" placeholder="XXXX-XXXX" aria-label="One-time code" autofocus inputmode="text" autocomplete="one-time-code" autocapitalize="characters" autocorrect="off" spellcheck="false" enterkeyhint="go" required>""";
 
     static string Page(Dictionary<string, string> p, string clientName, string redirect, string? error)
     {
@@ -441,12 +403,13 @@ internal static partial class HttpMode
         foreach (var k in new[] { "response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method", "state", "scope", "resource" })
             if (p.TryGetValue(k, out var v)) hidden.Append($"<input type=\"hidden\" name=\"{k}\" value=\"{H(v)}\">");
         return Shell($"""
-            <main class="narrow">
-            <header class="hero">{Icon}<h1 class="title">Allow access?</h1><p class="subtitle">The app “{H(clientName)}” wants to use your Unity games on this computer.{(_panel ? " Paste the one-time code from the UDriver panel." : "")}</p></header>
-            <form method="post" action="/authorize">{hidden}<section>
-            <div class="group pad">{(_panel ? CodeField : PasswordField)}</div>
+            <main>
+            <header class="hero">{Icon}<h1 class="title">Allow access?</h1><p class="subtitle">The app “{H(clientName)}” wants to use your Unity games on this computer.</p></header>
+            <form method="post" action="/authorize" class="stack">{hidden}<section>
+            <div class="group">{CodeField}</div>
             {(error != null ? $"<p class=\"foot err\" role=\"alert\">{H(error)}</p>" : "")}
-            </section><div class="actions"><button class="btn primary" type="submit">Allow</button></div></form>
+            <p class="foot">Paste the one-time code from the UDriver panel.</p>
+            </section><button class="btn primary" type="submit">Allow</button></form>
             <p class="foot center">After you allow, you'll be sent back to {H(redirect)}<br>If you didn't start this connection yourself, close this page.</p>
             </main>
             """, "Allow access · UDriver");
@@ -469,9 +432,7 @@ internal static partial class HttpMode
 
         if (ctx.Request.Method == "GET") { await Html(ctx, Page(p, client.Name, redirect, null)); return; }
 
-        string? err = _panel
-            ? await Slow(ctx, () => TakeCode(p.GetValueOrDefault("otc", "")), "This code is wrong, already used or expired. Get a new code in the UDriver panel.")
-            : await CheckPassword(ctx, p.GetValueOrDefault("password", ""));
+        string? err = await Slow(ctx, () => TakeCode(p.GetValueOrDefault("otc", "")), WrongCode);
         if (err != null) { await Html(ctx, Page(p, client.Name, redirect, err), StatusOf(err)); return; }
 
         string code = Rand();
@@ -484,9 +445,9 @@ internal static partial class HttpMode
         string target = redirect + sep + "code=" + Uri.EscapeDataString(code) + (p.TryGetValue("state", out var st) ? "&state=" + Uri.EscapeDataString(st) : "");
         // Not a 302: the page's form-action would apply to every redirect hop.
         await Html(ctx, Shell($"""
-            <main class="narrow">
+            <main>
             <header class="hero">{Icon}<h1 class="title">Access allowed</h1><p class="subtitle">Taking you back to {WebUtility.HtmlEncode(host)}…</p></header>
-            <div class="actions"><a class="btn primary" id="go" href="{WebUtility.HtmlEncode(target)}">Continue</a></div>
+            <a class="btn primary" id="go" href="{WebUtility.HtmlEncode(target)}">Continue</a>
             <p class="foot center">If nothing happens in a few seconds, press Continue.</p>
             </main>
             <script>location.replace(document.getElementById("go").href)</script>

@@ -1,4 +1,4 @@
-# UDriver launcher for Windows, started by UDriver.cmd.
+# UDriver launcher for Windows, started by UDriver.cmd. Setup in the terminal: UDriver.cmd setup
 $Dir = $PSScriptRoot
 $U = Join-Path $env:USERPROFILE '.udriver'
 # Settings kept in remote.env by earlier versions; read as literal text, a variable already set wins.
@@ -15,7 +15,7 @@ $Panel = "http://127.0.0.1:$Port/panel"
 $ProgressPreference = 'SilentlyContinue'
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
 $env:DOTNET_NOLOGO = '1'
-# UDriver.cmd pauses after this script ends, so messages stay readable.
+# UDriver.cmd pauses when this script fails, so the message stays readable.
 function Fail($msg) { Write-Host "`n$msg`n"; exit 1 }
 
 New-Item -ItemType Directory -Force -Path "$U\logs" | Out-Null
@@ -24,14 +24,7 @@ $Me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 icacls $U /inheritance:r /grant:r "*${Me}:(OI)(CI)F" /q | Out-Null
 if ($LASTEXITCODE) { Fail "Could not restrict access to $U" }
 
-Write-Host 'UDriver'
-Write-Host ''
-Write-Host '  1  Set up in the browser (recommended)'
-Write-Host '  2  Set up here in this window'
-Write-Host ''
-$Mode = (Read-Host 'Type 1 or 2 and press Enter [1]').Trim()
-if (-not $Mode) { $Mode = '1' }
-if ($Mode -ne '1' -and $Mode -ne '2') { Fail 'Please type 1 or 2. Start UDriver again to retry.' }
+$Mode = if ($args[0] -eq 'setup') { '2' } else { '1' }
 
 if ($Mode -eq '1') {
     # The panel key goes only to our own server (the process on the port is the one in panel.pid), and only in a request body.
@@ -68,8 +61,9 @@ $Dotnet = Find-Dotnet
 if (-not $Dotnet) {
     Write-Host ''
     Write-Host 'UDriver needs the .NET 8 SDK, a free program from Microsoft.'
-    if ((Get-Command winget -ErrorAction SilentlyContinue) -and (Read-Host 'Install it now with winget? Windows may ask for permission. [Y/n]') -notmatch '^[nN]') {
-        winget install --id Microsoft.DotNet.SDK.8 -e --accept-source-agreements --accept-package-agreements
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        Write-Host 'Installing it now. If Windows asks whether to allow changes, choose Yes.'
+        winget install --id Microsoft.DotNet.SDK.8 -e --silent --disable-interactivity --accept-source-agreements --accept-package-agreements
         $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
         $Dotnet = Find-Dotnet
     }
@@ -98,11 +92,12 @@ if (-not (Test-Path -LiteralPath $Dll) -or $Built -ne $Hash) {
 $env:UDRIVER_DIST = "$U\package"
 if ($Mode -eq '2') {
     & $Dotnet $Dll setup
-    exit 0
+    exit $LASTEXITCODE
 }
 
 Write-Host ''
 $env:UDRIVER_HTTP_PORT = $Port; $env:UDRIVER_PANEL = '1'; $env:UDRIVER_OPEN_PANEL = '1'
 & $Dotnet $Dll
+if ($LASTEXITCODE) { Fail 'UDriver stopped because of an error. The message above says why.' }
 Write-Host ''
 Write-Host 'UDriver stopped. You can close this window.'

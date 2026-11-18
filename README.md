@@ -19,15 +19,18 @@ It works with UI Toolkit and uGUI, in Play Mode, Edit Mode and game builds.
 
 ## Install
 
-You need Unity 6000.0 or newer. UDriver also needs the free .NET 8 SDK from Microsoft; the launcher offers to install it.
+You need Unity 6000.0 or newer. UDriver also needs the free .NET 8 SDK from Microsoft; if it is missing, the launcher
+installs it (with Homebrew on a Mac, with winget on Windows) or opens Microsoft's download page.
 
 1. Put the `udriver` folder somewhere it can stay, for example in Documents.
 2. Start the launcher. On a Mac, double-click `UDriver.command` (if macOS blocks it, right-click it and choose **Open**).
    On Windows, double-click `UDriver.cmd` (if Windows warns you, choose **More info**, then **Run anyway**).
    On Linux, run `sh UDriver.command`.
-3. Choose how to set up:
-   - **In the browser.** The UDriver panel opens. Answer three questions there. You don't type anything in the terminal.
-   - **In the terminal.** The same three questions, answered in the launcher window.
+3. The UDriver panel opens in your browser. Answer three questions there. You don't type anything in the launcher
+   window: it only says that UDriver is running. Keep it open; closing it stops UDriver.
+
+To answer the same questions in a terminal instead, run `sh UDriver.command setup` on a Mac or Linux, or
+`UDriver.cmd setup` in a Windows command prompt opened in the `udriver` folder.
 
 The three questions are: which game the agent should control, what it may do, and where your agent runs. At the end
 UDriver shows the command to add to your agent's MCP settings. Then open your game or the Unity project and ask the
@@ -35,7 +38,7 @@ agent to run `self_test`: it checks what works in your project.
 
 To change your answers later, start the launcher again. The panel also shows the exact terminal command.
 
-To open the panel again while UDriver is running, start the launcher again: it opens the panel without a password. The
+To open the panel again while UDriver is running, start the launcher again: it opens the panel right away. The
 link it opens works once and only for a minute, so a copied link or browser history can't open the panel later.
 
 The panel and the server run only while the launcher window is open. Nothing is added to startup and no background
@@ -79,17 +82,23 @@ Scripting Define Symbols*.
 ## Remote access
 
 To use UDriver from another device or from a web agent, turn on **Remote access** in the panel. The panel walks you
-through it: it installs `cloudflared`, signs you in to Cloudflare, lets you pick an address on your domain and asks for
-a panel password. You need a domain in a Cloudflare account.
+through two steps: it installs `cloudflared`, signs you in to Cloudflare and lets you pick an address on your domain.
+You need a domain in a Cloudflare account.
 
-- **Adding an agent.** The panel shows an address and a one-time code. Paste the address into your agent and enter the
-  code on the sign-in page. A code works once and expires in 10 minutes.
-- **The panel password** opens the panel from another device. Agents never get it. After 10 wrong passwords or codes
-  from one address, or 50 from everyone together, sign-in pauses for 10 minutes.
-- **From another device** the panel can show your games and agents, stop games, lower access, disconnect agents, give
+Agents and devices get in with a **one-time code**. A code lets in one agent or one device, once, and expires in 10
+minutes. You get it in the panel on this computer or on a device that is already connected.
+
+- **Adding an agent.** Under Remote access, choose **Add a remote agent**. Paste the address into your agent and enter
+  the code on the sign-in page.
+- **Opening the panel on a phone, tablet or another computer.** Under Remote access, choose **Open on another
+  device**. Open the address on that device and enter the code. The device stays signed in for 30 days and is listed
+  under Connected devices, where you can disconnect it at any time.
+- After 10 wrong codes from one address, or 50 from everyone together, sign-in pauses for 10 minutes.
+- **From another device** the panel can show your games and agents, stop games, lower access, disconnect agents and devices, give
   one-time codes and restart or turn off the tunnel. Adding games, changing their folders, launching games and raising
   access work only on the computer that runs UDriver.
-- **Turning it off** closes the tunnel at once. Agents on this computer keep working.
+- **Turning it off** closes the tunnel at once. Remote agents and devices lose access; agents on this computer keep
+  working.
 
 Calls through remote access are limited to about 60 to 90 seconds, because the proxy drops longer requests. Some web
 agents sign in from an address UDriver doesn't know yet. For those, set the environment variable
@@ -107,8 +116,9 @@ The agent works only inside the games you add. UDriver doesn't give it your file
 - `state_export` and `memory_capture` write files to `~/.udriver/exports`. The folder keeps at most 2 GB and deletes
   its oldest files first. To change the limit, set the environment variable `UDRIVER_EXPORTS_MAX_MB` (in megabytes)
   before starting the launcher or the Unity editor.
-- Settings, passwords and keys are stored in `~/.udriver` (on Windows `%USERPROFILE%\.udriver`), readable only by you.
-- Remote access goes only through a Cloudflare tunnel over HTTPS, with a sign-in for each agent.
+- Settings and keys are stored in `~/.udriver` (on Windows `%USERPROFILE%\.udriver`), readable only by you.
+- Remote access goes only through a Cloudflare tunnel over HTTPS. Each agent and each device signs in with its own
+  one-time code.
 
 What UDriver can't protect against:
 
@@ -119,7 +129,7 @@ What UDriver can't protect against:
 - **Real actions are real.** If the game talks to real servers or accounts, the agent's actions reach them too. Use a
   test environment.
 - **Text on the screen.** What the game shows and logs reaches the agent and may try to steer it.
-- **Anyone with your panel password** can control UDriver from another device while remote access is on.
+- **A connected device** can control UDriver while remote access is on. Disconnect devices you no longer use.
 - For the strongest isolation, run the agent and Unity in a separate user account or a virtual machine.
 
 Found a vulnerability? Please report it privately, see [SECURITY.md](SECURITY.md).
@@ -144,9 +154,8 @@ sh uninstall.sh
 It stops the UDriver panel, lists the Unity projects you added, and asks before deleting your
 settings. Agents that use UDriver keep running; remove UDriver from their MCP settings.
 
-On Windows, close the UDriver window, remove UDriver from your agent's MCP settings, delete the folder
-`Packages\com.udriver.agent` in your Unity projects and the folder `%USERPROFILE%\.udriver`. If you used remote access,
-delete the tunnel `udriver` in the Cloudflare dashboard.
+On Windows, double-click `uninstall.cmd`. It does the same: stops UDriver, lists the Unity projects you added, tells
+you how to delete the Cloudflare tunnel, and asks before deleting `%USERPROFILE%\.udriver`.
 
 ## License
 

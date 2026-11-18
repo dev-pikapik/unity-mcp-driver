@@ -1,5 +1,5 @@
 #!/bin/sh
-# UDriver launcher. Double-click this file (or run in a terminal: sh UDriver.command).
+# UDriver launcher. Double-click this file (or run in a terminal: sh UDriver.command). Setup in the terminal: sh UDriver.command setup
 DIR="$(cd "$(dirname "$0")" && pwd)"
 U="$HOME/.udriver"
 # Settings kept in remote.env by earlier versions; read as literal text, a variable already set wins.
@@ -14,14 +14,8 @@ mkdir -p "$U/logs" && chmod 700 "$U"
 fail() { printf '\n%s\n\nPress Enter to close.\n' "$1"; read -r _; exit 1; }
 browse() { if command -v open >/dev/null 2>&1; then open "$1"; else xdg-open "$1" >/dev/null 2>&1; fi; }
 
-echo "UDriver"
-echo
-echo "  1  Set up in the browser (recommended)"
-echo "  2  Set up here in the terminal"
-echo
-printf 'Type 1 or 2 and press Enter [1]: '
-read -r MODE
-case "$MODE" in ""|1) MODE=1 ;; 2) ;; *) fail "Please type 1 or 2. Start UDriver again to retry." ;; esac
+MODE=1
+[ "$1" = setup ] && MODE=2
 
 # The panel key goes only to our own server (the process on the port is the one in panel.pid), and only in a request body.
 LISTENER="$(lsof -nP -t -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | head -n 1)"
@@ -52,9 +46,8 @@ if [ -z "$DOTNET" ]; then
   echo "UDriver needs the .NET 8 SDK, a free program from Microsoft."
   for BREW in "$(command -v brew)" /opt/homebrew/bin/brew /usr/local/bin/brew; do [ -x "$BREW" ] && break; done
   if [ "$(uname -s)" = Darwin ] && [ -x "$BREW" ]; then
-    printf 'Install it now with Homebrew? macOS will ask for your password. [Y/n] '
-    read -r A
-    case "$A" in [nN]*) ;; *) "$BREW" install --cask dotnet-sdk@8 ;; esac
+    echo "Installing it with Homebrew. If macOS asks for your password, type the one you use to log in to this Mac."
+    "$BREW" install --cask dotnet-sdk@8
     DOTNET="$(find_dotnet)"
   fi
   if [ -z "$DOTNET" ]; then
@@ -75,9 +68,7 @@ fi
 
 export UDRIVER_DIST="$U/package" DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
 if [ "$MODE" = 2 ]; then
-  "$DOTNET" "$DLL" setup
-  printf '\nPress Enter to close.\n'; read -r _
-  exit 0
+  exec "$DOTNET" "$DLL" setup
 fi
 
 echo
