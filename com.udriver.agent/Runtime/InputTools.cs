@@ -1,11 +1,14 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Reflection;
+using System.Text;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 using UnityEngine.UIElements;
 #if UDRV_INPUTSYSTEM && ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.Controls;
 using UnityEngine.InputSystem.LowLevel;
 #endif
 
@@ -21,24 +24,57 @@ namespace UDriver
 
         internal static void Register()
         {
-            Driver.Register("ui_click", Click);
-            Driver.Register("ui_hover", Hover);
-            Driver.Register("ui_drag", Drag);
-            Driver.Register("pointer", Pointer);
-            Driver.Register("ui_scroll", Scroll);
-            Driver.Register("ui_scroll_to", ScrollTo);
-            Driver.Register("ui_set_value", SetValue);
-            Driver.Register("ui_focus", Focus);
-            Driver.Register("type_text", TypeText);
-            Driver.Register("key", KeyTool);
+            Driver.Register("ui_click", Leased(Click));
+            Driver.Register("ui_hover", Leased(Hover));
+            Driver.Register("ui_drag", Leased(Drag));
+            Driver.Register("pointer", Leased(Pointer));
+            Driver.Register("ui_scroll", Leased(Scroll));
+            Driver.Register("ui_scroll_to", Leased(ScrollTo));
+            Driver.Register("ui_set_value", Leased(SetValue));
+            Driver.Register("ui_focus", Leased(Focus));
+            Driver.Register("type_text", Leased(TypeText));
+            Driver.Register("key", Leased(KeyTool));
+            Driver.Register("play", Leased(Play));
+            Driver.Register("input_actions", Driver.Sync((a, r) => Inj.Describe(r)));
         }
+
+        // ---------------- one agent at a time on the input devices ----------------
+
+        static Job _lease;
+        static float _leaseEnd;
+        const float LeaseWait = 10f;
+
+        static ToolHandler Leased(ToolHandler h) { return (a, r) => WithLease(h, a, r); }
+
+        static IEnumerator WithLease(ToolHandler h, JObject a, ToolResponse r)
+        {
+            var me = Driver.Current;
+            float t0 = Time.realtimeSinceStartup;
+            while (me != null && _lease != null && _lease != me && !_lease.Done.IsSet && _lease.Client != me.Client)
+            {
+                if (_lease.Tool == "play")
+                    throw new ToolException("input busy: " + _lease.Client + " is running play, ~" + Mathf.Max(0, Mathf.RoundToInt((_leaseEnd - Time.realtimeSinceStartup) * 1000f)) + " ms left. Try again after that.");
+                if (Time.realtimeSinceStartup - t0 > LeaseWait)
+                    throw new ToolException("input busy: " + _lease.Client + " has been using the input for over " + LeaseWait + " s (" + _lease.Tool + "). Try again in a moment.");
+                yield return null;
+            }
+            var prev = _lease;
+            _lease = me;
+            _leaseEnd = Time.realtimeSinceStartup;
+            try { yield return h(a, r); }
+            finally { if (_lease == me) _lease = prev != null && prev != me && !prev.Done.IsSet ? prev : null; }
+        }
+
+        const int MaxHoldMs = 10000;
+
+        const string NeedInputSystem = "needs the Input System: install com.unity.inputsystem and set Player Settings > Active Input Handling to Input System or Both. A game that reads only the old Input Manager cannot be driven this way.";
 
         // ---------------- primitives ----------------
 
         static string Method(JObject a, ToolResponse r)
         {
             string m = a.Str("method", "event");
-            // Verified in Unity 6 source (DefaultEventSystem.Update): on desktop, UI Toolkit drops device input while the app is unfocused.
+            // UI Toolkit drops device input while the app is unfocused.
             if (m == "input" && !Application.isFocused)
                 r.Text("WARNING: the game window is not focused. On Windows/macOS/Linux Unity's UI ignores device input in that state, so method=input may have no effect on UI. Use method=event (works unfocused) or bring the window to the front.");
             if (m == "input" && !Inj.Available)
@@ -145,7 +181,9 @@ namespace UDriver
         static void SendKey(VisualElement top, bool down, char c, KeyCode code)
         {
             if (top == null) throw new ToolException("no UI Toolkit panel to send keys to - use method=input");
-            EventBase e = down ? (EventBase)KeyDownEvent.GetPooled(c, code, _mods) : KeyUpEvent.GetPooled(c, code, _mods);
+            // Text fields match editing keys (arrows, Home/End, Page, F-keys, Backspace, Delete) only with the FunctionKey flag real keyboards set.
+            var mods = (code >= KeyCode.UpArrow && code <= KeyCode.F15) || code == KeyCode.Backspace || code == KeyCode.Delete ? _mods | EventModifiers.FunctionKey : _mods;
+            EventBase e = down ? (EventBase)KeyDownEvent.GetPooled(c, code, mods) : KeyUpEvent.GetPooled(c, code, mods);
             using (e) top.SendEvent(e);
         }
 
@@ -172,6 +210,7 @@ namespace UDriver
         {
             var p = UiTools.Prop(el.GetType(), prop);
             if (p == null || !p.CanWrite) throw new ToolException(el.GetType().Name + " has no writable public property '" + prop + "'");
+            StateTools.Guard(p, "ui_set_value");
             object v;
             // EnumField.value is typed System.Enum: take the concrete enum type from the current value.
             var target = p.PropertyType;
@@ -182,6 +221,16 @@ namespace UDriver
             p.SetValue(el, v);
             var now = p.GetValue(el);
             return now == null ? "null" : now.ToString();
+        }
+
+        /// <summary>Text fields keep a stale selection after Focus(); typed characters must land at the end.</summary>
+        static void CaretToEnd(VisualElement el)
+        {
+            if (el == null) return;
+            PropertyInfo text = UiTools.Prop(el.GetType(), "text"), cur = UiTools.Prop(el.GetType(), "cursorIndex"), sel = UiTools.Prop(el.GetType(), "selectIndex");
+            if (text == null || cur == null || sel == null || !cur.CanWrite || !sel.CanWrite) return;
+            int n = ((text.GetValue(el) as string) ?? "").Length;
+            sel.SetValue(el, n); cur.SetValue(el, n);
         }
 
         static string Snapshot(VisualElement el)
@@ -200,19 +249,20 @@ namespace UDriver
             UiTools.HookPanels();
             var t = UiTools.Resolve(a);
             string m = Method(a, r);
-            int button = Btn(a), count = Mathf.Clamp(a.Int("count", 1), 1, 3), hold = a.Int("holdMs", 0);
+            int button = Btn(a), count = Mathf.Clamp(a.Int("count", 1), 1, 3), hold = Mathf.Clamp(a.Int("holdMs", 0), 0, MaxHoldMs);
             long seq = EventStore.LastSeq;
             string warn = UiTools.Warnings(t);
             if (warn != null) r.Text(warn);
             SetMods(a);
+            bool now = m == "event" && hold == 0;
             Move(t, m, false, Vector2.zero);
-            yield return null;
+            if (!now) yield return null;
             for (int i = 1; i <= count; i++)
             {
                 Down(t, m, button, i);
-                if (hold > 0) yield return new WaitForSecondsRealtime(hold / 1000f); else yield return null;
+                if (hold > 0) yield return new WaitForSecondsRealtime(hold / 1000f); else if (!now) yield return null;
                 Up(t, m, button, i);
-                yield return null;
+                if (!now) yield return null;
             }
             _mods = EventModifiers.None;
             yield return null;
@@ -235,8 +285,8 @@ namespace UDriver
             var from = UiTools.Resolve(a);
             var to = UiTools.Resolve(a, "to_");
             string m = Method(a, r);
-            int button = Btn(a), steps = Mathf.Max(1, a.Int("steps", 12)), hold = a.Int("holdMs", 0);
-            float stepWait = a.Int("durationMs", 300) / 1000f / steps;
+            int button = Btn(a), steps = Mathf.Clamp(a.Int("steps", 12), 1, 500), hold = Mathf.Clamp(a.Int("holdMs", 0), 0, MaxHoldMs);
+            float stepWait = Mathf.Clamp(a.Int("durationMs", 300), 0, MaxHoldMs) / 1000f / steps;
             long seq = EventStore.LastSeq;
             var top = from.Top ?? to.Top;
             // The whole gesture goes to the UI system of the source; express the destination in its coordinates.
@@ -314,6 +364,18 @@ namespace UDriver
             var t = UiTools.Resolve(a);
             if (t.Go != null && !a.Has("x")) { string res = Ugui.ScrollTo(t.Go); yield return null; r.Text(res); yield break; }
             if (t.El == null) throw new ToolException("ui_scroll_to needs an element (id, name or text)");
+            if (a.Has("index"))
+            {
+                var list = t.El as BaseVerticalCollectionView ?? t.El.GetFirstAncestorOfType<BaseVerticalCollectionView>();
+                if (list == null) throw new ToolException("index needs a ListView, TreeView or MultiColumnListView (or an element inside one)");
+                int count = list.itemsSource != null ? list.itemsSource.Count : 0, i = a.Int("index");
+                if (i < 0 || i >= count) throw new ToolException("index " + i + " is outside the list (" + count + " items)");
+                list.ScrollToItem(i);
+                yield return null; yield return null;
+                var row = list.GetRootElementForIndex(i);
+                r.Text("scrolled " + UiTools.Desc(list) + " to item " + i + " of " + count + (row != null ? "; row: " + UiTools.Line(row) : "; the row is not built yet, call ui_find in a moment"));
+                yield break;
+            }
             int n = 0;
             for (var p = t.El.hierarchy.parent; p != null; p = p.hierarchy.parent)
             {
@@ -386,9 +448,20 @@ namespace UDriver
             }
             var subject = el ?? focusedNow;
             if (subject == null && m != "input") throw new ToolException("nothing is focused - pass id/name of the field to type into");
-            if (a.Bool("clear") && subject != null && UiTools.Prop(subject.GetType(), "value") != null) { SetProperty(subject, "value", new JValue("")); yield return null; }
+            var cp = a.Bool("clear") && subject != null ? UiTools.Prop(subject.GetType(), "value") : null;
+            if (cp != null)
+            {
+                // Number fields (IntegerField, FloatField...) cannot take "": select their text and delete it like a user would.
+                if (cp.PropertyType == typeof(string)) SetProperty(subject, "value", new JValue(""));
+                else if (UiTools.Prop(subject.GetType(), "textSelection")?.GetValue(subject) is ITextSelection sel) { sel.SelectAll(); SendKey(top, true, '\0', KeyCode.Backspace); }
+                else throw new ToolException("clear works on text and number fields only; use ui_set_value for " + subject.GetType().Name);
+                yield return null;
+            }
 
             string before = Snapshot(subject), how = m;
+            var vp = subject != null ? UiTools.Prop(subject.GetType(), "value") : null;
+            bool str = vp != null && vp.PropertyType == typeof(string);
+            string want = str && m == "event" && text.IndexOf('\n') < 0 ? ((string)vp.GetValue(subject) ?? "") + text : null;
             if (m == "set") SetProperty(subject, "value", new JValue((UiTools.ValueOf(subject) ?? "") + text));
             else
             {
@@ -396,13 +469,23 @@ namespace UDriver
                 {
                     char c = text[i];
                     if (m == "input") Inj.SendText(c);
-                    else if (c == '\n') { SendKey(top, true, '\0', KeyCode.Return); SendKey(top, true, '\n', KeyCode.None); }
-                    else SendKey(top, true, c, KeyCode.None);
-                    if (i % 6 == 5) yield return null;
+                    else
+                    {
+                        CaretToEnd(subject);
+                        if (c == '\n') { SendKey(top, true, '\0', KeyCode.Return); SendKey(top, true, '\n', KeyCode.None); }
+                        else SendKey(top, true, c, KeyCode.None);
+                    }
+                    // The text editor sees the inserted character only after the panel updates.
+                    if (m != "input" || i % 6 == 5) yield return null;
                 }
                 yield return null; yield return null;
-                var vp = subject != null ? UiTools.Prop(subject.GetType(), "value") : null;
-                if (subject != null && text.Length > 0 && Snapshot(subject) == before && vp != null && vp.PropertyType == typeof(string))
+                string got = want != null ? (string)vp.GetValue(subject) : null;
+                if (got != want)
+                {
+                    SetProperty(subject, "value", new JValue(want));
+                    how = m + " produced '" + Util.OneLine(got, 80) + "' -> fell back to setting the value directly (Unity's text editor lags when the panel is not redrawn, e.g. batch mode)";
+                }
+                else if (str && text.Length > 0 && Snapshot(subject) == before)
                 {
                     SetProperty(subject, "value", new JValue((UiTools.ValueOf(subject) ?? "") + text));
                     how = m + " had no effect -> fell back to setting the value directly";
@@ -425,7 +508,7 @@ namespace UDriver
             string key = a.Str("key");
             if (key == null) throw new ToolException("key is required");
             string m = Method(a, r), action = a.Str("action", "press");
-            int hold = a.Int("holdMs", 0);
+            int hold = Mathf.Clamp(a.Int("holdMs", 0), 0, MaxHoldMs);
             long seq = EventStore.LastSeq;
             if (m == "input")
             {
@@ -453,6 +536,120 @@ namespace UDriver
             Feedback(r, seq, false);
         }
 
+        // ---------------- play ----------------
+
+        sealed class Step
+        {
+            public string[] Hold, Tap, Keys;
+            public int Mouse, Ms;
+            public Vector2? Move;
+            public Vector2 Look;
+        }
+
+        static Vector2? Vec(JToken t, string name)
+        {
+            if (t == null || t.Type == JTokenType.Null) return null;
+            var arr = t as JArray;
+            if (arr == null || arr.Count != 2) throw new ToolException(name + " must be [x, y]");
+            return new Vector2(arr[0].ToObject<float>(), arr[1].ToObject<float>());
+        }
+
+        static string Read(string path)
+        {
+            try { return Util.OneLine(StateTools.Format(StateTools.Resolve(path), 0, 10, false), 200); }
+            catch (Exception e) { return "<error: " + Util.OneLine(e.Message, 120) + ">"; }
+        }
+
+        static bool Matches(string path, string eq)
+        {
+            string v;
+            try { v = StateTools.Format(StateTools.Resolve(path), 0, 10, false); } catch { return false; }
+            return eq == null || string.Equals(v.Trim('"'), eq.Trim('"'), StringComparison.OrdinalIgnoreCase);
+        }
+
+        static IEnumerator Play(JObject a, ToolResponse r)
+        {
+            if (!Inj.Available) throw new ToolException("play " + NeedInputSystem);
+            var arr = a["steps"] as JArray;
+            if (arr == null || arr.Count == 0) throw new ToolException("steps must be a non-empty array, e.g. [{\"hold\":[\"W\"],\"ms\":500}]");
+            if (arr.Count > 100) throw new ToolException("at most 100 steps per play call");
+            var observe = a.Strs("observe") ?? new string[0];
+            var stop = a["stopWhen"] as JObject;
+            string stopPath = stop != null ? stop.Str("path") : null, stopEq = stop != null ? stop.Str("equals") : null;
+            if (stop != null && stopPath == null) throw new ToolException("stopWhen needs path, e.g. {\"path\":\"/Player:Health.hp\",\"equals\":\"0\"}");
+            var steps = new List<Step>();
+            int totalMs = 0;
+            foreach (var tok in arr)
+            {
+                var o = tok as JObject ?? throw new ToolException("each step must be an object");
+                var st = new Step { Hold = o.Strs("hold") ?? new string[0], Tap = o.Strs("tap") ?? new string[0], Keys = new string[0], Ms = Mathf.Max(0, o.Int("ms", 0)), Move = Vec(o["move"], "move"), Look = Vec(o["look"], "look") ?? Vector2.zero };
+                foreach (var k in st.Hold) Inj.CheckKey(k);
+                foreach (var k in st.Tap) Inj.CheckKey(k);
+                if (o.Has("action")) Inj.ActionInput(o.Str("action"), out st.Keys, out st.Mouse);
+                totalMs += st.Ms;
+                steps.Add(st);
+            }
+            if (totalMs > 60000) throw new ToolException("steps add up to " + totalMs + " ms; at most 60000 ms per play call");
+            _leaseEnd = Time.realtimeSinceStartup + totalMs / 1000f;
+
+            long seq = EventStore.LastSeq;
+            var held = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            int mouse = 0, done = 0, f0 = Time.frameCount;
+            bool stick = false;
+            float start = Time.realtimeSinceStartup;
+            string stopped = null;
+            try
+            {
+                foreach (var st in steps)
+                {
+                    var want = new HashSet<string>(st.Hold, StringComparer.OrdinalIgnoreCase);
+                    want.UnionWith(st.Keys);
+                    want.UnionWith(st.Tap);
+                    foreach (var k in new List<string>(held)) if (!want.Contains(k)) { Inj.SendKey(k, false); held.Remove(k); }
+                    foreach (var k in want) if (!held.Contains(k) && !Inj.IsDown(k)) { held.Add(k); Inj.SendKey(k, true); }
+                    if (st.Mouse != mouse) { mouse = st.Mouse; Inj.Look(Vector2.zero, mouse | _buttons); }
+                    if (st.Move != null || stick) { Inj.Stick(st.Move ?? Vector2.zero); stick = true; }
+                    float t0 = Time.realtimeSinceStartup;
+                    int sf = Time.frameCount;
+                    var sent = Vector2.zero;
+                    bool first = true;
+                    while (true)
+                    {
+                        if (st.Look != Vector2.zero)
+                        {
+                            var target = st.Look * (st.Ms > 0 ? Mathf.Clamp01((Time.realtimeSinceStartup - t0 + Time.unscaledDeltaTime) * 1000f / st.Ms) : 1f);
+                            Inj.Look(target - sent, mouse | _buttons);
+                            sent = target;
+                        }
+                        yield return null;
+                        if (first)
+                            foreach (var k in st.Tap)
+                                if (Array.IndexOf(st.Hold, k) < 0 && Array.IndexOf(st.Keys, k) < 0 && held.Remove(k)) Inj.SendKey(k, false);
+                        first = false;
+                        if (stopPath != null && Matches(stopPath, stopEq)) stopped = "stopWhen " + stopPath + " = " + Read(stopPath);
+                        else if (Time.realtimeSinceStartup - start > 60f) stopped = "time limit 60 s";
+                        if (stopped != null || (Time.realtimeSinceStartup - t0) * 1000f >= st.Ms) break;
+                    }
+                    var line = "[" + done + "] " + Mathf.RoundToInt((Time.realtimeSinceStartup - t0) * 1000f) + "ms " + (Time.frameCount - sf) + "f";
+                    foreach (var path in observe) line += "  " + path + "=" + Read(path);
+                    r.Text(line);
+                    done++;
+                    if (stopped != null) break;
+                }
+            }
+            finally
+            {
+                foreach (var k in held) Inj.SendKey(k, false);
+                if (mouse != 0) Inj.Look(Vector2.zero, _buttons);
+                if (stick) Inj.Stick(Vector2.zero);
+            }
+            var errs = EventStore.Query(seq, new[] { "log.error", "log.exception", "log.assert" }, null, 6, false);
+            for (int i = 0; i < errs.Count && i < 5; i++) r.Text("  " + EventStore.Fmt(errs[i], false));
+            if (errs.Count > 5) r.Text("  ... more errors: events_query sinceSeq=" + seq + " categories=[\"log\"]");
+            r.Text("total: " + done + "/" + steps.Count + " steps, " + (Time.frameCount - f0) + " frames, " + Mathf.RoundToInt((Time.realtimeSinceStartup - start) * 1000f) + " ms"
+                   + (stopped != null ? ", stopped by " + stopped : ""));
+        }
+
         // ---------------- Input System injection ----------------
 
 #if UDRV_INPUTSYSTEM && ENABLE_INPUT_SYSTEM
@@ -461,21 +658,41 @@ namespace UDriver
             public static readonly bool Available = true;
             static Mouse _mouse;
             static Keyboard _keyboard;
+            static Gamepad _pad;
             static readonly HashSet<Key> Held = new HashSet<Key>();
 
             static void Ensure()
             {
-                if (_mouse != null && _mouse.added) return;
-                _mouse = InputSystem.AddDevice<Mouse>("UDriverMouse");
-                _keyboard = InputSystem.AddDevice<Keyboard>("UDriverKeyboard");
-                // Keep receiving injected input while the game window is in the background.
-                InputSystem.settings.backgroundBehavior = InputSettings.BackgroundBehavior.IgnoreFocus;
+                if (_mouse == null || !_mouse.added)
+                {
+                    // Keep receiving injected input while the game window is in the background.
+                    InputSystem.settings.backgroundBehavior = InputSettings.BackgroundBehavior.IgnoreFocus;
+#if UNITY_EDITOR
+                    InputSystem.settings.editorInputBehaviorInPlayMode = InputSettings.EditorInputBehaviorInPlayMode.AllDeviceInputAlwaysGoesToGameView;
+#endif
+                    _mouse = InputSystem.AddDevice<Mouse>("UDriverMouse");
+                    _keyboard = InputSystem.AddDevice<Keyboard>("UDriverKeyboard");
+                }
+                // Devices added while the window was unfocused start disabled.
+                foreach (var d in new InputDevice[] { _mouse, _keyboard, _pad })
+                    if (d != null && d.added && !d.enabled) InputSystem.EnableDevice(d);
             }
 
             public static void SendMouse(Vector2 screenTopLeft, int buttons, Vector2 scroll)
             {
                 Ensure();
-                var st = new MouseState { position = new Vector2(screenTopLeft.x, Screen.height - screenTopLeft.y), scroll = scroll };
+                Queue(new Vector2(screenTopLeft.x, Screen.height - screenTopLeft.y), buttons, scroll, Vector2.zero);
+            }
+
+            public static void Look(Vector2 delta, int buttons)
+            {
+                Ensure();
+                Queue(_mouse.position.ReadValue(), buttons, Vector2.zero, delta);
+            }
+
+            static void Queue(Vector2 position, int buttons, Vector2 scroll, Vector2 delta)
+            {
+                var st = new MouseState { position = position, scroll = scroll, delta = delta };
                 // Fully qualified: UnityEngine.UIElements also declares a MouseButton enum.
                 st = st.WithButton(UnityEngine.InputSystem.LowLevel.MouseButton.Left, (buttons & 1) != 0)
                        .WithButton(UnityEngine.InputSystem.LowLevel.MouseButton.Right, (buttons & 2) != 0)
@@ -483,12 +700,22 @@ namespace UDriver
                 InputSystem.QueueStateEvent(_mouse, st);
             }
 
+            static Key Parse(string name)
+            {
+                Key k;
+                if (!Enum.TryParse(name, true, out k) || k == Key.None)
+                    throw new ToolException("unknown key '" + name + "'. With method=input use Input System Key names: Enter, Escape, Tab, Space, Backspace, Delete, LeftArrow, A, Digit1, F5...");
+                return k;
+            }
+
+            public static void CheckKey(string name) { Parse(name); }
+
+            public static bool IsDown(string name) { return Held.Contains(Parse(name)); }
+
             public static void SendKey(string name, bool down)
             {
                 Ensure();
-                Key k;
-                if (!Enum.TryParse(name, true, out k))
-                    throw new ToolException("unknown key '" + name + "'. With method=input use Input System Key names: Enter, Escape, Tab, Space, Backspace, Delete, LeftArrow, A, Digit1, F5...");
+                var k = Parse(name);
                 if (down) Held.Add(k); else Held.Remove(k);
                 var arr = new Key[Held.Count];
                 Held.CopyTo(arr);
@@ -500,6 +727,78 @@ namespace UDriver
                 Ensure();
                 InputSystem.QueueTextEvent(_keyboard, c);
             }
+
+            public static void Stick(Vector2 v)
+            {
+                Ensure();
+                if (_pad == null || !_pad.added) { _pad = InputSystem.AddDevice<Gamepad>("UDriverGamepad"); Ensure(); }
+                InputSystem.QueueStateEvent(_pad, new GamepadState { leftStick = v });
+            }
+
+            static List<InputAction> Actions()
+            {
+                var list = new List<InputAction>();
+                foreach (var pi in PlayerInput.all) if (pi.actions != null) foreach (var act in pi.actions) if (!list.Contains(act)) list.Add(act);
+                foreach (var act in InputSystem.ListEnabledActions()) if (!list.Contains(act)) list.Add(act);
+                return list;
+            }
+
+            public static void ActionInput(string name, out string[] keys, out int mouse)
+            {
+                Ensure();
+                InputAction act = null;
+                foreach (var x in Actions())
+                    if ((string.Equals(x.name, name, StringComparison.OrdinalIgnoreCase) || string.Equals((x.actionMap != null ? x.actionMap.name + "/" : "") + x.name, name, StringComparison.OrdinalIgnoreCase))
+                        && (act == null || x.enabled && !act.enabled)) act = x;
+                if (act == null) throw new ToolException("no Input System action '" + name + "' among enabled actions and PlayerInput assets - list them with input_actions");
+                foreach (var b in act.bindings)
+                {
+                    if (b.isComposite || string.IsNullOrEmpty(b.effectivePath)) continue;
+                    var key = InputControlPath.TryFindControl(_keyboard, b.effectivePath) as KeyControl;
+                    if (key != null) { keys = new[] { key.keyCode.ToString() }; mouse = 0; return; }
+                    var c = InputControlPath.TryFindControl(_mouse, b.effectivePath);
+                    mouse = c == null ? 0 : c == _mouse.leftButton ? 1 : c == _mouse.rightButton ? 2 : c == _mouse.middleButton ? 4 : 0;
+                    if (mouse != 0) { keys = new string[0]; return; }
+                }
+                throw new ToolException("action '" + act.name + "' has no keyboard key or mouse button binding - use hold/tap with a key, move or look");
+            }
+
+            public static void Describe(ToolResponse r)
+            {
+                foreach (var pi in PlayerInput.all)
+                {
+                    var devs = new List<string>();
+                    foreach (var d in pi.devices) devs.Add(d.name);
+                    r.Text("PlayerInput " + StateTools.PathOf(pi.gameObject) + "  map: " + (pi.currentActionMap != null ? pi.currentActionMap.name : "-")
+                           + "  scheme: " + (pi.currentControlScheme ?? "-") + "  devices: " + string.Join(", ", devs));
+                }
+                var maps = new List<string>();
+                var byMap = new Dictionary<string, List<InputAction>>();
+                foreach (var act in Actions())
+                {
+                    string m = act.actionMap != null ? act.actionMap.name : "(no map)";
+                    if (!byMap.ContainsKey(m)) { maps.Add(m); byMap[m] = new List<InputAction>(); }
+                    byMap[m].Add(act);
+                }
+                if (maps.Count == 0) { r.Text("no enabled Input System actions and no PlayerInput in the loaded scenes"); return; }
+                foreach (var m in maps)
+                {
+                    r.Text(m + ":");
+                    foreach (var act in byMap[m])
+                    {
+                        var sb = new StringBuilder();
+                        foreach (var b in act.bindings)
+                        {
+                            if (b.isPartOfComposite) sb.Append(' ').Append(b.name).Append('=').Append(b.effectivePath);
+                            else sb.Append(sb.Length > 0 ? " | " : "").Append(b.effectivePath).Append(b.isComposite ? ":" : "");
+                        }
+                        object v = null;
+                        if (act.enabled) { try { v = act.ReadValueAsObject(); } catch { } }
+                        r.Text("  " + act.name + " (" + act.type + (string.IsNullOrEmpty(act.expectedControlType) ? "" : " " + act.expectedControlType) + ")"
+                               + (act.enabled ? " = " + (v ?? "-") : " [disabled]") + "  " + sb);
+                    }
+                }
+            }
         }
 #else
         static class Inj
@@ -508,6 +807,12 @@ namespace UDriver
             public static void SendMouse(Vector2 screenTopLeft, int buttons, Vector2 scroll) { }
             public static void SendKey(string name, bool down) { }
             public static void SendText(char c) { }
+            public static void Look(Vector2 delta, int buttons) { }
+            public static void Stick(Vector2 v) { }
+            public static void CheckKey(string name) { }
+            public static bool IsDown(string name) { return false; }
+            public static void ActionInput(string name, out string[] keys, out int mouse) { keys = new string[0]; mouse = 0; }
+            public static void Describe(ToolResponse r) { throw new ToolException("input_actions " + NeedInputSystem); }
         }
 #endif
     }

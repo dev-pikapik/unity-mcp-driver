@@ -16,7 +16,6 @@ using UnityEngine.SceneManagement;
 
 namespace UDriver
 {
-    /// <summary>Error meant to be shown to the agent as-is (no stack trace).</summary>
     public class ToolException : Exception { public ToolException(string m) : base(m) { } }
 
     public sealed class ToolResponse
@@ -34,7 +33,6 @@ namespace UDriver
             Content.Add(new JObject { ["type"] = "image", ["data"] = Convert.ToBase64String(data), ["mimeType"] = mime });
         }
 
-        /// <summary>All text written so far (used by self_test / batch to look at a nested tool's output).</summary>
         public string AllText()
         {
             var sb = new StringBuilder();
@@ -56,6 +54,13 @@ namespace UDriver
             Content.Add(new JObject { ["type"] = "text", ["text"] = _sb.ToString().TrimEnd() });
             _sb.Clear();
         }
+
+        public void Append(ToolResponse o)
+        {
+            FlushText(); o.FlushText();
+            foreach (var c in o.Content) Content.Add(c.DeepClone());
+            IsError |= o.IsError;
+        }
     }
 
     public delegate IEnumerator ToolHandler(JObject args, ToolResponse res);
@@ -63,7 +68,10 @@ namespace UDriver
     internal sealed class Job
     {
         public ToolHandler Handler;
+        public string Tool;
         public JObject Args;
+        public string Client = "";
+        public volatile bool Cancelled;
         public readonly ToolResponse Res = new ToolResponse();
         public readonly ManualResetEventSlim Done = new ManualResetEventSlim(false);
     }
@@ -76,13 +84,17 @@ namespace UDriver
 
     public static class Driver
     {
-        public const int DefaultPort = 17890;
         public static int Port { get; private set; }
         public static bool Running { get; private set; }
 
         internal static DriverHost Host;
         internal static int MainThreadId;
+        /// <summary>The job whose coroutine is running right now (main thread).</summary>
+        internal static Job Current;
+        static int _pid, _active;
+        const int MaxBody = 4 * 1024 * 1024, MaxActive = 32;
         internal static readonly ConcurrentQueue<Job> Jobs = new ConcurrentQueue<Job>();
+        static readonly ConcurrentDictionary<string, Job> Calls = new ConcurrentDictionary<string, Job>();
 
         static readonly Dictionary<string, ToolHandler> Handlers = new Dictionary<string, ToolHandler>();
         static readonly Dictionary<string, ToolDef> Defs = new Dictionary<string, ToolDef>();
@@ -91,22 +103,17 @@ namespace UDriver
 
         // ---------------- security ----------------
 
-        /// <summary>
-        /// False (default): state_set / state_call may only touch game code, UnityEngine and basic value/collection types.
-        /// True only when a human started the process with environment variable UDRIVER_UNSAFE=1. It cannot be changed through tools.
-        /// </summary>
+        /// <summary>True only if a human set UDRIVER_UNSAFE=1: state_set / state_call may then reach any type.</summary>
         public static bool AllowUnsafe { get; private set; }
 
         static string _token;
 
-        /// <summary>Per-user file through which the MCP server learns the access token of a running game/editor.</summary>
-        public static string TokenFile(int port)
+        static string FileFor(int port, string ext)
         {
-            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".udriver", port + ".token");
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".udriver", port + ext);
         }
 
-        /// <summary>Takes the token from UDRIVER_TOKEN (set by the MCP server when it launches a build) or generates a random one, and publishes it in the token file.</summary>
-        public static string CreateToken(int port)
+        public static string Publish(int port, string kind)
         {
             string t = Environment.GetEnvironmentVariable("UDRIVER_TOKEN");
             if (string.IsNullOrEmpty(t))
@@ -117,29 +124,46 @@ namespace UDriver
             }
             try
             {
-                // On macOS/Linux the folder is made 0700 and the file 0600 before the token is written; the file is then renamed into place.
-                string f = TokenFile(port), dir = Path.GetDirectoryName(f), tmp = f + "." + Guid.NewGuid().ToString("N") + ".tmp";
-                Directory.CreateDirectory(dir);
-                OwnerOnly(dir, true);
-                try
+                var info = new JObject
                 {
-                    File.WriteAllText(tmp, "");
-                    OwnerOnly(tmp, false);
-                    File.WriteAllText(tmp, t);
-                    if (File.Exists(f)) File.Replace(tmp, f, null); else File.Move(tmp, f);
-                }
-                finally { if (File.Exists(tmp)) File.Delete(tmp); }
+                    ["kind"] = kind, ["name"] = Application.productName,
+                    ["project"] = Application.isEditor ? Path.GetDirectoryName(Application.dataPath) : Path.GetFullPath(Environment.GetCommandLineArgs()[0]),
+                    ["pid"] = System.Diagnostics.Process.GetCurrentProcess().Id, ["unity"] = Application.unityVersion, ["port"] = port,
+                };
+                WritePrivate(FileFor(port, ".token"), t);
+                WritePrivate(FileFor(port, ".json"), info.ToString(Formatting.None));
             }
             catch (Exception e) { Debug.LogWarning("[UDriver] could not write the token file (app_connect will not work, app_launch will): " + e.Message); }
             return t;
+        }
+
+        public static void Unpublish(int port)
+        {
+            try { File.Delete(FileFor(port, ".token")); File.Delete(FileFor(port, ".json")); } catch { }
+        }
+
+        /// <summary>0700 folder and 0600 file before anything is written.</summary>
+        static void WritePrivate(string f, string text)
+        {
+            string dir = Path.GetDirectoryName(f), tmp = f + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            Directory.CreateDirectory(dir);
+            OwnerOnly(dir, true);
+            try
+            {
+                File.WriteAllText(tmp, "");
+                OwnerOnly(tmp, false);
+                File.WriteAllText(tmp, text);
+                if (File.Exists(f)) File.Replace(tmp, f, null); else File.Move(tmp, f);
+            }
+            finally { if (File.Exists(tmp)) File.Delete(tmp); }
         }
 
 #if (UNITY_EDITOR_OSX || UNITY_EDITOR_LINUX || UNITY_STANDALONE_OSX || UNITY_STANDALONE_LINUX) && !UNITY_EDITOR_WIN
         [DllImport("libc", EntryPoint = "chmod")] static extern int ChmodLibc(string path, int mode);
         [DllImport("libc.so.6", EntryPoint = "chmod")] static extern int ChmodGlibc(string path, int mode);
 
-        /// <summary>chmod 0700 (folder) / 0600 (file). Throws if that cannot be done, so a secret is never written with wider permissions.</summary>
-        static void OwnerOnly(string path, bool folder)
+        /// <summary>Throws rather than leave a secret readable by others.</summary>
+        internal static void OwnerOnly(string path, bool folder)
         {
             int mode = folder ? 448 : 384;   // 0700 : 0600
             int rc;
@@ -148,7 +172,7 @@ namespace UDriver
             if (rc != 0) throw new IOException("could not restrict permissions of " + path);
         }
 #else
-        static void OwnerOnly(string path, bool folder) { }   // Windows: the user profile is already private to the user
+        internal static void OwnerOnly(string path, bool folder) { }   // Windows: the user profile is already private to the user
 #endif
 
         static bool SameText(string a, string b)
@@ -159,10 +183,7 @@ namespace UDriver
             return diff == 0;
         }
 
-        /// <summary>
-        /// Request gate shared by the game driver and the editor bridge. Rejects: other Host values (DNS rebinding),
-        /// anything sent by a web page (browsers always attach Origin to cross-site POSTs), and callers without the token.
-        /// </summary>
+        /// <summary>Rejects other Host values (DNS rebinding), requests from web pages, and callers without the token.</summary>
         public static bool Authorize(HttpListenerRequest req, int port, string token, bool needToken, out int status, out string error)
         {
             status = 403;
@@ -183,10 +204,9 @@ namespace UDriver
 #if UDRIVER_FORCE
             force = true;
 #endif
-            // Never active in release players unless explicitly forced.
             if (!(Application.isEditor || Debug.isDebugBuild || force)) return;
 
-            int port = DefaultPort;
+            int port = 0;
             string startup = null;
             var argv = Environment.GetCommandLineArgs();
             for (int i = 0; i < argv.Length - 1; i++)
@@ -202,9 +222,8 @@ namespace UDriver
         {
             if (Running) return;
             MainThreadId = Thread.CurrentThread.ManagedThreadId;
-            Port = port;
             AllowUnsafe = Environment.GetEnvironmentVariable("UDRIVER_UNSAFE") == "1";
-            _token = CreateToken(port);
+            _pid = System.Diagnostics.Process.GetCurrentProcess().Id;
             Application.runInBackground = true;
 
             var go = new GameObject("[UDriver]");
@@ -213,21 +232,32 @@ namespace UDriver
 
             RegisterAll();
 
-            try
+            _listener = Bind(port > 0 ? new[] { port } : ToolManifest.Ports(false), out int bound, out string error);
+            if (_listener == null) { Debug.LogError("[UDriver] could not start HTTP listener on port " + (port > 0 ? port.ToString() : ToolManifest.GamePort + "-" + ToolManifest.GamePortLast) + ": " + error); return; }
+            Port = bound;
+            _token = Publish(bound, "game");
+            new Thread(Listen) { IsBackground = true, Name = "UDriver.Http" }.Start();
+            Running = true;
+            Debug.Log("[UDriver] listening on http://127.0.0.1:" + bound + " (" + Handlers.Count + " tools)");
+        }
+
+        /// <summary>Loopback literal only: "localhost" can make Mono listen on all interfaces.</summary>
+        public static HttpListener Bind(IEnumerable<int> ports, out int port, out string error)
+        {
+            port = 0; error = "no port to try";
+            foreach (int p in ports)
             {
-                _listener = new HttpListener();
-                // Loopback literal only. A "localhost" prefix can make Mono fall back to listening on ALL interfaces when name resolution fails.
-                _listener.Prefixes.Add("http://127.0.0.1:" + port + "/");
-                _listener.Start();
-                var t = new Thread(Listen) { IsBackground = true, Name = "UDriver.Http" };
-                t.Start();
-                Running = true;
-                Debug.Log("[UDriver] listening on http://127.0.0.1:" + port + " (" + Handlers.Count + " tools)");
+                var l = new HttpListener();
+                try
+                {
+                    l.Prefixes.Add("http://127.0.0.1:" + p + "/");
+                    l.Start();
+                    port = p;
+                    return l;
+                }
+                catch (Exception e) { error = e.Message; try { l.Close(); } catch { } }
             }
-            catch (Exception e)
-            {
-                Debug.LogError("[UDriver] could not start HTTP listener on port " + port + ": " + e.Message);
-            }
+            return null;
         }
 
         static void RegisterAll()
@@ -243,6 +273,8 @@ namespace UDriver
             CaptureTools.Register();
             StateTools.Register();
             ProbeTools.Register();
+            MemoryTools.Register();
+            RenderTools.Register();
         }
 
         /// <summary>Runs another tool from inside a tool (same arguments an agent would send).</summary>
@@ -257,23 +289,29 @@ namespace UDriver
         {
             var calls = a["calls"] as JArray;
             if (calls == null || calls.Count == 0) throw new ToolException("calls must be a non-empty array of {tool, args}");
-            if (calls.Count > 20) throw new ToolException("at most 20 calls per batch");
+            if (calls.Count > 50) throw new ToolException("at most 50 calls per batch");
             bool stop = a.Bool("stopOnError", true);
+            int first = a.Int("first", 0);
+            string output = a.Str("output", "all");
+            if (output != "all" && output != "last" && output != "errors") throw new ToolException("output must be all, last or errors");
+            ToolResponse last = null;
             for (int i = 0; i < calls.Count; i++)
             {
                 string tool = (string)calls[i]["tool"];
-                r.Text("--- [" + i + "] " + tool);
+                var s = new ToolResponse();
+                s.Text("--- [" + (first + i) + "] " + tool);
                 ToolHandler h;
-                if (tool == null || tool == "batch" || !Handlers.TryGetValue(tool, out h)) { r.Error("unknown tool '" + tool + "'"); if (stop) yield break; continue; }
-                yield return h(calls[i]["args"] as JObject ?? new JObject(), r);
-                if (r.IsError && stop) { r.Text("batch stopped at call " + i + " (stopOnError)"); yield break; }
+                if (tool == null || tool == "batch" || !Handlers.TryGetValue(tool, out h)) s.Error("unknown tool '" + tool + "'");
+                else yield return Guard(() => h(calls[i]["args"] as JObject ?? new JObject(), s), s);
+                last = null;
+                if (s.IsError || (output == "all" && !((JObject)calls[i]).Bool("quiet"))) r.Append(s);
+                else if (output == "last") last = s;
+                if (s.IsError && stop) { r.Text("batch stopped at call " + (first + i) + " (stopOnError)"); yield break; }
             }
+            if (last != null) r.Append(last);
         }
 
-        /// <summary>
-        /// Edit-mode execution (called by the editor bridge on the editor main thread, outside Play Mode):
-        /// runs a reflection/inspection tool to completion without a running game loop.
-        /// </summary>
+        /// <summary>Runs an inspection tool to completion in the editor outside Play Mode.</summary>
         public static void RunEditMode(string tool, JObject args, ToolResponse res)
         {
             if (Handlers.Count == 0) { MainThreadId = Thread.CurrentThread.ManagedThreadId; RegisterAll(); }
@@ -281,12 +319,29 @@ namespace UDriver
                 throw new ToolException("'" + tool + "' needs a running game: enter Play Mode (editor_play action=play) or start a build (app_launch), then call it again");
             ToolHandler h;
             if (!Handlers.TryGetValue(tool, out h)) throw new ToolException("unknown tool '" + tool + "'");
-            var it = h(args ?? new JObject(), res);
+            var it = Guard(() => h(args ?? new JObject(), res), res);
             for (int guard = 0; guard < 10000 && it.MoveNext(); guard++) { }
+        }
+
+        /// <summary>Serves inspection tools while the editor is paused: there are no frames, so DriverHost does not run.</summary>
+        public static void PumpPaused()
+        {
+            Job job;
+            while (Jobs.TryDequeue(out job))
+            {
+                if (Array.IndexOf(ToolManifest.EditModeTools, job.Tool) >= 0)
+                {
+                    var it = RunJob(job);
+                    for (int guard = 0; guard < 10000 && it.MoveNext(); guard++) { }
+                }
+                else job.Res.Error("the editor is paused, so '" + job.Tool + "' cannot run (inspection tools still work). Resume with editor_play action=resume.");
+                job.Done.Set();
+            }
         }
 
         public static void Stop()
         {
+            if (Running) Unpublish(Port);
             Running = false;
             try { _listener?.Stop(); _listener?.Close(); } catch { }
             _listener = null;
@@ -329,22 +384,36 @@ namespace UDriver
         static void Handle(HttpListenerContext ctx)
         {
             string body; int status = 200;
+            bool busy = Interlocked.Increment(ref _active) > MaxActive;
             try
             {
                 string path = ctx.Request.Url.AbsolutePath, verb = ctx.Request.HttpMethod, deny;
-                if (!Authorize(ctx.Request, Port, _token, path != "/ping", out status, out deny))
+                if (busy) { status = 503; body = "{\"ok\":false,\"error\":\"too many requests at once\"}"; }
+                else if (!Authorize(ctx.Request, Port, _token, path != "/ping", out status, out deny))
                     body = new JObject { ["ok"] = false, ["error"] = deny }.ToString(Formatting.None);
-                else if (path == "/ping" && verb == "GET") { status = 200; body = "{\"ok\":true}"; }
+                else if (path == "/ping" && verb == "GET") { status = 200; body = "{\"ok\":true,\"pid\":" + _pid + "}"; }
                 else if (path == "/tools" && verb == "GET") { status = 200; body = ToolsJson(); }
+                else if (path == "/cancel" && verb == "POST" && ctx.Request.ContentLength64 is >= 0 and <= 1024)
+                {
+                    string id;
+                    using (var r = new StreamReader(ctx.Request.InputStream, Encoding.UTF8)) id = (string)JObject.Parse(r.ReadToEnd())["call"] ?? "";
+                    Job job;
+                    bool found = Calls.TryGetValue(id, out job);
+                    if (found) job.Cancelled = true;
+                    status = 200; body = "{\"ok\":" + (found ? "true" : "false") + "}";
+                }
                 else if (path == "/call" && verb == "POST" && !(ctx.Request.ContentType ?? "").StartsWith("application/json", StringComparison.OrdinalIgnoreCase))
                 { status = 415; body = "{\"ok\":false,\"error\":\"Content-Type must be application/json\"}"; }
+                else if (path == "/call" && verb == "POST" && (ctx.Request.ContentLength64 < 0 || ctx.Request.ContentLength64 > MaxBody))
+                { status = 413; body = "{\"ok\":false,\"error\":\"request body missing its length or larger than 4 MB\"}"; }
                 else if (path == "/call" && verb == "POST")
                 {
                     status = 200;
                     string reqBody;
                     using (var r = new StreamReader(ctx.Request.InputStream, Encoding.UTF8)) reqBody = r.ReadToEnd();
                     var req = JObject.Parse(reqBody);
-                    body = Call((string)req["tool"], req["args"] as JObject ?? new JObject()).ToString(Formatting.None);
+                    string client = ctx.Request.Headers["X-UDriver-Client"];
+                    body = Call((string)req["tool"], req["args"] as JObject ?? new JObject(), string.IsNullOrEmpty(client) ? "another agent" : Util.OneLine(client, 40), ctx.Request.Headers["X-UDriver-Call"]).ToString(Formatting.None);
                 }
                 else { status = 404; body = "{\"ok\":false,\"error\":\"not found\"}"; }
             }
@@ -363,18 +432,29 @@ namespace UDriver
                 ctx.Response.Close();
             }
             catch { }
+            finally { Interlocked.Decrement(ref _active); }
         }
 
-        static JObject Call(string tool, JObject args)
+        static JObject Call(string tool, JObject args, string client, string callId)
         {
             ToolHandler h;
             lock (Handlers) { if (tool == null || !Handlers.TryGetValue(tool, out h)) h = null; }
             if (h == null) return new JObject { ["ok"] = false, ["error"] = "unknown tool '" + tool + "'" };
-            var job = new Job { Handler = h, Args = args };
-            Jobs.Enqueue(job);
-            int timeout = args.Int("timeoutMs", 0) + 120000;
-            if (!job.Done.Wait(timeout))
-                return new JObject { ["ok"] = false, ["error"] = "timeout: the game's main thread did not finish '" + tool + "' (game frozen, or the tool hung)" };
+            var job = new Job { Handler = h, Tool = tool, Args = args, Client = client };
+            bool tracked = !string.IsNullOrEmpty(callId) && callId.Length <= 64 && Calls.TryAdd(callId, job);
+            try
+            {
+                Jobs.Enqueue(job);
+                int ms = Math.Min(Math.Max(args.Int("timeoutMs", 0), 0), 600000), wait = ms > 0 ? ms + 2000 : 120000;
+                if (!job.Done.Wait(wait))
+                {
+                    job.Cancelled = true;
+                    return new JObject { ["ok"] = false, ["error"] = "timeout: '" + tool + "' did not finish within " + wait + " ms" + (job.Done.Wait(2000)
+                        ? " and was stopped; any input it held is released" : "; the game's main thread looks frozen, so it will be stopped as soon as the game runs again") };
+                }
+            }
+            finally { if (tracked) Calls.TryRemove(callId, out _); }
+            if (job.Cancelled) return new JObject { ["ok"] = false, ["error"] = "cancelled: '" + tool + "' was stopped by its caller; any input it held is released" };
             job.Res.FlushText();
             return new JObject { ["ok"] = !job.Res.IsError, ["isError"] = job.Res.IsError, ["content"] = job.Res.Content };
         }
@@ -411,33 +491,67 @@ namespace UDriver
 
         internal static IEnumerator RunJob(Job job)
         {
-            // Flattens nested IEnumerators ourselves so that an exception anywhere fails the job instead of hanging it.
-            var stack = new Stack<IEnumerator>();
-            bool failed = false;
-            try { stack.Push(job.Handler(job.Args, job.Res)); }
-            catch (Exception e) { Fail(job, e); failed = true; }
-            while (!failed && stack.Count > 0)
+            var it = Guard(() => job.Handler(job.Args, job.Res), job.Res);
+            try
             {
-                object cur = null; bool moved = false;
-                try
+                while (!job.Cancelled)
                 {
-                    moved = stack.Peek().MoveNext();
-                    if (moved) cur = stack.Peek().Current;
+                    Current = job;
+                    bool more = it.MoveNext();
+                    Current = null;
+                    if (!more) break;
+                    yield return it.Current;
                 }
-                catch (Exception e) { Fail(job, e); failed = true; }
-                if (failed) break;
-                if (!moved) { stack.Pop(); continue; }
-                if (cur is IEnumerator nested) { stack.Push(nested); continue; }
-                yield return cur;
             }
-            job.Done.Set();
+            finally
+            {
+                Current = job;
+                ((IDisposable)it).Dispose();
+                Current = null;
+                job.Done.Set();
+            }
         }
 
-        static void Fail(Job job, Exception e)
+        /// <summary>Flattens nested enumerators so an exception anywhere becomes an error in res instead of escaping or hanging.</summary>
+        internal static IEnumerator Guard(Func<IEnumerator> start, ToolResponse res)
+        {
+            var stack = new Stack<IEnumerator>();
+            bool failed = false;
+            try { stack.Push(start()); }
+            catch (Exception e) { Fail(res, e); failed = true; }
+            try
+            {
+                while (!failed && stack.Count > 0)
+                {
+                    object cur = null; bool moved = false;
+                    try
+                    {
+                        moved = stack.Peek().MoveNext();
+                        if (moved) cur = stack.Peek().Current;
+                    }
+                    catch (Exception e) { Fail(res, e); failed = true; }
+                    if (failed) break;
+                    if (!moved) { stack.Pop(); continue; }
+                    if (cur is IEnumerator nested) { stack.Push(nested); continue; }
+                    yield return cur;
+                }
+            }
+            finally
+            {
+                // Runs the finally blocks of unfinished tools when a call fails or is cancelled.
+                while (stack.Count > 0)
+                {
+                    var d = stack.Pop() as IDisposable;
+                    try { if (d != null) d.Dispose(); } catch (Exception e) { Fail(res, e); }
+                }
+            }
+        }
+
+        static void Fail(ToolResponse res, Exception e)
         {
             if (e is System.Reflection.TargetInvocationException tie && tie.InnerException != null) e = tie.InnerException;
-            if (e is ToolException) job.Res.Error(e.Message);
-            else job.Res.Error(e.GetType().Name + ": " + e.Message + "\n" + Util.Cut(e.StackTrace, 900));
+            if (e is ToolException) res.Error(e.Message);
+            else res.Error(e.GetType().Name + ": " + e.Message + "\n" + Util.Cut(e.StackTrace, 900));
         }
 
         static void RunStartupFile(string file)
@@ -448,8 +562,9 @@ namespace UDriver
                 {
                     string tool = (string)item["tool"];
                     ToolHandler h;
+                    if (tool == "batch") { Debug.LogWarning("[UDriver] startup: batch is not run at startup"); continue; }
                     if (tool == null || !Handlers.TryGetValue(tool, out h)) { Debug.LogWarning("[UDriver] startup: unknown tool " + tool); continue; }
-                    Jobs.Enqueue(new Job { Handler = h, Args = item["args"] as JObject ?? new JObject() });
+                    Jobs.Enqueue(new Job { Handler = h, Tool = tool, Args = item["args"] as JObject ?? new JObject(), Client = "startup" });
                     EventStore.Emit("startup", "queued " + tool + " " + (item["args"] ?? "").ToString(Formatting.None));
                 }
             }
@@ -492,7 +607,7 @@ namespace UDriver
             return new[] { t.ToString() };
         }
 
-        /// <summary>All active loaded objects of a type. Wraps the API that changed in Unity 6000.4 (the sort-mode overload became obsolete).</summary>
+        /// <summary>Wraps the API that changed in Unity 6000.4.</summary>
         public static T[] FindAll<T>() where T : UnityEngine.Object
         {
 #if UNITY_6000_4_OR_NEWER
@@ -502,7 +617,7 @@ namespace UDriver
 #endif
         }
 
-        /// <summary>JSON value -> CLR type. Adds what JToken.ToObject lacks: enums by name (case-insensitive) or number.</summary>
+        /// <summary>JToken.ToObject plus enums by name or number.</summary>
         public static object To(JToken token, Type type)
         {
             if (token == null || token.Type == JTokenType.Null) return null;
@@ -517,8 +632,7 @@ namespace UDriver
             return token.ToObject(type, SafeJson);
         }
 
-        // Own serializer: ignores global JsonConvert.DefaultSettings (e.g. TypeNameHandling set by the game) and refuses values that
-        // would let a caller name arbitrary types, delegates or raw memory (a string can otherwise become a System.Type).
+        // Ignores the game's JsonConvert.DefaultSettings and refuses values that could name arbitrary types.
         static readonly JsonSerializer SafeJson = new JsonSerializer { TypeNameHandling = TypeNameHandling.None, Converters = { new NoUnsafeValues() } };
 
         sealed class NoUnsafeValues : JsonConverter

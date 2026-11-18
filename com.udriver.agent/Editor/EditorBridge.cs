@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Threading;
@@ -19,19 +20,16 @@ using UnityEditor.TestTools.TestRunner.Api;
 
 namespace UDriver.Editor
 {
-    /// <summary>
-    /// Runs inside the Unity editor (also outside Play Mode) on its own port. Survives script reloads by
-    /// restarting itself; long operations (tests, builds, compilation) keep their state in SessionState.
-    /// </summary>
+    /// <summary>Editor bridge on its own port; restarts on every script reload, long operations keep state in SessionState.</summary>
     [InitializeOnLoad]
     public static class EditorBridge
     {
-        public const int DefaultPort = 17891;
-        const string KErrors = "UDriver.CompileErrors", KBuild = "UDriver.Build", KTestState = "UDriver.TestState", KTestLines = "UDriver.TestLines";
+        const string KPort = "UDriver.Port", KErrors = "UDriver.CompileErrors", KBuild = "UDriver.Build", KTestState = "UDriver.TestState", KTestLines = "UDriver.TestLines";
 
         sealed class EJob
         {
             public string Tool; public JObject Args;
+            public volatile bool Cancelled;
             public readonly ToolResponse Res = new ToolResponse();
             public readonly ManualResetEventSlim Done = new ManualResetEventSlim(false);
         }
@@ -39,11 +37,12 @@ namespace UDriver.Editor
         static readonly ConcurrentQueue<EJob> Jobs = new ConcurrentQueue<EJob>();
         static readonly Dictionary<string, Action<JObject, ToolResponse>> Tools = new Dictionary<string, Action<JObject, ToolResponse>>();
         static HttpListener _listener;
-        static int _port;
+        static int _port, _pid;
         static string _token;
 
         static EditorBridge()
         {
+            if (AssetDatabase.IsAssetImportWorkerProcess()) return;
             Tools["editor_status"] = Status;
             Tools["editor_play"] = Play;
             Tools["editor_compile"] = Compile;
@@ -55,10 +54,11 @@ namespace UDriver.Editor
 
             EditorApplication.update += Pump;
             AssemblyReloadEvents.beforeAssemblyReload += BeforeReload;
-            EditorApplication.quitting += StopListener;
+            EditorApplication.quitting += () => { StopListener(); Driver.Unpublish(_port); };
             CompilationPipeline.compilationStarted += _ => SessionState.SetString(KErrors, "[]");
             CompilationPipeline.assemblyCompilationFinished += OnAssemblyCompiled;
             TestsInit();
+            _pid = System.Diagnostics.Process.GetCurrentProcess().Id;
             StartListener();
         }
 
@@ -66,21 +66,14 @@ namespace UDriver.Editor
 
         static void StartListener()
         {
-            if (!int.TryParse(Environment.GetEnvironmentVariable("UDRIVER_EDITOR_PORT"), out _port)) _port = EditorPrefs.GetInt("UDriver.EditorPort", DefaultPort);
-            try
-            {
-                _token = Driver.CreateToken(_port);
-                _listener = new HttpListener();
-                _listener.Prefixes.Add("http://127.0.0.1:" + _port + "/");   // loopback literal only, see Driver.Start
-                _listener.Start();
-                var l = _listener;
-                new Thread(() => Listen(l)) { IsBackground = true, Name = "UDriver.EditorHttp" }.Start();
-            }
-            catch (Exception e)
-            {
-                _listener = null;
-                Debug.LogWarning("[UDriver] editor bridge could not listen on port " + _port + " (another editor instance?): " + e.Message);
-            }
+            IEnumerable<int> ports = int.TryParse(Environment.GetEnvironmentVariable("UDRIVER_EDITOR_PORT"), out int fixedPort) ? new[] { fixedPort }
+                : new[] { SessionState.GetInt(KPort, 0), EditorPrefs.GetInt("UDriver.EditorPort", ToolManifest.EditorPort) }.Where(p => p > 0).Concat(ToolManifest.Ports(true)).Distinct();
+            _listener = Driver.Bind(ports, out _port, out string error);
+            if (_listener == null) { Debug.LogWarning("[UDriver] editor bridge found no free port (" + error + ")"); return; }
+            SessionState.SetInt(KPort, _port);
+            _token = Driver.Publish(_port, "editor");
+            var l = _listener;
+            new Thread(() => Listen(l)) { IsBackground = true, Name = "UDriver.EditorHttp" }.Start();
         }
 
         static void StopListener()
@@ -120,9 +113,11 @@ namespace UDriver.Editor
                 string path = ctx.Request.Url.AbsolutePath, verb = ctx.Request.HttpMethod, deny;
                 if (!Driver.Authorize(ctx.Request, _port, _token, path != "/ping", out status, out deny))
                     body = new JObject { ["ok"] = false, ["error"] = deny }.ToString(Formatting.None);
-                else if (path == "/ping" && verb == "GET") { status = 200; body = "{\"ok\":true,\"editor\":true}"; }
+                else if (path == "/ping" && verb == "GET") { status = 200; body = "{\"ok\":true,\"editor\":true,\"pid\":" + _pid + "}"; }
                 else if (path == "/call" && verb == "POST" && !(ctx.Request.ContentType ?? "").StartsWith("application/json", StringComparison.OrdinalIgnoreCase))
                 { status = 415; body = "{\"ok\":false,\"error\":\"Content-Type must be application/json\"}"; }
+                else if (path == "/call" && verb == "POST" && (ctx.Request.ContentLength64 < 0 || ctx.Request.ContentLength64 > 4 * 1024 * 1024))
+                { status = 413; body = "{\"ok\":false,\"error\":\"request body missing its length or larger than 4 MB\"}"; }
                 else if (path == "/call" && verb == "POST")
                 {
                     status = 200;
@@ -132,7 +127,10 @@ namespace UDriver.Editor
                     var job = new EJob { Tool = (string)req["tool"], Args = req["args"] as JObject ?? new JObject() };
                     Jobs.Enqueue(job);
                     if (!job.Done.Wait(120000))
-                        body = new JObject { ["ok"] = false, ["error"] = "the editor main thread is busy (building, importing, or reloading scripts) - retry in a moment" }.ToString(Formatting.None);
+                    {
+                        job.Cancelled = true;
+                        body = new JObject { ["ok"] = false, ["error"] = "the editor main thread is busy (building, importing, or reloading scripts) - the call was dropped; retry in a moment" }.ToString(Formatting.None);
+                    }
                     else
                     {
                         job.Res.FlushText();
@@ -156,9 +154,11 @@ namespace UDriver.Editor
 
         static void Pump()
         {
+            if (EditorApplication.isPlaying && EditorApplication.isPaused) Driver.PumpPaused();
             EJob job;
             while (Jobs.TryDequeue(out job))
             {
+                if (job.Cancelled) continue;
                 try
                 {
                     Action<JObject, ToolResponse> h;
@@ -198,7 +198,7 @@ namespace UDriver.Editor
                 case "play":
                     if (EditorUtility.scriptCompilationFailed) throw new ToolException("cannot enter Play Mode: scripts have compile errors (editor_compile)");
                     EditorApplication.isPlaying = true;
-                    r.Text("entering Play Mode. Scripts reload now; wait a few seconds, then call app_connect (game driver port " + Driver.DefaultPort + ").");
+                    r.Text("entering Play Mode. Scripts reload now; wait a few seconds, then call app_connect.");
                     break;
                 case "stop": EditorApplication.isPlaying = false; r.Text("leaving Play Mode"); break;
                 case "pause": EditorApplication.isPaused = true; r.Text("paused (true editor pause: Update is not called)"); break;

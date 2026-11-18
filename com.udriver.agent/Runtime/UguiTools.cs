@@ -193,14 +193,16 @@ namespace UDriver
         }
 
         /// <summary>Appends uGUI canvases (or the subtree of 'root') to a ui_tree dump. Returns the number of canvases.</summary>
-        public static int Tree(StringBuilder sb, GameObject root, bool interactiveOnly, int max, ref int count, ref int skipped)
+        /// <summary>Each canvas gets an equal part of what is left of max, shared with the <paramref name="later"/> roots printed after the canvases.</summary>
+        public static int Tree(StringBuilder sb, GameObject root, bool interactiveOnly, int max, ref int count, ref int skipped, int later = 0)
         {
             if (root != null) { Walk(root.transform, 0, sb, interactiveOnly, max, ref count, ref skipped); return 1; }
             var canvases = Canvases();
-            foreach (var c in canvases)
+            for (int i = 0; i < canvases.Count; i++)
             {
+                var c = canvases[i];
                 sb.AppendLine("canvas \"" + c.name + "\" (uGUI, " + c.renderMode + ", order " + c.sortingOrder + ")");
-                Walk(c.transform, 1, sb, interactiveOnly, max, ref count, ref skipped);
+                Walk(c.transform, 1, sb, interactiveOnly, count + Math.Max(0, max - count) / (canvases.Count - i + later), ref count, ref skipped);
             }
             return canvases.Count;
         }
@@ -430,6 +432,7 @@ namespace UDriver
             PropertyInfo p;
             var c = ValueOwner(go, prop, out p);
             if (c == null) throw new ToolException("no component on '" + go.name + "' has a writable '" + (prop ?? "text / isOn / value") + "' property");
+            StateTools.Guard(p, "ui_set_value");
             object v;
             try { v = Util.To(value, p.PropertyType); }
             catch (ToolException) { throw; }
@@ -531,7 +534,7 @@ namespace UDriver
         public static string Desc(GameObject go) { return "(uGUI not available)"; }
         public static string Line(GameObject go) { return ""; }
         public static List<GameObject> All() { return new List<GameObject>(); }
-        public static int Tree(StringBuilder sb, GameObject root, bool interactiveOnly, int max, ref int count, ref int skipped) { return 0; }
+        public static int Tree(StringBuilder sb, GameObject root, bool interactiveOnly, int max, ref int count, ref int skipped, int later = 0) { return 0; }
         public static GameObject FindFirst(string name, string text) { return null; }
         public static void Find(string name, string text, string type, List<string> lines) { }
         public static GameObject Raycast(Vector2 screenTopLeft) { return null; }

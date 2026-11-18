@@ -1,260 +1,155 @@
 <div align="center">
 
-# Unity MCP Driver
+# UDriver
 
-**Let an AI agent see, play and debug your Unity game — through the Model Context Protocol.**
+**Let your agent see, play and test your Unity game.**
 
 ![Unity 6000.0+](https://img.shields.io/badge/Unity-6000.0%2B-black?logo=unity)
 ![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet)
 ![MCP](https://img.shields.io/badge/MCP-server-6E56CF)
 ![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-informational)
-![License: MIT](https://img.shields.io/badge/license-MIT-green)
+![License](https://img.shields.io/badge/license-UDriver%201.0-blue)
 
 </div>
 
-Unity MCP Driver (UDriver) connects any MCP-capable AI agent to a running Unity game or the Unity Editor.
-The agent can read the UI tree, click buttons, type text, take screenshots, read logs and exceptions,
-inspect live object state, record frames, profile, run tests and build — and back every verdict with evidence
-instead of guessing.
+UDriver connects any agent with MCP support to a running Unity game or the Unity Editor. The agent looks at the
+screen, presses buttons, plays, reads logs and game data, and backs every answer with what it actually saw.
 
-It works with both **UI Toolkit** and **uGUI**, in **Play Mode, Edit Mode and standalone builds**.
+It works with UI Toolkit and uGUI, in Play Mode, Edit Mode and game builds.
 
----
+## Install
 
-## Contents
+You need Unity 6000.0 or newer. UDriver also needs the free .NET 8 SDK from Microsoft; the launcher offers to install it.
 
-- [How it works](#how-it-works)
-- [Features](#features)
-- [Quick start](#quick-start)
-- [Tools](#tools-51)
-- [Security](#security)
-- [Configuration](#configuration)
-- [Extending](#extending)
-- [Known limitations](#known-limitations)
-- [Uninstall](#uninstall)
-- [License](#license)
+1. Put the `udriver` folder somewhere it can stay, for example in Documents.
+2. Start the launcher. On a Mac, double-click `UDriver.command` (if macOS blocks it, right-click it and choose **Open**).
+   On Windows, double-click `UDriver.cmd` (if Windows warns you, choose **More info**, then **Run anyway**).
+   On Linux, run `sh UDriver.command`.
+3. Choose how to set up:
+   - **In the browser.** The UDriver panel opens. Answer three questions there. You don't type anything in the terminal.
+   - **In the terminal.** The same three questions, answered in the launcher window.
 
-## How it works
+The three questions are: which game the agent should control, what it may do, and where your agent runs. At the end
+UDriver shows the command to add to your agent's MCP settings. Then open your game or the Unity project and ask the
+agent to run `self_test`: it checks what works in your project.
 
-```mermaid
-flowchart LR
-    A[AI agent<br/>MCP client] -- stdio or HTTPS + OAuth --> B[UDriver.Mcp<br/>.NET 8 server]
-    B -- HTTP 127.0.0.1 + token --> C[Unity game<br/>com.udriver.agent]
-    B -- HTTP 127.0.0.1 + token --> D[Unity Editor<br/>EditorBridge]
-```
+To change your answers later, start the launcher again. The panel also shows the exact terminal command.
 
-| Part | What it is |
-|---|---|
-| `com.udriver.agent/` | Unity package. Runs a small HTTP endpoint on `127.0.0.1` inside the game or editor. |
-| `UDriver.Mcp/` | MCP server. Speaks MCP to the agent and routes calls to the game or the editor. |
-| `UDriver.command` / `UDriver.cmd` | One-click launcher for macOS / Windows: sets everything up, with a web control panel and optional remote access. |
-| `setup-local.sh` / `setup-local.cmd` | Local setup for an agent running on the same machine. |
+To open the panel again while UDriver is running, start the launcher again: it opens the panel without a password. The
+link it opens works once and only for a minute, so a copied link or browser history can't open the panel later.
 
-## Features
+The panel and the server run only while the launcher window is open. Nothing is added to startup and no background
+service is installed.
 
-- **See the screen** — full UI tree with stable element ids, element search, screenshots with id overlays, hit-testing.
-- **Act like a player** — click, hover, drag, scroll, focus, type, press keys, or drive the Input System's virtual mouse and keyboard.
-- **Investigate without trusting the UI** — query logs, exceptions and UI events; read and write any object through reflection paths.
-- **Set your own probes** — watches, method traces (Harmony), triggers, frame-by-frame recording, time control.
-- **Measure** — profiler counters and top memory consumers.
-- **Drive the editor** — enter Play Mode, compile, run EditMode/PlayMode tests, build, open scenes, query assets.
-- **Build → launch → verify loop** — `editor_build`, `app_launch`, run a scenario, return a verdict.
-- **Safe by default** — localhost only, per-run token, sandboxed reflection, allow-listed paths and launch arguments.
-
-## Quick start
-
-### Requirements
-
-- Unity **6000.0** or newer
-- .NET **8** SDK (the launchers install it for you)
-- An MCP client (for example Claude, Claude Code, or any other MCP-capable agent)
-
-### Option A — agent on the same computer
-
-**Windows, Claude Code:** double-click `UDriver.cmd` and type **1**. It installs .NET if needed, builds the server and
-adds it to Claude Code. When asked, drag your Unity project folder into the window (the package is copied into its
-`Packages` folder), or the game's `.exe` for a game build only. Then open Unity and ask Claude to run `self_test`.
-
-**Any system, any agent:**
-
-1. Copy `com.udriver.agent` into your Unity project's `Packages/` folder.
-2. Build the server and get a ready-to-paste config:
-
-   ```bash
-   sh setup-local.sh
-   ```
-
-   On Windows double-click `setup-local.cmd`. It also writes `run-server.cmd` and prints an `ssh` command, so Claude Code on
-   another computer can use this one over SSH.
-3. Add the printed command or JSON block to your MCP client. For Claude Code it looks like:
-
-   ```bash
-   claude mcp add udriver -e UDRIVER_BUILDS_DIR="/path/to/udriver/Builds" -- dotnet "/path/to/udriver/UDriver.Mcp/bin/Release/net8.0/udriver-mcp.dll"
-   ```
-
-4. Open the project in Unity and ask the agent to run `self_test` once — it reports which capabilities work in your project.
-
-### Option B — launcher with remote access (macOS, Windows)
-
-1. Put the `udriver` folder somewhere permanent, for example `Documents`.
-2. macOS: double-click `UDriver.command`. If macOS blocks it, right-click it and choose **Open**.
-   Windows: double-click `UDriver.cmd` and type **2**. If Windows warns about the file, choose **More info → Run anyway**.
-3. A setup page opens in your browser. Enter your Cloudflare domain, pick your Unity project folder (or choose **Game build** and pick the `.app` on macOS or the `.exe` on Windows) and click **Install**.
-4. The page turns into the control panel, which shows the connector address and the owner password.
-5. In your MCP client add a custom connector with that address and sign in with the owner password.
-   Works with Claude (claude.ai, Claude Desktop) and Gemini (Settings → Connectors → Custom; leave Client ID and
-   Client secret empty). For another web client, add its sign-in hosts to `UDRIVER_OAUTH_REDIRECT_HOSTS` in
-   `~/.udriver/remote.env`, separated by commas. On Windows `~/.udriver` means `%USERPROFILE%\.udriver`.
-
-The launcher installs missing tools into `~/.udriver` (.NET and `cloudflared`; on Windows `cloudflared` is installed with `winget`), builds the server,
-creates a Cloudflare tunnel and copies the package into your Unity project. Nothing is added to
-autostart and no background services are installed: the server runs only while the launcher window is open.
-
-**Control panel:** `http://127.0.0.1:8787/panel` locally, or `https://udriver.<your-domain>/panel` from any device
-(owner password required). It shows the tunnel, Unity and agent status, the agent's last actions, and has
-**Observe only**, **Disconnect agent** and **Stop everything** buttons.
-
-> Calls through a remote connector are limited to 60–90 seconds because the proxy drops longer requests.
-
-### Use with a game build only (no Unity project)
-
-You can drive a game build without its project or the Unity editor, as long as the build already contains UDriver.
-
-**Requirements.** A **Development Build** made with `com.udriver.agent` in its project. The driver starts itself only
-in the editor and in development builds; a release build stays silent unless it was built with the scripting symbol
-`UDRIVER_FORCE`. Check: the build contains `UDriver.Runtime.dll` in `Contents/Resources/Data/Managed` (macOS) or
-`<Name>_Data/Managed` (Windows/Linux). IL2CPP builds have no DLLs there; they work too.
-
-**Steps.**
-1. Same computer: `sh setup-local.sh /path/to/MyGame.app` (Windows: `setup-local.cmd "C:\Games\MyGame"`, the folder or the
-   `.exe`, or `UDriver.cmd` option 1). The build is added to `UDRIVER_BUILDS_DIR`; add the printed config to your agent.
-   Remote access: in the setup page choose **Game build**.
-2. Ask the agent to start the game with `app_launch`, or start it yourself and ask for `app_connect`. `app_connect` finds a
-   running game by itself, also when it was started on another port with `-udriver-port`. In the control panel, **Launch**
-   starts the configured build.
-
-**Limits.** `editor_*` tools and edit-mode inspection need the editor and are unavailable. `trace_add` works only in Mono
-builds (with Harmony in the build). IL2CPP strips unused code: `state_get`, `state_call` and `types_find` reach only what
-survived stripping; ask for a build with *Managed Stripping Level* set to Minimal (or a `link.xml`).
-
-**Shipping such a build (project owners).** Keep `com.udriver.agent` in the project and make a Development Build for
-testers. For player-facing builds define `UDRIVER_DISABLE` in *Player Settings → Scripting Define Symbols*: the package
-is then left out of the build completely.
-
-## Tools (51)
+## What the agent can do
 
 | Group | Tools |
 |---|---|
-| Process | `app_launch`, `app_kill`, `app_status`, `app_connect` |
-| Reading the UI | `status`, `ui_tree`, `ui_find`, `ui_inspect`, `screenshot`, `screen_pick` |
-| Actions | `ui_click`, `ui_hover`, `ui_drag`, `pointer`, `ui_scroll`, `ui_scroll_to`, `ui_set_value`, `ui_focus`, `type_text`, `key`, `batch` |
-| Events | `events_query`, `events_config`, `wait_for` |
-| State and code | `scene_tree`, `locate`, `state_get`, `state_set`, `state_call`, `types_find`, `type_members` |
-| Probes | `watch_add`, `trace_add`, `trigger_add`, `probe_list`, `probe_remove` |
-| Frames and time | `frames_record`, `frames_get`, `time_control` |
-| Profiler | `profiler_get`, `profiler_list`, `memory_top` |
-| Editor | `editor_status`, `editor_play`, `editor_compile`, `editor_tests`, `editor_build`, `editor_scene`, `editor_assets`, `editor_menu` |
-| Diagnostics | `self_test` |
+| Start and find games | `app_launch`, `app_kill`, `app_status`, `app_connect`, `targets` |
+| See the screen | `status`, `ui_tree`, `ui_find`, `ui_inspect`, `screenshot`, `screen_pick`, `locate` |
+| Act like a player | `ui_click`, `ui_hover`, `ui_drag`, `pointer`, `ui_scroll`, `ui_scroll_to`, `ui_set_value`, `ui_focus`, `type_text`, `key`, `play`, `input_actions`, `batch` |
+| Logs and events | `events_query`, `events_config`, `errors`, `wait_for` |
+| Game data | `scene_tree`, `state_get`, `state_query`, `state_export`, `state_set`, `state_call`, `types_find`, `type_members` |
+| Probes and time | `watch_add`, `trace_add`, `trigger_add`, `probe_list`, `probe_remove`, `frames_record`, `frames_get`, `time_control` |
+| Performance | `profiler_get`, `profiler_list`, `render_stats`, `render_scene` |
+| Memory | `memory_summary`, `memory_top`, `memory_snapshot`, `memory_watch`, `memory_refs`, `memory_capture` |
+| Unity Editor | `editor_status`, `editor_play`, `editor_compile`, `editor_tests`, `editor_build`, `editor_scene`, `editor_assets`, `editor_menu` |
+| Check | `self_test` |
 
-Good to know:
+`editor_menu` is off unless you turn it on with the environment variable `UDRIVER_ENABLE_TOOLS=editor_menu`.
+`editor_build` writes builds only to the folders listed in the environment variable `UDRIVER_BUILDS_DIR`, and is off without it.
 
-- **Element ids.** Ids below `1000000` are UI Toolkit elements, ids from `1000000` up are uGUI objects. Actions pick the right system automatically. Ids go stale when the UI is rebuilt.
-- **Input method.** `method=event` (default) synthesizes UI Toolkit events or calls uGUI handlers through the EventSystem and works even when the window is not focused. `method=input` uses Input System virtual devices and reaches gameplay code and the 3D world.
-- **The world.** `locate` returns an object's screen position, `screen_pick` tells what is under a point; click it with `ui_click x,y method=input`.
-- **Outside Play Mode** the `editor_*` tools work, as do `scene_tree`, `state_get`, `state_set`, `state_call`, `types_find` and `type_members`.
-- **State paths:** `/Object/Child:Component.field[0]`, `@Namespace.Type.staticField`, `#12.dataSource`.
-- **Tests:** `editor_tests action=run mode=PlayMode`, then `status` and `results` (requires the Test Framework package).
+## Several games and access levels
+
+Add as many games as you need, for example two game clients side by side. Each one is a Unity project or a game build.
+The agent can drive them at the same time and tells them apart by name.
+
+Each game has its own access level, which you set in the panel or in the terminal setup:
+
+- **Watch.** Looks at the screen, the interface, the logs and the game data. Changes nothing.
+- **Play.** Also clicks, types, moves, presses keys, starts and stops the game and runs tests, like a player or a tester.
+- **Full control.** Also changes game data, calls game code, builds the game and opens scenes. Use it for debugging.
+
+The panel lists every connected agent. You can disconnect any of them at any time.
+
+**Game builds without the project.** The build must be a Development Build made with the `com.udriver.agent` package in
+its project. To leave UDriver out of the builds you ship to players, add `UDRIVER_DISABLE` under *Player Settings >
+Scripting Define Symbols*.
+
+## Remote access
+
+To use UDriver from another device or from a web agent, turn on **Remote access** in the panel. The panel walks you
+through it: it installs `cloudflared`, signs you in to Cloudflare, lets you pick an address on your domain and asks for
+a panel password. You need a domain in a Cloudflare account.
+
+- **Adding an agent.** The panel shows an address and a one-time code. Paste the address into your agent and enter the
+  code on the sign-in page. A code works once and expires in 10 minutes.
+- **The panel password** opens the panel from another device. Agents never get it. After 10 wrong passwords or codes
+  from one address, or 50 from everyone together, sign-in pauses for 10 minutes.
+- **From another device** the panel can show your games and agents, stop games, lower access, disconnect agents, give
+  one-time codes and restart or turn off the tunnel. Adding games, changing their folders, launching games and raising
+  access work only on the computer that runs UDriver.
+- **Turning it off** closes the tunnel at once. Agents on this computer keep working.
+
+Calls through remote access are limited to about 60 to 90 seconds, because the proxy drops longer requests. Some web
+agents sign in from an address UDriver doesn't know yet. For those, set the environment variable
+`UDRIVER_OAUTH_REDIRECT_HOSTS` to the sign-in host before starting the launcher.
 
 ## Security
 
-UDriver is built so that a model can operate Unity — and nothing else.
+The agent works only inside the games you add. UDriver doesn't give it your files, your terminal or other apps.
 
-### Protection from outside access
+- Games and the editor listen only on `127.0.0.1` and accept only requests with a random token made for each run.
+  Web pages can't reach them.
+- Reading and changing game data can't reach files, processes, the network or environment variables.
+- `app_launch` runs only the games you added, with short window and graphics arguments only.
+- Screenshots show only the game window, never the desktop.
+- `state_export` and `memory_capture` write files to `~/.udriver/exports`. The folder keeps at most 2 GB and deletes
+  its oldest files first. To change the limit, set the environment variable `UDRIVER_EXPORTS_MAX_MB` (in megabytes)
+  before starting the launcher or the Unity editor.
+- Settings, passwords and keys are stored in `~/.udriver` (on Windows `%USERPROFILE%\.udriver`), readable only by you.
+- Remote access goes only through a Cloudflare tunnel over HTTPS, with a sign-in for each agent.
 
-- **Localhost only.** The game and the editor listen on `127.0.0.1`; the port is not reachable from the network.
-- **Access token.** Every run creates a random token. The server receives it through an environment variable (`app_launch`) or the owner-only file `~/.udriver/<port>.token`. Requests without it get `401`.
-- **Browser protection.** Requests with an `Origin` header, a foreign `Host` or a non-JSON content type are rejected, so a web page cannot talk to the driver.
-- **Remote mode.** Exposed only through a Cloudflare tunnel over HTTPS. The connector signs in with OAuth 2.1 + PKCE and the owner password; after 5 wrong attempts from one address, sign-in from that address is locked for 10 minutes (and for everyone after 100 wrong attempts in 10 minutes). Panel buttons are protected against cross-site requests; setup, domain change and showing the password are available only on the computer itself. Secrets live in `~/.udriver/remote.env`, readable only by you.
+What UDriver can't protect against:
 
-### Limits on the model
+- **The agent's own tools.** Many agents can read files or run commands by themselves, without UDriver. Turn that
+  off in the agent's settings if you need it isolated.
+- **Your game's own code.** With Full control the agent can call any method of your game, including one that writes
+  files. Use Watch or Play when you don't need more.
+- **Real actions are real.** If the game talks to real servers or accounts, the agent's actions reach them too. Use a
+  test environment.
+- **Text on the screen.** What the game shows and logs reaches the agent and may try to steer it.
+- **Anyone with your panel password** can control UDriver from another device while remote access is on.
+- For the strongest isolation, run the agent and Unity in a separate user account or a virtual machine.
 
-These are set by a human in the MCP configuration; the model cannot change them.
+Found a vulnerability? Please report it privately, see [SECURITY.md](SECURITY.md).
 
-- **No file access.** Reflection (`state_get`, `state_set`, `state_call`, `watch_add`, `wait_for`) cannot reach files, processes, the network, environment variables or assembly loading. Unity APIs that take a file path (`ScreenCapture`, `AssetBundle`, `Profiling`, `Video`, `Networking`) are blocked too.
-- **Stays inside the project.** `editor_scene` and `editor_assets` accept only paths inside `Assets/` and `Packages/`. `editor_menu` is off by default. Builds are written only to an allowed folder.
-- **No foreign executables.** `app_launch` runs only from allowed folders, with `..` and symlink checks.
-- **No paths in launch arguments.** Only short window and graphics arguments are allowed; `-logFile` and similar are rejected.
-- **No other programs.** The server talks only to ports where UDriver is registered.
-- **Screenshots** capture only the game window, never the desktop.
+## Good to know
 
-### What UDriver cannot protect against
-
-- **The agent's own built-in tools.** Most agents have their own file and terminal access, independent of UDriver. Turn it off in the agent's settings if you need isolation.
-- **Your game's own code.** If the project has a method that reads arbitrary files, `state_call` can call it. For full isolation disable `state_call` and `state_set`.
-- **Real actions are real.** Point the agent at a test environment, never at production services.
-- **Prompt injection.** Text from the screen and logs reaches the model and may try to steer it.
-- **The strongest boundary is the OS.** Run the agent and the editor under a separate OS account or in a VM that contains only the project.
-
-> Define the scripting symbol `UDRIVER_DISABLE` to exclude the package from a build. Never ship the driver in player builds.
-
-Found a vulnerability? Please report it privately — see [SECURITY.md](SECURITY.md).
-
-## Configuration
-
-| Variable | Effect |
-|---|---|
-| `UDRIVER_BUILDS_DIR` | Folders `app_launch` may run from and `editor_build` may write to (separated by `;` on Windows, `:` on macOS/Linux). Unset — launching and building are disabled. |
-| `UDRIVER_READONLY=1` | Observe only: tree, screenshots, state reads, logs. |
-| `UDRIVER_DISABLE_TOOLS` | Comma-separated tools to disable. |
-| `UDRIVER_ENABLE_TOOLS` | Enables tools that are off by default (currently `editor_menu`). |
-| `UDRIVER_ALLOWED_ARGS` | Extra allowed game launch arguments, for example `--server`. |
-| `UDRIVER_UNSAFE=1` | Set on the game or editor. Lifts the reflection sandbox. Off by default. |
-| `UDRIVER_AUTH=secret-url` + `UDRIVER_URL_SECRET` | Remote mode fallback without OAuth (in `~/.udriver/remote.env`). |
-
-Strict configuration example:
-
-```json
-"env": {
-  "UDRIVER_BUILDS_DIR": "/Users/me/builds",
-  "UDRIVER_DISABLE_TOOLS": "state_call,state_set"
-}
-```
-
-## Extending
-
-Emit your own events and register your own tools from game code:
-
-```csharp
-UDriver.QA.Emit("AlgorithmStarted", "id=5");                  // shows up as [custom] in events_query
-UDriver.Driver.Register(new UDriver.ToolDef { /* ... */ }, handler); // a new tool for the agent
-```
-
-**Method tracing** (`trace_add`) uses Harmony: put `0Harmony.dll` (Lib.Harmony 2.x, net48) into `Assets/Plugins`.
-Mono only. Everything else works without Harmony.
-
-## Known limitations
-
-- UI drawn with IMGUI (`OnGUI`) or custom rendering is not in the tree — use screenshots and coordinate clicks.
-- Real user clicks on uGUI are not logged as events (agent actions and all UI Toolkit events are).
-- `time_control pause` sets `Time.timeScale = 0`; true pause and stepping are available in the editor (`editor_play pause/step`).
-- `screen_pick` in the world tests renderer bounds, not colliders.
-- IL2CPP: everything works except `trace_add`; disable code stripping for reflection.
-- `method=input` affects UI only while the game window is focused — Unity ignores device input in the background. `method=event` works in the background.
-- World-space UI Toolkit panels: element coordinates are unreliable.
-- Windows: `setup-local.cmd` has been run on a real PC; `UDriver.cmd` and remote mode on Windows are reviewed but not yet tested end to end. Linux: use `setup-local.sh` or `sh UDriver.command`; tested less than macOS. Reports are welcome.
-- While the editor builds or reloads scripts it does not respond; the server waits up to 25 seconds.
+- Interfaces drawn with IMGUI (`OnGUI`) aren't in the UI tree. The agent uses screenshots and clicks by position.
+- `trace_add` needs Harmony 2.4 or newer (`0Harmony.dll` in `Assets/Plugins`) and doesn't work in IL2CPP builds.
+- IL2CPP builds strip unused code, so game data reads reach only what was kept. Set *Managed Stripping Level* to Minimal.
+- Input through the Input System reaches the game only while its window is in front. Plain UI clicks work in the background.
+- While the editor compiles or reloads scripts, it doesn't answer for up to 25 seconds.
+- Windows has been tested less than macOS.
 
 ## Uninstall
+
+On a Mac or Linux, run:
 
 ```bash
 sh uninstall.sh
 ```
 
-It stops UDriver and prints the commands to remove settings, the Cloudflare tunnel and the Unity package.
+It stops the UDriver panel, lists the Unity projects you added, and asks before deleting your
+settings. Agents that use UDriver keep running; remove UDriver from their MCP settings.
 
-On Windows: close the UDriver window, run `claude mcp remove udriver -s user` (if you used option 1), delete the folder
-`%USERPROFILE%\.udriver`, and remove the tunnel with `cloudflared tunnel delete udriver` if you used remote access.
+On Windows, close the UDriver window, remove UDriver from your agent's MCP settings, delete the folder
+`Packages\com.udriver.agent` in your Unity projects and the folder `%USERPROFILE%\.udriver`. If you used remote access,
+delete the tunnel `udriver` in the Cloudflare dashboard.
 
 ## License
 
-[MIT](LICENSE)
+Free to use, including at work. Redistribution and resale need written permission. Full terms: [LICENSE](LICENSE).
+
+Copyright (c) 2026 Vladislav Pesotchi.

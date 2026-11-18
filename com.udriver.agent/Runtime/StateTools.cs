@@ -1,7 +1,10 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
@@ -25,6 +28,8 @@ namespace UDriver
             Driver.Register("state_get", Driver.Sync(Get));
             Driver.Register("state_set", Driver.Sync(Set));
             Driver.Register("state_call", Driver.Sync(Call));
+            Driver.Register("state_query", QueryTool);
+            Driver.Register("state_export", ExportTool);
             Driver.Register("types_find", Driver.Sync(TypesFind));
             Driver.Register("type_members", Driver.Sync(TypeMembers));
             Driver.Register("screen_pick", Driver.Sync(ScreenPick));
@@ -38,6 +43,13 @@ namespace UDriver
         {
             "System.Object", "System.String", "System.Math", "System.MathF", "System.Convert", "System.DateTime", "System.DateTimeOffset", "System.TimeSpan",
             "System.Guid", "System.Array", "System.Enum", "System.ValueType", "System.Decimal", "System.Random", "System.Version", "System.BitConverter"
+        };
+        static readonly string[] AllowedUnity =
+        {
+            "UnityEngine.UI", "UnityEngine.UIElements", "UnityEngine.EventSystems", "UnityEngine.InputSystem", "UnityEngine.SceneManagement", "UnityEngine.Rendering",
+            "UnityEngine.AI", "UnityEngine.Animations", "UnityEngine.Audio", "UnityEngine.Tilemaps", "UnityEngine.TextCore", "UnityEngine.U2D", "UnityEngine.Playables",
+            "UnityEngine.Timeline", "UnityEngine.Events", "UnityEngine.Pool", "UnityEngine.Serialization", "UnityEngine.Splines",
+            "Unity.Mathematics", "Unity.Collections", "Unity.Cinemachine", "Unity.AI.Navigation", "TMPro",
         };
         static readonly string[] DeniedUnity =
         {
@@ -55,18 +67,20 @@ namespace UDriver
         };
 
         /// <summary>Reason why reflection must not touch this type/member under the default policy, or null if it may.</summary>
-        static string Why(Type t, string memberName)
+        internal static string Why(Type t, string memberName)
         {
             if (Driver.AllowUnsafe || t == null) return null;
             string full = (t.FullName ?? t.Name), ns = t.Namespace ?? "";
             if (ns == "UDriver" || ns.StartsWith("UDriver.", StringComparison.Ordinal)) return "driver internals";
-            if (!IsEngine(t.Assembly)) return null; // the game's own code and its plugins
+            if (!IsEngine(t.Assembly)) return EditorOnly(t.Assembly) ? "editor code (use the editor_* tools)" : null; // the game's own code and its plugins
             if (ns.StartsWith("UnityEditor", StringComparison.Ordinal)) return "UnityEditor API (use the editor_* tools)";
             if (ns == "UnityEngine" || ns.StartsWith("UnityEngine.", StringComparison.Ordinal) || ns.StartsWith("Unity.", StringComparison.Ordinal) || ns == "TMPro")
             {
                 string member = full + "." + memberName;
                 foreach (var d in DeniedUnity) if (member.StartsWith(d, StringComparison.Ordinal)) return "Unity API that reaches outside the game (files, network, devices, OS)";
-                return null;
+                if (ns == "UnityEngine") return null;
+                foreach (var a in AllowedUnity) if (ns == a || ns.StartsWith(a + ".", StringComparison.Ordinal)) return null;
+                return "Unity namespace outside the game-play list (" + ns + ")";
             }
             if (t.IsPrimitive || t.IsEnum || SafeSystemTypes.Contains(full) || full.StartsWith("System.Tuple", StringComparison.Ordinal)
                 || full.StartsWith("System.ValueTuple", StringComparison.Ordinal) || full.StartsWith("System.Nullable", StringComparison.Ordinal)) return null;
@@ -75,10 +89,7 @@ namespace UDriver
             return "system API outside the safe list (files, processes, network, environment, reflection, threading...)";
         }
 
-        /// <summary>
-        /// Keeps reflection inside the game: no file/process/network/environment/reflection APIs, no UnityEditor API,
-        /// no driver internals - for reading, writing and calling alike - unless a human set UDRIVER_UNSAFE=1.
-        /// </summary>
+        /// <summary>No file, process, network, environment, reflection or UnityEditor APIs and no driver internals unless a human set UDRIVER_UNSAFE=1.</summary>
         internal static void Guard(MemberInfo m, string op)
         {
             string why = Why(m.DeclaringType, m.Name);
@@ -88,6 +99,32 @@ namespace UDriver
         }
 
         // ---------------- types ----------------
+
+#if UNITY_EDITOR
+        static HashSet<string> _playerAssemblies;
+        static readonly Dictionary<Assembly, bool> EditorOnlyCache = new Dictionary<Assembly, bool>();
+
+        /// <summary>Assemblies that exist only in the editor: not part of a player build and referencing UnityEditor.</summary>
+        static bool EditorOnly(Assembly asm)
+        {
+            lock (EditorOnlyCache)
+            {
+                bool r;
+                if (EditorOnlyCache.TryGetValue(asm, out r)) return r;
+                if (_playerAssemblies == null)
+                {
+                    _playerAssemblies = new HashSet<string>();
+                    foreach (var x in UnityEditor.Compilation.CompilationPipeline.GetAssemblies(UnityEditor.Compilation.AssembliesType.Player)) _playerAssemblies.Add(x.name);
+                }
+                r = false;
+                if (!_playerAssemblies.Contains(asm.GetName().Name))
+                    foreach (var n in asm.GetReferencedAssemblies()) if (n.Name.StartsWith("UnityEditor", StringComparison.Ordinal)) { r = true; break; }
+                return EditorOnlyCache[asm] = r;
+            }
+        }
+#else
+        static bool EditorOnly(Assembly asm) { return false; }
+#endif
 
         static bool IsEngine(Assembly asm)
         {
@@ -134,7 +171,7 @@ namespace UDriver
             return found;
         }
 
-        static string TypeName(Type t)
+        internal static string TypeName(Type t)
         {
             if (t == null) return "?";
             if (t == typeof(void)) return "void";
@@ -153,7 +190,7 @@ namespace UDriver
 
         // ---------------- path resolution ----------------
 
-        static IEnumerable<GameObject> RootObjects()
+        internal static IEnumerable<GameObject> RootObjects()
         {
             for (int i = 0; i < SceneManager.sceneCount; i++)
             {
@@ -236,17 +273,104 @@ namespace UDriver
                    + ". Click it with ui_click x,y method=input (may be occluded: check screen_pick).");
         }
 
+        /// <summary>GameObject by hierarchy path or #u id; a path that matches several objects is an error listing them.</summary>
         static GameObject FindGo(string path)
         {
-            var parts = path.Trim('/').Split('/');
-            foreach (var root in RootObjects())
+            if (path.StartsWith("#u", StringComparison.Ordinal))
             {
-                if (root.name != parts[0]) continue;
-                var t = root.transform;
-                for (int i = 1; i < parts.Length && t != null; i++) t = t.Find(parts[i]);
-                if (t != null) return t.gameObject;
+                var o = ById(path);
+                var go = o as GameObject ?? (o as Component)?.gameObject;
+                if (go == null) throw new ToolException(path + " is a " + o.GetType().Name + ", not a GameObject");
+                return go;
             }
-            return null;
+            var parts = path.Trim('/').Split('/');
+            var cur = new List<Transform>();
+            foreach (var root in RootObjects()) if (root.name == parts[0]) cur.Add(root.transform);
+            for (int i = 1; i < parts.Length && cur.Count > 0; i++)
+            {
+                var next = new List<Transform>();
+                foreach (var t in cur) foreach (Transform c in t) if (c.name == parts[i]) next.Add(c);
+                cur = next;
+            }
+            if (cur.Count <= 1) return cur.Count == 1 ? cur[0].gameObject : null;
+            var sb = new StringBuilder("'" + path + "' matches " + cur.Count + " GameObjects - address one by its id:");
+            for (int i = 0; i < cur.Count && i < 20; i++) sb.Append("\n  ").Append(PathOf(cur[i].gameObject)).Append(' ').Append(IdOf(cur[i].gameObject));
+            if (cur.Count > 20) sb.Append("\n  ... and ").Append(cur.Count - 20).Append(" more");
+            throw new ToolException(sb.ToString());
+        }
+
+        static Component FindComponent(GameObject go, string name, string where)
+        {
+            foreach (var c in go.GetComponents<Component>())
+                if (c != null && (c.GetType().Name == name || c.GetType().FullName == name)) return c;
+            throw new ToolException("component '" + name + "' not found on " + where);
+        }
+
+        // ---------------- object ids ----------------
+
+        const int MaxObjIds = 10000;
+        static readonly Dictionary<int, WeakReference> ObjById = new Dictionary<int, WeakReference>();
+        static readonly ConditionalWeakTable<object, object> IdByObj = new ConditionalWeakTable<object, object>();
+        static readonly Queue<int> ObjOrder = new Queue<int>();
+        static int _nextObjId;
+
+        internal static long Key(UnityEngine.Object o)
+        {
+#if UNITY_6000_4_OR_NEWER
+            return (long)EntityId.ToULong(o.GetEntityId());
+#else
+            return o.GetInstanceID();
+#endif
+        }
+
+        /// <summary>"#u&lt;instanceID&gt;" for live Unity objects, "#o&lt;n&gt;" for destroyed Unity objects and other objects (held weakly, the newest 10000), null for values.</summary>
+        public static string IdOf(object v)
+        {
+            var uo = v as UnityEngine.Object;
+            if (!ReferenceEquals(uo, null) && uo != null) return "#u" + Key(uo);
+            if (v == null || v is string || v is Type || v.GetType().IsValueType) return null;
+            lock (ObjById)
+            {
+                object id;
+                if (IdByObj.TryGetValue(v, out id)) return "#o" + id;
+                if (ObjOrder.Count >= MaxObjIds)
+                {
+                    int old = ObjOrder.Dequeue();
+                    var target = ObjById[old].Target;
+                    if (target != null) IdByObj.Remove(target);
+                    ObjById.Remove(old);
+                }
+                int n = ++_nextObjId;
+                ObjById[n] = new WeakReference(v);
+                IdByObj.Add(v, n);
+                ObjOrder.Enqueue(n);
+                return "#o" + n;
+            }
+        }
+
+        internal static object ById(string id)
+        {
+            int n = 0;
+            bool ok = id.Length > 2 && int.TryParse(id.Substring(2), out n);
+            if (id.StartsWith("#u", StringComparison.Ordinal))
+            {
+#if UNITY_6000_4_OR_NEWER
+                long e;
+                var o = long.TryParse(id.Substring(2), out e) ? Resources.EntityIdToObject(EntityId.FromULong((ulong)e)) : null;
+#else
+                var o = ok ? Resources.InstanceIDToObject(n) : null;
+#endif
+                if (o == null) throw new ToolException("object " + id + " not found (destroyed?)");
+                return o;
+            }
+            if (ok && id[1] == 'o')
+            {
+                object t = null; WeakReference w;
+                lock (ObjById) if (ObjById.TryGetValue(n, out w)) t = w.Target;
+                if (t == null) throw new ToolException("object " + id + " is gone (collected, or older than the newest " + MaxObjIds + " ids) - get a fresh id with state_get");
+                return t;
+            }
+            throw new ToolException("bad id '" + id + "': ids look like #u12345 (Unity object) or #o17 (other object)");
         }
 
         static object Member(Ref r, string name)
@@ -286,7 +410,7 @@ namespace UDriver
         }
 
         /// <summary>Splits ".a.b[3].c" into tokens "a","b","[3]","c".</summary>
-        static List<string> Tokens(string s)
+        internal static List<string> Tokens(string s)
         {
             var res = new List<string>();
             int i = 0;
@@ -309,6 +433,18 @@ namespace UDriver
         static Ref Root(string path, out string rest)
         {
             rest = "";
+            if (path.StartsWith("#u", StringComparison.Ordinal) || path.StartsWith("#o", StringComparison.Ordinal))
+            {
+                int k = 2;
+                while (k < path.Length && (char.IsDigit(path[k]) || (k == 2 && path[k] == '-'))) k++;
+                var o = ById(path.Substring(0, k));
+                rest = path.Substring(k);
+                if (!rest.StartsWith(":", StringComparison.Ordinal) || !(o is GameObject)) return new Ref { Obj = o };
+                int end = rest.IndexOfAny(new[] { '.', '[' });
+                var comp = FindComponent((GameObject)o, end >= 0 ? rest.Substring(1, end - 1) : rest.Substring(1), path.Substring(0, k));
+                rest = end >= 0 ? rest.Substring(end) : "";
+                return new Ref { Obj = comp };
+            }
             if (path.StartsWith("#"))
             {
                 int k = 1;
@@ -345,11 +481,9 @@ namespace UDriver
                 int end = after.IndexOfAny(new[] { '.', '[' });
                 string compName = end >= 0 ? after.Substring(0, end) : after;
                 rest = end >= 0 ? after.Substring(end) : "";
-                foreach (var c in go.GetComponents<Component>())
-                    if (c != null && (c.GetType().Name == compName || c.GetType().FullName == compName)) return new Ref { Obj = c };
-                throw new ToolException("component '" + compName + "' not found on " + goPath);
+                return new Ref { Obj = FindComponent(go, compName, goPath) };
             }
-            throw new ToolException("path must start with '/' (GameObject path), '@' (static type) or '#' (UI element id). Example: /App/Services:OrderService.orders[0].status");
+            throw new ToolException("path must start with '/' (GameObject path), '@' (static type), '#u'/'#o' (object id from state_get) or '#' (UI element id). Example: /App/Services:OrderService.orders[0].status");
         }
 
         static Ref Walk(string path, int dropLast, out string last)
@@ -384,7 +518,7 @@ namespace UDriver
         static bool Simple(Type t)
         {
             return t.IsPrimitive || t.IsEnum || t == typeof(string) || t == typeof(decimal) || t == typeof(DateTime) || t == typeof(TimeSpan) || t == typeof(Guid)
-                   || (t.IsValueType && t.Namespace != null && t.Namespace.StartsWith("UnityEngine", StringComparison.Ordinal));
+                   || (t.IsValueType && t.Namespace != null && t.Namespace.StartsWith("UnityEngine", StringComparison.Ordinal) && !typeof(IEnumerable).IsAssignableFrom(t));
         }
 
         /// <summary>Thread-safe, shallow description of a value (used by traces).</summary>
@@ -401,81 +535,528 @@ namespace UDriver
             return TypeName(t);
         }
 
+        /// <summary>Short() plus the object id, for values the caller may want to open next.</summary>
+        static string Brief(object v)
+        {
+            string id = v == null || Simple(v.GetType()) ? null : IdOf(v);
+            return id == null ? Short(v) : Short(v) + " " + id;
+        }
+
+        sealed class Opts
+        {
+            public int Limit = 30;
+            public bool Props;
+            public string Members = "all";   // all | public | serialized
+        }
+
+        sealed class Page { public int Offset, Limit, Total = -1, Shown; public string Filter; }
+
+        struct Entry { public string Label, Error; public object Value; }
+
         public static string Format(object v, int depth, int maxItems, bool props)
         {
             var sb = new StringBuilder();
-            Format(sb, v, depth, maxItems, props, 0);
+            Format(sb, v, new Opts { Limit = maxItems, Props = props }, depth, null, 0, null);
             return sb.ToString();
         }
 
-        static void Format(StringBuilder sb, object v, int depth, int maxItems, bool props, int indent)
+        /// <summary>Collections do not consume a depth level; objects do. 'fields' applies at the first object level.</summary>
+        static void Format(StringBuilder sb, object v, Opts o, int depth, string[] fields, int indent, Page page)
         {
             if (sb.Length > 20000 || indent > 14) { sb.Append("..."); return; }
-            if (v == null) { sb.Append("null"); return; }
-            var t = v.GetType();
-            if (v is Type) { sb.Append("type ").Append(((Type)v).FullName); return; }
-            if (v is string || Simple(t)) { sb.Append(Short(v)); return; }
-            var uo = v as UnityEngine.Object;
-            if (!ReferenceEquals(uo, null) && uo == null) { sb.Append("destroyed ").Append(t.Name); return; }
+            if (Header(sb, v) || depth <= 0) return;
+            bool obj = !(v is IEnumerable) || v is Transform;
             string pad = new string(' ', (indent + 1) * 2);
+            int n = 0, shown = 0, from = page != null ? page.Offset : 0, limit = page != null ? page.Limit : obj ? 80 : o.Limit;
+            bool more = false;
+            foreach (var e in Entries(v, o, fields))
+            {
+                if (page != null && page.Filter != null && !Util.Contains(e.Label, page.Filter) && (e.Error != null || !Util.Contains(Line(e.Value, false), page.Filter))) continue;
+                if (n++ < from) continue;
+                if (shown >= limit)
+                {
+                    more = true;
+                    if (page == null) break;
+                    continue;
+                }
+                shown++;
+                sb.Append('\n').Append(pad).Append(e.Label).Append(" = ");
+                if (e.Error != null) sb.Append("<error: ").Append(e.Error).Append('>');
+                else Format(sb, e.Value, o, obj ? depth - 1 : depth, obj ? null : fields, indent + 1, null);
+            }
+            if (page != null) { page.Total = n; page.Shown = shown; }
+            else if (more) sb.Append('\n').Append(pad).Append(v is ICollection ? "... " + (((ICollection)v).Count - limit) + " more" : "... more");
+        }
 
+        /// <summary>Type, count and id; true when that already says everything (simple, null, destroyed or hidden).</summary>
+        static bool Header(StringBuilder sb, object v, bool ids = true)
+        {
+            if (v == null) { sb.Append("null"); return true; }
+            var t = v.GetType();
+            if (v is Type) { sb.Append("type ").Append(((Type)v).FullName); return true; }
+            if (v is string || Simple(t)) { sb.Append(Short(v)); return true; }
+            var uo = v as UnityEngine.Object;
+            if (!ReferenceEquals(uo, null) && uo == null) { sb.Append("destroyed ").Append(t.Name); return true; }
+            bool obj = !(v is IEnumerable) || v is Transform;
+            sb.Append(!ReferenceEquals(uo, null) ? t.Name + " \"" + uo.name + "\"" : TypeName(t));
+            if (!obj && v is ICollection) sb.Append(" count=").Append(((ICollection)v).Count);
+            string id = ids ? IdOf(v) : null;
+            if (id != null) sb.Append(' ').Append(id);
+            if (obj && Why(t, "") != null) { sb.Append(" (contents hidden by the safety policy)"); return true; }
+            return false;
+        }
+
+        static IEnumerable<Entry> Entries(object v, Opts o, string[] fields)
+        {
             var dict = v as IDictionary;
             if (dict != null)
             {
-                sb.Append(TypeName(t)).Append(" count=").Append(dict.Count);
-                if (depth <= 0) return;
-                int n = 0;
-                foreach (DictionaryEntry e in dict)
-                {
-                    if (n++ >= maxItems) { sb.Append('\n').Append(pad).Append("... ").Append(dict.Count - maxItems).Append(" more"); break; }
-                    sb.Append('\n').Append(pad).Append('[').Append(Short(e.Key)).Append("] = ");
-                    Format(sb, e.Value, depth, maxItems, props, indent + 1);   // collections do not consume a depth level
-                }
-                return;
+                foreach (DictionaryEntry de in dict) yield return new Entry { Label = "[" + Short(de.Key) + "]", Value = de.Value };
+                yield break;
             }
             var en = v as IEnumerable;
             if (en != null && !(v is Transform))
             {
-                var col = v as ICollection;
-                sb.Append(TypeName(t));
-                if (col != null) sb.Append(" count=").Append(col.Count);
-                if (depth <= 0) return;
-                int n = 0;
-                foreach (var x in en)
-                {
-                    if (n >= maxItems) { sb.Append('\n').Append(pad).Append("... more"); break; }
-                    sb.Append('\n').Append(pad).Append('[').Append(n++).Append("] = ");
-                    Format(sb, x, depth, maxItems, props, indent + 1);
-                }
-                return;
+                int i = 0;
+                foreach (var x in en) yield return new Entry { Label = "[" + i++ + "]", Value = x };
+                yield break;
             }
-
-            sb.Append(!ReferenceEquals(uo, null) ? t.Name + " \"" + uo.name + "\"" : TypeName(t));
-            if (depth <= 0) return;
-            if (Why(t, "") != null) { sb.Append(" (contents hidden by the safety policy)"); return; }
-            int count = 0;
-            for (var c = t; c != null && c != typeof(object) && c != typeof(MonoBehaviour) && c != typeof(Behaviour) && c != typeof(Component) && c != typeof(UnityEngine.Object); c = c.BaseType)
+            if (fields != null)
+            {
+                foreach (var f in fields)
+                {
+                    var e = new Entry { Label = f };
+                    try { e.Value = Pick(v, Tokens(f)); if (e.Value == Missing) e.Error = "no field/property '" + f + "'"; }
+                    catch (Exception ex) { e.Error = (ex.InnerException ?? ex).Message; }
+                    yield return e;
+                }
+                yield break;
+            }
+            for (var c = v.GetType(); c != null && c != typeof(object) && c != typeof(MonoBehaviour) && c != typeof(Behaviour) && c != typeof(Component) && c != typeof(UnityEngine.Object); c = c.BaseType)
             {
                 foreach (var f in c.GetFields(AllDeclared))
                 {
                     if (f.IsStatic || f.Name.IndexOf('<') >= 0 && !f.Name.EndsWith("k__BackingField", StringComparison.Ordinal)) continue;
-                    if (count++ >= 80) break;
-                    string name = f.Name.StartsWith("<", StringComparison.Ordinal) ? f.Name.Substring(1, f.Name.IndexOf('>') - 1) : f.Name;
-                    sb.Append('\n').Append(pad).Append(name).Append(" = ");
-                    object fv;
-                    try { fv = f.GetValue(v); } catch (Exception e) { sb.Append("<error: ").Append(e.Message).Append('>'); continue; }
-                    Format(sb, fv, depth - 1, maxItems, props, indent + 1);
+                    if (o.Members == "public" && !f.IsPublic) continue;
+                    if (o.Members == "serialized" && (f.IsInitOnly || f.IsNotSerialized || !f.IsPublic && !f.IsDefined(typeof(SerializeField), true) && !f.IsDefined(typeof(SerializeReference), true))) continue;
+                    var e = new Entry { Label = f.Name.StartsWith("<", StringComparison.Ordinal) ? f.Name.Substring(1, f.Name.IndexOf('>') - 1) : f.Name };
+                    try { e.Value = f.GetValue(v); } catch (Exception ex) { e.Error = ex.Message; }
+                    yield return e;
                 }
-                if (!props) continue;
+                if (!o.Props) continue;
                 foreach (var p in c.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
                 {
-                    if (!p.CanRead || p.GetIndexParameters().Length > 0 || count++ >= 120) continue;
-                    sb.Append('\n').Append(pad).Append(p.Name).Append(" (prop) = ");
-                    object pv;
-                    try { pv = p.GetValue(v); } catch (Exception e) { sb.Append("<error: ").Append((e.InnerException ?? e).Message).Append('>'); continue; }
-                    Format(sb, pv, depth - 1, maxItems, props, indent + 1);
+                    if (!p.CanRead || p.GetIndexParameters().Length > 0) continue;
+                    var e = new Entry { Label = p.Name + " (prop)" };
+                    try { e.Value = p.GetValue(v); } catch (Exception ex) { e.Error = (ex.InnerException ?? ex).Message; }
+                    yield return e;
                 }
             }
+        }
+
+        // ---------------- field paths inside collection items ----------------
+
+        internal static readonly object Missing = new object();
+        static readonly Dictionary<KeyValuePair<Type, string>, MemberInfo> Getters = new Dictionary<KeyValuePair<Type, string>, MemberInfo>();
+
+        /// <summary>Instance field or property by name, looked up and safety-checked once per type; Missing when the type has none.</summary>
+        static object Get1(object x, string name)
+        {
+            var key = new KeyValuePair<Type, string>(x.GetType(), name);
+            MemberInfo m;
+            lock (Getters)
+            {
+                if (!Getters.TryGetValue(key, out m))
+                {
+                    for (var t = key.Key; t != null && m == null; t = t.BaseType)
+                    {
+                        var f = t.GetField(name, AllDeclared);
+                        if (f != null) { m = f; break; }
+                        var p = t.GetProperty(name, AllDeclared);
+                        if (p != null && p.GetIndexParameters().Length == 0 && p.GetGetMethod(true) != null) m = p;
+                    }
+                    if (m != null) Guard(m, "reading");
+                    Getters[key] = m;
+                }
+            }
+            if (m == null) return Missing;
+            var fi = m as FieldInfo;
+            return fi != null ? fi.GetValue(fi.IsStatic ? null : x) : ((PropertyInfo)m).GetValue(x);
+        }
+
+        /// <summary>Follows tokens of a relative path ("owner.name", "items[0]"); no tokens means the value itself.</summary>
+        internal static object Pick(object x, List<string> toks)
+        {
+            foreach (var tok in toks)
+            {
+                if (x == null || x == Missing) return x;
+                x = tok[0] == '[' ? Index(x, tok.Substring(1, tok.Length - 2).Trim('"', '\'')) : Get1(x, tok);
+            }
+            return x;
+        }
+
+        static double? Number(object v)
+        {
+            if (v == null || v is string || v is bool || v is char || v.GetType().IsEnum || !(v is IConvertible)) return null;
+            try { return Convert.ToDouble(v, CultureInfo.InvariantCulture); } catch { return null; }
+        }
+
+        static string Text(object v)
+        {
+            if (v == null) return "null";
+            if (v is string) return (string)v;
+            var f = v as IFormattable;
+            return f != null ? f.ToString(null, CultureInfo.InvariantCulture) : v.ToString();
+        }
+
+        static int Compare(object x, object y)
+        {
+            if (x == y) return 0;
+            if (x == null || x == Missing) return -1;
+            if (y == null || y == Missing) return 1;
+            double? a = Number(x), b = Number(y);
+            double d;
+            if (a != null && b == null && y is string && double.TryParse((string)y, NumberStyles.Float, CultureInfo.InvariantCulture, out d)) b = d;
+            if (b != null && a == null && x is string && double.TryParse((string)x, NumberStyles.Float, CultureInfo.InvariantCulture, out d)) a = d;
+            if (a != null && b != null) return a.Value.CompareTo(b.Value);
+            return string.Compare(Text(x), Text(y), StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static readonly string[] Ops = { "==", "!=", "<", "<=", ">", ">=", "contains" };
+
+        /// <summary>Compares a value with a JSON value: numbers numerically, everything else as text ignoring case.</summary>
+        internal static bool Test(object v, string op, JToken want)
+        {
+            if (v == Missing) return false;
+            if (v is UnityEngine.Object && (UnityEngine.Object)v == null) v = null;
+            object w = want == null || want.Type == JTokenType.Null ? null : want is JValue ? ((JValue)want).Value : want.ToString(Newtonsoft.Json.Formatting.None);
+            if (op == "contains")
+            {
+                if (v == null || w == null) return false;
+                var en = v as IEnumerable;
+                if (en != null && !(v is string)) { foreach (var x in en) if (Compare(x, w) == 0) return true; return false; }
+                return Util.Contains(Text(v), Text(w));
+            }
+            if (v == null || w == null) return op == "==" ? v == w : op == "!=" && v != w;
+            int c = Compare(v, w);
+            switch (op)
+            {
+                case "==": return c == 0;
+                case "!=": return c != 0;
+                case "<": return c < 0;
+                case "<=": return c <= 0;
+                case ">": return c > 0;
+                case ">=": return c >= 0;
+            }
+            throw new ToolException("op must be one of " + string.Join(" ", Ops));
+        }
+
+        sealed class Cond { public string Field, Op; public List<string> Toks; public JToken Value; public int Missed; }
+
+        internal static void CheckOp(string op)
+        {
+            if (Array.IndexOf(Ops, op) < 0) throw new ToolException("op '" + op + "' is not supported; use one of " + string.Join(" ", Ops));
+        }
+
+        static Cond ParseCond(JToken t)
+        {
+            var o = t as JObject;
+            if (o == null || o.Str("field") == null) throw new ToolException("each condition is {\"field\":\"hp\",\"op\":\"<\",\"value\":10} (field \".\" is the item itself)");
+            var c = new Cond { Field = o.Str("field"), Op = o.Str("op", "=="), Value = o["value"] };
+            CheckOp(c.Op);
+            c.Toks = Tokens(c.Field);
+            return c;
+        }
+
+        // ---------------- walking big collections without freezing the game ----------------
+
+        internal const double FrameBudgetMs = 8;
+
+        internal sealed class Scan { public int Count, Frames; public string Partial; }
+
+        /// <summary>Visits items a few milliseconds per frame; visit returns false to stop early.</summary>
+        internal static IEnumerator Visit(object src, Func<object, int, bool> visit, Scan s)
+        {
+            var list = src as IList;
+            var it = list == null ? ((IEnumerable)src).GetEnumerator() : null;
+            var slice = System.Diagnostics.Stopwatch.StartNew();
+            for (int i = 0; ; i++)
+            {
+                object x;
+                if (list != null)
+                {
+                    if (i >= list.Count) break;
+                    x = list[i];
+                }
+                else
+                {
+                    bool next;
+                    try { next = it.MoveNext(); }
+                    catch (InvalidOperationException) { s.Partial = "the collection changed during the scan; results cover the first " + i + " item(s)"; break; }
+                    if (!next) break;
+                    x = it.Current;
+                }
+                s.Count++;
+                if (!visit(x, i)) break;
+                if (slice.Elapsed.TotalMilliseconds > FrameBudgetMs) { s.Frames++; yield return null; slice.Reset(); slice.Start(); }
+            }
+        }
+
+        static object Collection(string path)
+        {
+            var src = Resolve(path);
+            if (src == null || src is string || !(src is IEnumerable) || src is Transform)
+                throw new ToolException(path + " is " + (src == null ? "null" : "a " + TypeName(src.GetType())) + ", not a collection - point path at a list, array, set or dictionary");
+            return src;
+        }
+
+        /// <summary>One-line view of an item: simple values as is, objects as their first members.</summary>
+        static string Line(object x, bool ids = true)
+        {
+            var sb = new StringBuilder();
+            if (Header(sb, x, ids) || !(!(x is IEnumerable) || x is Transform)) return sb.ToString();
+            int n = 0;
+            sb.Append(" {");
+            foreach (var e in Entries(x, new Opts(), null))
+            {
+                if (n++ >= 8) { sb.Append(", ..."); break; }
+                sb.Append(n > 1 ? ", " : "").Append(e.Label).Append('=').Append(e.Error != null ? "<error>" : Short(e.Value));
+            }
+            return Util.OneLine(sb.Append('}').ToString(), 400);
+        }
+
+        sealed class Stat
+        {
+            public int Count, Numbers; public double Min = double.MaxValue, Max = double.MinValue, Sum;
+            public readonly HashSet<string> Strings = new HashSet<string>();
+            public void Add(object v)
+            {
+                if (v == Missing) return;
+                Count++;
+                double? d = Number(v);
+                if (d != null) { Numbers++; Sum += d.Value; if (d.Value < Min) Min = d.Value; if (d.Value > Max) Max = d.Value; }
+                else if (v is string || v is Enum || v is bool || v is char) Strings.Add(Text(v));
+            }
+            public string Describe()
+            {
+                var s = Count + " value(s)";
+                if (Numbers > 0) s += "; numbers " + Numbers + ": min " + Min.ToString("0.###", CultureInfo.InvariantCulture) + ", max " + Max.ToString("0.###", CultureInfo.InvariantCulture) + ", avg " + (Sum / Numbers).ToString("0.###", CultureInfo.InvariantCulture);
+                if (Strings.Count > 0) s += "; text: " + Strings.Count + " unique";
+                return s;
+            }
+        }
+
+        static IEnumerator QueryTool(JObject a, ToolResponse r)
+        {
+            string path = a.Str("path");
+            if (path == null) throw new ToolException("path is required, e.g. /Game:Inventory.items");
+            var src = Collection(path);
+            var where = new List<Cond>();
+            if (a["where"] is JArray) foreach (var w in (JArray)a["where"]) where.Add(ParseCond(w));
+            else if (a["where"] != null) where.Add(ParseCond(a["where"]));
+            var select = a.Strs("select");
+            var selToks = new List<List<string>>();
+            if (select != null) foreach (var f in select) selToks.Add(Tokens(f));
+            string sort = a.Str("sort"), group = a.Str("group");
+            bool desc = sort != null && sort.StartsWith("-", StringComparison.Ordinal);
+            var sortToks = sort != null ? Tokens(sort.TrimStart('-', '+')) : null;
+            var groupToks = group != null ? Tokens(group) : null;
+            bool stats = a.Bool("stats");
+            int limit = Math.Max(0, a.Int("limit", 20)), offset = Math.Max(0, a.Int("offset", 0));
+
+            var keep = new List<KeyValuePair<object, KeyValuePair<int, object>>>();   // sort key -> (index, item)
+            var groups = new Dictionary<string, int>();
+            var types = new Dictionary<string, int>();
+            var stat = new List<Stat>();
+            for (int i = 0; i < Math.Max(1, selToks.Count); i++) stat.Add(new Stat());
+            int matched = 0;
+            bool early = false;
+            var scan = new Scan();
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            yield return Visit(src, (x, i) =>
+            {
+                foreach (var c in where)
+                {
+                    var v = Pick(x, c.Toks);
+                    if (v == Missing) c.Missed++;
+                    if (!Test(v, c.Op, c.Value)) return true;
+                }
+                matched++;
+                if (sortToks != null) keep.Add(new KeyValuePair<object, KeyValuePair<int, object>>(Pick(x, sortToks), new KeyValuePair<int, object>(i, x)));
+                else if (matched > offset && keep.Count < limit) keep.Add(new KeyValuePair<object, KeyValuePair<int, object>>(null, new KeyValuePair<int, object>(i, x)));
+                if (groupToks != null)
+                {
+                    var g = Pick(x, groupToks);
+                    string k = g == Missing ? "(missing)" : g == null || Simple(g.GetType()) ? Text(g) : Brief(g);
+                    int n; groups.TryGetValue(k, out n); groups[k] = n + 1;
+                }
+                if (stats)
+                {
+                    string tn = x == null ? "null" : TypeName(x.GetType());
+                    int n; types.TryGetValue(tn, out n); types[tn] = n + 1;
+                    if (selToks.Count == 0) stat[0].Add(x);
+                    else for (int s = 0; s < selToks.Count; s++) stat[s].Add(Pick(x, selToks[s]));
+                }
+                early = sortToks == null && groupToks == null && !stats && keep.Count >= limit;
+                return !early;
+            }, scan);
+            long ms = clock.ElapsedMilliseconds;
+
+            if (sortToks != null)
+            {
+                keep.Sort((p, q) => desc ? Compare(q.Key, p.Key) : Compare(p.Key, q.Key));
+                keep = keep.GetRange(Math.Min(offset, keep.Count), Math.Max(0, Math.Min(limit, keep.Count - offset)));
+            }
+            r.Text(path + ": " + (early ? "stopped after " + scan.Count + " item(s) once " + limit + " matched" : "scanned " + scan.Count + " item(s)") + ", " + (early ? "" : matched + " matched, ")
+                   + ms + " ms over " + (scan.Frames + 1) + " frame(s)" + (scan.Partial != null ? " - " + scan.Partial : ""));
+            foreach (var c in where) if (c.Missed > 0) r.Text("note: '" + c.Field + "' does not exist on " + c.Missed + " item(s); those never match");
+            foreach (var kv in keep)
+            {
+                var x = kv.Value.Value;
+                var sb = new StringBuilder("[" + kv.Value.Key + "] ");
+                if (select == null) sb.Append(Line(x));
+                else
+                {
+                    string id = x == null || Simple(x.GetType()) ? null : IdOf(x);
+                    if (id != null) sb.Append(id).Append(' ');
+                    for (int s = 0; s < select.Length; s++)
+                    {
+                        object v; try { v = Pick(x, selToks[s]); } catch (Exception e) { v = "<error: " + e.Message + ">"; }
+                        sb.Append(s > 0 ? ", " : "").Append(select[s]).Append('=').Append(v == Missing ? "<none>" : Brief(v));
+                    }
+                }
+                r.Text(Util.OneLine(sb.ToString(), 600));
+            }
+            if (!early) r.Text(keep.Count == 0 ? "shown 0 of " + matched : "shown " + (offset + 1) + "-" + (offset + keep.Count) + " of " + matched + (offset + keep.Count < matched ? "; next page: offset=" + (offset + keep.Count) : ""));
+            else r.Text("shown " + (offset + 1) + "-" + (offset + keep.Count) + "; more may follow: next page offset=" + (offset + keep.Count) + " (add stats=true for the full count)");
+            if (groupToks != null)
+            {
+                var gl = new List<KeyValuePair<string, int>>(groups);
+                gl.Sort((p, q) => q.Value.CompareTo(p.Value));
+                r.Text("group by " + group + ": " + gl.Count + " group(s)");
+                for (int i = 0; i < gl.Count && i < 30; i++) r.Text("  " + Util.OneLine(gl[i].Key, 120) + ": " + gl[i].Value);
+                if (gl.Count > 30) r.Text("  ... " + (gl.Count - 30) + " more group(s)");
+            }
+            if (stats)
+            {
+                var tl = new List<string>();
+                foreach (var kv in types) tl.Add(kv.Key + " x" + kv.Value);
+                r.Text("stats: count " + matched + "; types: " + string.Join(", ", tl));
+                if (selToks.Count == 0) r.Text("  items: " + stat[0].Describe());
+                else for (int s = 0; s < select.Length; s++) r.Text("  " + select[s] + ": " + stat[s].Describe());
+            }
+        }
+
+        // ---------------- export ----------------
+
+        const long ExportCap = 200L * 1024 * 1024;
+
+        static JToken Json(object v, int depth)
+        {
+            if (v == null) return JValue.CreateNull();
+            var t = v.GetType();
+            if (v is string || t.IsPrimitive || v is decimal) return new JValue(v);
+            if (Simple(t)) return new JValue(Text(v));
+            var uo = v as UnityEngine.Object;
+            if (!ReferenceEquals(uo, null)) return uo == null ? new JObject { ["$destroyed"] = t.Name } : new JObject { ["$ref"] = IdOf(uo), ["$type"] = t.Name, ["name"] = uo.name };
+            string hidden = v is IEnumerable ? null : Why(t, "");
+            if (hidden != null) return new JObject { ["$type"] = TypeName(t), ["$hidden"] = hidden };
+            if (depth <= 0) return new JObject { ["$type"] = TypeName(t) };
+            var dict = v as IDictionary;
+            if (dict != null)
+            {
+                var o = new JObject();
+                foreach (DictionaryEntry de in dict) o[Text(de.Key)] = Json(de.Value, depth - 1);
+                return o;
+            }
+            var en = v as IEnumerable;
+            if (en != null && !(v is Transform))
+            {
+                var arr = new JArray();
+                foreach (var x in en) { if (arr.Count >= 10000) { arr.Add("... more"); break; } arr.Add(Json(x, depth - 1)); }
+                return arr;
+            }
+            var res = new JObject();
+            foreach (var e in Entries(v, new Opts(), null)) res[e.Label] = e.Error != null ? new JObject { ["$error"] = e.Error } : Json(e.Value, depth - 1);
+            return res;
+        }
+
+        internal static string ExportDir()
+        {
+            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".udriver", "exports");
+            Directory.CreateDirectory(dir);
+            Driver.OwnerOnly(dir, true);
+            return dir;
+        }
+
+        /// <summary>The most bytes ~/.udriver/exports may hold: UDRIVER_EXPORTS_MAX_MB, 2048 by default.</summary>
+        internal static long ExportLimit()
+        {
+            long mb;
+            return long.TryParse(Environment.GetEnvironmentVariable("UDRIVER_EXPORTS_MAX_MB"), out mb) && mb > 0 ? mb * 1048576 : 2048L * 1048576;
+        }
+
+        /// <summary>Deletes the oldest files, never keep, until the folder has room for reserve more bytes besides keep.</summary>
+        internal static void MakeRoom(string dir, long reserve, string keep = null)
+        {
+            var files = new DirectoryInfo(dir).GetFiles();
+            Array.Sort(files, (x, y) => x.LastWriteTimeUtc.CompareTo(y.LastWriteTimeUtc));
+            long total = 0, limit = ExportLimit();
+            foreach (var f in files) if (f.FullName != keep) total += f.Length;
+            foreach (var f in files)
+            {
+                if (total + reserve <= limit) break;
+                if (f.FullName == keep) continue;
+                try { f.Delete(); total -= f.Length; } catch { }
+            }
+        }
+
+        static IEnumerator ExportTool(JObject a, ToolResponse r)
+        {
+            string path = a.Str("path");
+            if (path == null) throw new ToolException("path is required, e.g. /Game:Inventory.items");
+            var src = Collection(path);
+            int depth = Mathf.Clamp(a.Int("depth", 2), 0, 4);
+            string dir = ExportDir();
+            long limit = ExportLimit(), cap = Math.Min(ExportCap, limit);
+            MakeRoom(dir, cap);
+            string file = Path.Combine(dir, "export-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6) + ".jsonl");
+            var dictSrc = src as IDictionary;
+            var first = new List<string>();
+            long size = 0;
+            bool full = false;
+            var scan = new Scan();
+            using (var fs = new FileStream(file, FileMode.CreateNew, FileAccess.Write))
+            {
+                Driver.OwnerOnly(file, false);
+                using (var w = new StreamWriter(fs, new UTF8Encoding(false)))
+                {
+                    var entries = new List<object>();
+                    if (dictSrc != null) foreach (DictionaryEntry de in dictSrc) entries.Add(de);
+                    yield return Visit(dictSrc != null ? entries : src, (x, i) =>
+                    {
+                        string line = (dictSrc != null
+                            ? new JObject { ["key"] = Json(((DictionaryEntry)x).Key, depth), ["value"] = Json(((DictionaryEntry)x).Value, depth) }
+                            : Json(x, depth)).ToString(Newtonsoft.Json.Formatting.None);
+                        long bytes = Encoding.UTF8.GetByteCount(line) + 1;
+                        if (size + bytes > cap) { full = true; return false; }
+                        w.Write(line); w.Write('\n');
+                        size += bytes;
+                        if (first.Count < 3) first.Add(line);
+                        return true;
+                    }, scan);
+                }
+            }
+            if (full && cap < ExportCap)
+            {
+                File.Delete(file);
+                throw new ToolException("the collection is bigger than " + limit / 1048576 + " MB, the most the exports folder may hold (the owner sets it with UDRIVER_EXPORTS_MAX_MB); nothing was written. Export a smaller part or use a lower depth");
+            }
+            MakeRoom(dir, size, file);
+            int lines = scan.Count - (full ? 1 : 0);
+            r.Text("exported " + lines + " line(s), " + (size >= 1048576 ? (size / 1048576.0).ToString("0.0") + " MB" : (size / 1024.0).ToString("0.0") + " KB") + " to " + file
+                   + (full ? " - stopped at the 200 MB limit" : "") + (scan.Partial != null ? " - " + scan.Partial : ""));
+            foreach (var l in first) r.Text("  " + Util.Cut(l, 300));
         }
 
         // ---------------- tools ----------------
@@ -484,7 +1065,20 @@ namespace UDriver
         {
             string path = a.Str("path");
             if (path == null) throw new ToolException("path is required");
-            r.Text(path + " = " + Format(Resolve(path), a.Int("depth", 1), a.Int("maxItems", 30), a.Bool("props")));
+            var o = new Opts { Limit = Math.Max(1, a.Int("limit", a.Int("maxItems", 30))), Props = a.Bool("props"), Members = a.Str("members", "all") };
+            if (o.Members != "all" && o.Members != "public" && o.Members != "serialized") throw new ToolException("members must be all, public or serialized");
+            var page = new Page { Offset = Math.Max(0, a.Int("offset", 0)), Limit = o.Limit, Filter = a.Str("filter") };
+            var sb = new StringBuilder(path).Append(" = ");
+            int depth = Mathf.Clamp(a.Int("depth", 1), 0, 4);
+            var v = Resolve(path);
+            Format(sb, v, o, depth == 0 && a.Strs("fields") != null ? 1 : depth, a.Strs("fields"), 0, page);
+            bool cut = sb.Length > 20000;
+            r.Text(cut ? sb.ToString(0, 20000) + "\n..." : sb.ToString());
+            if (page.Total < 0) { r.Text("shown 1-1 of 1"); return; }
+            r.Text((page.Shown == 0 ? "shown 0 of " + page.Total : "shown " + (page.Offset + 1) + "-" + (page.Offset + page.Shown) + " of " + page.Total)
+                   + (page.Filter != null ? " matching '" + page.Filter + "'" : "")
+                   + (page.Offset + page.Shown < page.Total ? "; next page: offset=" + (page.Offset + page.Shown) : "")
+                   + (cut ? "; output cut at 20000 characters - use fields, limit or a lower depth" : ""));
         }
 
         static void Set(JObject a, ToolResponse r)
@@ -524,28 +1118,75 @@ namespace UDriver
             var target = Walk(path, 0, out last);
             if (target.Static == null && target.Obj == null) throw new ToolException("target is null");
             var args = a["args"] as JArray ?? new JArray();
+            var types = a.Strs("types");
             var type = target.Static ?? target.Obj.GetType();
             var seen = new List<string>();
-            string refused = null;
+            var fits = new List<KeyValuePair<int, MethodInfo>>();
             for (var t = type; t != null; t = t.BaseType)
             {
                 foreach (var m in t.GetMethods(AllDeclared))
                 {
-                    if (m.Name != method) continue;
-                    var ps = m.GetParameters();
+                    if (m.Name != method || seen.Contains(Signature(m))) continue;   // an override hides the base declaration
                     seen.Add(Signature(m));
+                    var ps = m.GetParameters();
                     if (ps.Length != args.Count || (target.Static != null && !m.IsStatic)) continue;
-                    Guard(m, "state_call");   // before the arguments are built: converting them can already run code
-                    object[] argv = new object[ps.Length];
-                    try { for (int i = 0; i < ps.Length; i++) argv[i] = Util.To(args[i], ps[i].ParameterType); }
-                    catch (ToolException e) { refused = e.Message; continue; }
-                    catch { continue; }
-                    object res = m.Invoke(m.IsStatic ? null : target.Obj, argv);
-                    r.Text("called " + Signature(m) + " -> " + (m.ReturnType == typeof(void) ? "void" : Format(res, 1, 30, false)));
-                    return;
+                    if (types != null && (types.Length != ps.Length || !TypesMatch(ps, types))) continue;
+                    int score = 0;
+                    for (int i = 0; i < ps.Length && score >= 0; i++) { int f = Fit(args[i], ps[i].ParameterType); score = f < 0 ? -1 : score + f; }
+                    if (score >= 0) fits.Add(new KeyValuePair<int, MethodInfo>(score, m));
                 }
             }
-            throw new ToolException(seen.Count == 0 ? "no method '" + method + "' on " + type.FullName : "no overload of '" + method + "' fits " + args.Count + " argument(s). Overloads: " + string.Join("; ", seen) + (refused != null ? ". " + refused : ""));
+            if (seen.Count == 0) throw new ToolException("no method '" + method + "' on " + type.FullName);
+            fits.Sort((x, y) => y.Key.CompareTo(x.Key));
+            if (fits.Count > 1 && fits[0].Key == fits[1].Key)
+            {
+                var tied = new List<string>();
+                foreach (var f in fits) if (f.Key == fits[0].Key) tied.Add(Signature(f.Value));
+                throw new ToolException("the arguments fit several overloads of '" + method + "' equally: " + string.Join("; ", tied) + ". Pick one with types, e.g. types=[\"string\"].");
+            }
+            string refused = null;
+            foreach (var f in fits)
+            {
+                var m = f.Value;
+                var ps = m.GetParameters();
+                Guard(m, "state_call");   // before the arguments are built: converting them can already run code
+                object[] argv = new object[ps.Length];
+                try { for (int i = 0; i < ps.Length; i++) argv[i] = Util.To(args[i], ps[i].ParameterType); }
+                catch (ToolException e) { refused = e.Message; continue; }
+                catch { continue; }
+                object res = m.Invoke(m.IsStatic ? null : target.Obj, argv);
+                r.Text("called " + Signature(m) + " -> " + (m.ReturnType == typeof(void) ? "void" : Format(res, 1, 30, false)));
+                return;
+            }
+            throw new ToolException("no overload of '" + method + "' fits these " + args.Count + " argument(s)" + (types != null ? " and types" : "") + ". Overloads: " + string.Join("; ", seen) + (refused != null ? ". " + refused : ""));
+        }
+
+        static bool TypesMatch(ParameterInfo[] ps, string[] types)
+        {
+            for (int i = 0; i < ps.Length; i++)
+            {
+                var t = ps[i].ParameterType;
+                if (!string.Equals(types[i], TypeName(t), StringComparison.OrdinalIgnoreCase) && !string.Equals(types[i], t.Name, StringComparison.OrdinalIgnoreCase)
+                    && types[i] != t.FullName) return false;
+            }
+            return true;
+        }
+
+        /// <summary>How well a JSON argument fits a parameter type: -1 never, 0 only by conversion, higher is closer.</summary>
+        static int Fit(JToken arg, Type p)
+        {
+            var u = Nullable.GetUnderlyingType(p) ?? p;
+            bool number = u.IsPrimitive && u != typeof(bool) && u != typeof(char) && u != typeof(IntPtr) && u != typeof(UIntPtr) || u == typeof(decimal);
+            switch (arg.Type)
+            {
+                case JTokenType.Null: return !p.IsValueType || u != p ? 2 : -1;
+                case JTokenType.Integer: return u == typeof(int) ? 4 : u == typeof(long) ? 3 : number || u.IsEnum ? 2 : u == typeof(object) ? 1 : -1;
+                case JTokenType.Float: return u == typeof(double) ? 4 : u == typeof(float) ? 3 : u == typeof(decimal) ? 2 : u == typeof(object) ? 1 : -1;
+                case JTokenType.Boolean: return u == typeof(bool) ? 4 : u == typeof(object) ? 1 : -1;
+                case JTokenType.String: return u == typeof(string) ? 4 : u.IsEnum || u == typeof(char) ? 2 : u == typeof(object) ? 1 : number || u == typeof(bool) ? -1 : 0;
+                case JTokenType.Array: return u.IsArray || typeof(IList).IsAssignableFrom(u) ? 3 : u == typeof(object) ? 1 : 0;
+                default: return u.IsPrimitive || u == typeof(string) ? -1 : 0;
+            }
         }
 
         static string Signature(MethodBase m)

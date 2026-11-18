@@ -10,4 +10,7 @@
     <RollForward>LatestMajor</RollForward>
     <NoWarn>CS8618;CS8625</NoWarn>
   </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../com.udriver.agent/Runtime/ToolManifest.cs" Link="ToolManifest.cs" />
+  </ItemGroup>
 </Project>

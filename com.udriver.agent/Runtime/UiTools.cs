@@ -66,9 +66,13 @@ namespace UDriver
 
         // ---------------- panels & coordinates ----------------
 
-        /// <summary>Root elements of all live runtime panels, topmost first.</summary>
+        static List<VisualElement> _roots;
+        static int _rootsFrame = -1;
+
+        /// <summary>Root elements of all live runtime panels, topmost first; cached for the current frame in Play Mode.</summary>
         public static List<VisualElement> Roots()
         {
+            if (_roots != null && _rootsFrame == Time.frameCount && Application.isPlaying) return _roots;
             var list = new List<KeyValuePair<float, VisualElement>>();
             foreach (var d in Util.FindAll<UIDocument>())
             {
@@ -82,7 +86,8 @@ namespace UDriver
             list.Sort((x, y) => y.Key.CompareTo(x.Key));
             var res = new List<VisualElement>();
             foreach (var kv in list) res.Add(kv.Value);
-            return res;
+            _rootsFrame = Time.frameCount;
+            return _roots = res;
         }
 
         static Vector2 Scale(VisualElement top)
@@ -147,7 +152,17 @@ namespace UDriver
             try { var v = p.GetValue(e); return v == null ? "null" : v.ToString(); } catch { return null; }
         }
 
-        public static string ValueOf(VisualElement e) { return PropStr(e, "value"); }
+        public static string ValueOf(VisualElement e)
+        {
+            // ToggleButtonGroupState prints as a 64-bit mask; list the indices of the pressed buttons instead.
+            if (e is ToggleButtonGroup g)
+            {
+                var on = new StringBuilder();
+                for (int i = 0; i < g.value.length; i++) if (g.value[i]) on.Append(on.Length > 0 ? "," : "").Append(i);
+                return "on [" + on + "]";
+            }
+            return PropStr(e, "value");
+        }
 
         static bool IsBaseField(Type t)
         {
@@ -346,7 +361,8 @@ namespace UDriver
             var b = t.El.worldBound;
             if (b.width < 1 || b.height < 1) sb.AppendLine("WARNING: target has zero size.");
             var hit = t.Top.panel.Pick(t.Panel);
-            if (hit == null) sb.AppendLine("WARNING: nothing is pickable at the target point (scrolled out of view, off-screen, or pickingMode=Ignore). Try ui_scroll_to.");
+            if (!t.Top.worldBound.Contains(t.Panel)) sb.AppendLine("WARNING: target is outside the screen - scroll it into view (ui_scroll_to) or make the window larger.");
+            else if (hit == null) sb.AppendLine("WARNING: nothing is pickable at the target point (scrolled out of view, off-screen, or pickingMode=Ignore). Try ui_scroll_to.");
             else if (!IsAncestor(t.El, hit) && !IsAncestor(hit, t.El)) sb.AppendLine("WARNING: target is covered - the pointer lands on " + Desc(hit) + " instead.");
             return sb.Length == 0 ? null : sb.ToString().TrimEnd();
         }
@@ -398,7 +414,8 @@ namespace UDriver
             else
             {
                 var roots = Roots();
-                int canvases = Ugui.Tree(c.Sb, null, c.InteractiveOnly, c.Max, ref c.Count, ref c.Skipped);
+                int max = c.Max;
+                int canvases = Ugui.Tree(c.Sb, null, c.InteractiveOnly, max, ref c.Count, ref c.Skipped, roots.Count);
                 if (roots.Count == 0 && canvases == 0)
                 {
                     r.Text("No UI found: no active UIDocument (UI Toolkit) and no active Canvas (uGUI). If the game draws its UI another way (IMGUI, world-space objects), use screenshot + screen_pick + x,y with method=input.");
@@ -408,11 +425,13 @@ namespace UDriver
                 {
                     var l = roots[i].layout;
                     c.Sb.AppendLine("panel " + i + " (" + Mathf.RoundToInt(l.width) + "x" + Mathf.RoundToInt(l.height) + " panel units, screen " + Screen.width + "x" + Screen.height + ")");
+                    c.Max = c.Count + Math.Max(0, max - c.Count) / (roots.Count - i);
                     Walk(roots[i], 1, depth, null, c);
                 }
+                if (c.Skipped > 0 && roots.Count + canvases > 1) c.Sb.AppendLine("(maxNodes is shared equally between the " + (roots.Count + canvases) + " panels and canvases above)");
             }
             r.Text(c.Sb.ToString().TrimEnd());
-            if (c.Skipped > 0) r.Text("... " + c.Skipped + " more element(s) not shown (maxNodes). Narrow with root / interactiveOnly / ui_find.");
+            if (c.Skipped > 0) r.Text("... " + c.Skipped + " more element(s) not shown (maxNodes). Raise maxNodes, or narrow with root=<id of a panel element or canvas child> / interactiveOnly / ui_find.");
         }
 
         static bool TypeMatch(Type t, string name)
@@ -446,14 +465,10 @@ namespace UDriver
 
         static void Inspect(JObject a, ToolResponse r)
         {
-            if (a.Int("id") >= Ugui.IdBase)
-            {
-                var go = Ugui.Get(a.Int("id"));
-                if (go == null) throw new ToolException("uGUI element #" + a.Int("id") + " not found (destroyed or inactive)");
-                Ugui.Inspect(go, r);
-                return;
-            }
-            var e = Need(a.Int("id"));
+            var t = Resolve(a);
+            if (t.Go != null) { Ugui.Inspect(t.Go, r); return; }
+            var e = t.El ?? (t.Top != null ? t.Top.panel.Pick(t.Panel) : null);
+            if (e == null) throw new ToolException("no element at that point");
             var s = e.resolvedStyle;
             r.Text(Line(e, false, false));
             r.Text("type: " + e.GetType().FullName + " | path: " + PathOf(e, 30));

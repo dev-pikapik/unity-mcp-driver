@@ -16,13 +16,25 @@ namespace UDriver
     {
         sealed class Probe
         {
-            public int Id; public string Kind, Desc;
+            public int Id; public string Kind, Desc, Owner;
             public Func<string> Stats; public Action Remove;
+            public List<string> Hits;
         }
 
         sealed class Watch { public int Id; public string Path, Label, Last; public int Changes; }
 
-        sealed class TraceInfo { public int ProbeId, Count, Max; public bool Args, Stack; }
+        /// <summary>Settings and hit log shared by all methods of one trace probe.</summary>
+        sealed class TraceProbe
+        {
+            public int Hits, Max; public bool Args, Stack, Pause;
+            public string[] Capture; public JObject When;
+            public readonly List<string> Log = new List<string>();
+        }
+
+        /// <summary>A path read from a traced call: root is "this", a parameter name or argN, then fields/indexes.</summary>
+        sealed class Expr { public string Text; public int Root; public List<string> Toks; }
+
+        sealed class TraceInfo { public TraceProbe P; public int Count; public Expr[] Capture; public Expr When; }
 
         static readonly List<Probe> Probes = new List<Probe>();
         static readonly List<Watch> Watches = new List<Watch>();
@@ -40,7 +52,6 @@ namespace UDriver
             Driver.Register("probe_remove", Driver.Sync(RemoveTool));
             Driver.Register("profiler_get", Driver.Sync(ProfilerGet));
             Driver.Register("profiler_list", Driver.Sync(ProfilerList));
-            Driver.Register("memory_top", Driver.Sync(MemoryTop));
             InitProfiler();
         }
 
@@ -48,7 +59,7 @@ namespace UDriver
 
         static Probe Add(string kind, string desc, Func<string> stats, Action remove)
         {
-            var p = new Probe { Id = _nextId++, Kind = kind, Desc = desc, Stats = stats, Remove = remove };
+            var p = new Probe { Id = _nextId++, Kind = kind, Desc = desc, Stats = stats, Remove = remove, Owner = Driver.Current != null ? Driver.Current.Client : "" };
             Probes.Add(p);
             return p;
         }
@@ -69,15 +80,49 @@ namespace UDriver
 
         static void List(JObject a, ToolResponse r)
         {
+            if (a.Has("id"))
+            {
+                var p = Probes.Find(x => x.Id == a.Int("id"));
+                if (p == null) throw new ToolException("no probe with id " + a.Int("id") + " - probe_list shows the active ones");
+                r.Text(Line(p));
+                if (p.Hits == null) return;
+                int offset = Math.Max(0, a.Int("offset", 0)), limit = Math.Max(1, a.Int("limit", 20)), total, end;
+                lock (p.Hits)
+                {
+                    total = p.Hits.Count; end = Math.Min(total, offset + limit);
+                    for (int i = offset; i < end; i++) r.Text(p.Hits[i]);
+                }
+                r.Text(total == 0 ? "no hits recorded yet" : "hits shown " + Math.Min(offset + 1, end) + "-" + end + " of " + total + (end < total ? "; next page: offset=" + end : ""));
+                return;
+            }
             if (Probes.Count == 0) { r.Text("no active probes"); return; }
-            foreach (var p in Probes) r.Text("probe " + p.Id + " [" + p.Kind + "] " + p.Desc + " | " + p.Stats());
+            foreach (var p in Probes) r.Text(Line(p));
+        }
+
+        static string Me { get { return Driver.Current != null ? Driver.Current.Client : ""; } }
+
+        static string Line(Probe p)
+        {
+            return "probe " + p.Id + " [" + p.Kind + "] " + p.Desc + " | " + p.Stats() + (p.Owner != Me ? " | set by " + p.Owner : "");
         }
 
         static void RemoveTool(JObject a, ToolResponse r)
         {
-            if (a.Bool("all")) { int n = Probes.Count; RemoveAll(); r.Text("removed " + n + " probe(s)"); return; }
+            bool force = a.Bool("force");
+            if (a.Bool("all"))
+            {
+                int n = 0, kept = 0;
+                foreach (var p in Probes.ToArray())
+                    if (force || p.Owner == Me) { RemoveById(p.Id); n++; } else kept++;
+                r.Text("removed " + n + " probe(s)" + (kept > 0 ? "; kept " + kept + " set by other agents (force=true removes them too)" : ""));
+                return;
+            }
             if (!a.Has("id")) throw new ToolException("give id or all=true");
-            r.Text(RemoveById(a.Int("id")) ? "removed probe " + a.Int("id") : "no probe with id " + a.Int("id"));
+            var q = Probes.Find(x => x.Id == a.Int("id"));
+            if (q == null) { r.Text("no probe with id " + a.Int("id")); return; }
+            if (q.Owner != Me && !force) throw new ToolException("probe " + q.Id + " was set by " + q.Owner + "; pass force=true to remove it anyway");
+            RemoveById(q.Id);
+            r.Text("removed probe " + q.Id + (q.Owner != Me ? " (set by " + q.Owner + ")" : ""));
         }
 
         // ---------------- watches (polled every frame) ----------------
@@ -102,6 +147,7 @@ namespace UDriver
         /// <summary>Called from LateUpdate.</summary>
         internal static void Tick()
         {
+            if (_pauseRequested) { _pauseRequested = false; PauseGame(); }
             for (int i = 0; i < Watches.Count; i++)
             {
                 var w = Watches[i];
@@ -157,7 +203,7 @@ namespace UDriver
         {
             if (_harmony != null) return;
             if (FindHarmony() == null || _hMethodType == null)
-                throw new ToolException("method tracing needs Harmony: put 0Harmony.dll (Lib.Harmony 2.x, net48 build) into Assets/Plugins and rebuild. Works on Mono only, not IL2CPP. "
+                throw new ToolException("method tracing needs Harmony: put 0Harmony.dll (Lib.Harmony 2.4 or newer, net48 build; 2.3 cannot patch on Apple Silicon) into Assets/Plugins and rebuild. Works on Mono only, not IL2CPP. "
                                         + "Without it use watch_add (field polling), state_get, and log/ui events.");
             _harmony = Activator.CreateInstance(_hType, "udriver.trace");
             foreach (var m in _hType.GetMethods(BindingFlags.Public | BindingFlags.Instance))
@@ -178,23 +224,76 @@ namespace UDriver
             return _hMethodType.GetConstructor(new[] { typeof(MethodInfo) }).Invoke(new object[] { m });
         }
 
-        // Harmony injects parameters by name: __originalMethod, __args, __result, __exception.
-        static void TracePrefix(MethodBase __originalMethod, object[] __args)
+        // Harmony injects parameters by name: __originalMethod, __args, __instance, __result, __exception, __state.
+        static void TracePrefix(MethodBase __originalMethod, object[] __args, object __instance, out bool __state)
         {
+            __state = false;
             TraceInfo ti;
             if (__originalMethod == null || !Traced.TryGetValue(__originalMethod, out ti)) return;
-            if (Interlocked.Increment(ref ti.Count) > ti.Max) return;
+            Interlocked.Increment(ref ti.Count);
+            var tp = ti.P;
+            if (ti.When != null)
+            {
+                bool pass;
+                try { pass = StateTools.Test(Read(ti.When, __args, __instance), tp.When.Str("op", "=="), tp.When["value"]); }
+                catch { pass = false; }
+                if (!pass) return;
+            }
+            int hit = Interlocked.Increment(ref tp.Hits);
+            if (hit > tp.Max) return;
+            __state = true;
             var sb = new StringBuilder("call ").Append(__originalMethod.DeclaringType != null ? __originalMethod.DeclaringType.Name : "?").Append('.').Append(__originalMethod.Name).Append('(');
-            if (ti.Args && __args != null)
+            if (tp.Args && __args != null)
                 for (int i = 0; i < __args.Length; i++) { if (i > 0) sb.Append(", "); sb.Append(StateTools.Short(__args[i])); }
             sb.Append(')');
-            EventStore.Emit("trace", sb.ToString(), ti.Stack ? Environment.StackTrace : null);
+            if (ti.Capture != null)
+                foreach (var c in ti.Capture)
+                {
+                    sb.Append(" | ").Append(c.Text).Append('=');
+                    try { var v = Read(c, __args, __instance); sb.Append(v == StateTools.Missing ? "<none>" : StateTools.Short(v)); }
+                    catch (Exception e) { sb.Append("<error: ").Append((e.InnerException ?? e).Message).Append('>'); }
+                }
+            string text = sb.ToString(), stack = tp.Stack ? Environment.StackTrace : null;
+            lock (tp.Log) tp.Log.Add("hit " + hit + " f" + Time.frameCount + " " + text + (stack != null ? "\n    " + stack.Trim().Replace("\n", "\n    ") : ""));
+            EventStore.Emit("trace", text, stack);
+            if (tp.Pause) { if (Driver.OnMainThread) PauseGame(); else _pauseRequested = true; }
         }
 
-        static void TraceResult(MethodBase __originalMethod, object __result)
+        static volatile bool _pauseRequested;
+
+        /// <summary>Editor: a real editor pause (resume with editor_play action=resume). Build: timeScale=0 (resume with time_control action=resume).</summary>
+        static void PauseGame()
         {
-            TraceInfo ti;
-            if (__originalMethod == null || !Traced.TryGetValue(__originalMethod, out ti) || ti.Count > ti.Max) return;
+            if (Application.isEditor) Debug.Break();
+            else CaptureTools.Pause();
+        }
+
+        static object Read(Expr e, object[] args, object instance)
+        {
+            if (e.Root == -2) return StateTools.Missing;
+            object root = e.Root == -1 ? instance : args != null && e.Root < args.Length ? args[e.Root] : null;
+            return StateTools.Pick(root, e.Toks);
+        }
+
+        static Expr Compile(string text, MethodBase m)
+        {
+            var toks = StateTools.Tokens(text);
+            if (toks.Count == 0) throw new ToolException("empty capture/when path");
+            string head = toks[0];
+            toks.RemoveAt(0);
+            int root = -2;
+            if (head == "this") root = m.IsStatic ? -2 : -1;
+            else
+            {
+                var ps = m.GetParameters();
+                for (int i = 0; i < ps.Length; i++) if (ps[i].Name == head || head == "arg" + i) root = i;
+            }
+            return new Expr { Text = text, Root = root, Toks = toks };
+        }
+
+        static void TraceResult(MethodBase __originalMethod, object __result, bool __state)
+        {
+            if (!__state || __originalMethod == null) return;
             EventStore.Emit("trace", "return " + __originalMethod.DeclaringType.Name + "." + __originalMethod.Name + " -> " + StateTools.Short(__result));
         }
 
@@ -225,16 +324,25 @@ namespace UDriver
             }
             if (methods.Count == 0) throw new ToolException("no methods match '" + pattern + "'. Pattern is matched against Namespace.Type.Method - check types_find / type_members.");
             if (methods.Count > 300) throw new ToolException(methods.Count + " methods match - too broad (limit 300). Narrow the pattern.");
+            Patch(pattern, methods, a, r);
+        }
 
-            bool args = a.Bool("args", true), result = a.Bool("result"), stack = a.Bool("stack");
-            int max = a.Int("max", 2000);
+        /// <summary>Traces the given methods and returns the probe id; the self-test calls it directly because its methods are not game code.</summary>
+        internal static int Patch(string pattern, List<MethodBase> methods, JObject a, ToolResponse r)
+        {
+            EnsureHarmony();
+            bool result = a.Bool("result");
+            var tp = new TraceProbe { Args = a.Bool("args", true), Stack = a.Bool("stack"), Pause = a.Bool("pause"), Max = Math.Max(1, a.Int("maxHits", a.Int("max", 2000))),
+                                      Capture = a.Strs("capture"), When = a["when"] as JObject };
+            if (a["when"] != null && (tp.When == null || tp.When.Str("field") == null)) throw new ToolException("when is one condition: {\"field\":\"amount\",\"op\":\">\",\"value\":100} - field starts with a parameter name, argN or this");
+            if (tp.When != null) StateTools.CheckOp(tp.When.Str("op", "=="));
             var patched = new List<MethodBase>();
             var failed = new List<string>();
-            int probeId = _nextId;
             foreach (var m in methods)
             {
                 if (Traced.ContainsKey(m)) continue;
-                var ti = new TraceInfo { ProbeId = probeId, Max = max, Args = args, Stack = stack };
+                var ti = new TraceInfo { P = tp, When = tp.When != null ? Compile(tp.When.Str("field"), m) : null };
+                if (tp.Capture != null) { ti.Capture = new Expr[tp.Capture.Length]; for (int i = 0; i < ti.Capture.Length; i++) ti.Capture[i] = Compile(tp.Capture[i], m); }
                 Traced[m] = ti;
                 try
                 {
@@ -253,12 +361,13 @@ namespace UDriver
             }
             if (patched.Count == 0) throw new ToolException("could not patch any method. First error: " + (failed.Count > 0 ? failed[0] : "already traced by another probe"));
 
-            var p = Add("trace", pattern + " (" + patched.Count + " method(s))",
+            var p = Add("trace", pattern + " (" + patched.Count + " method(s))" + (tp.When != null ? " when " + tp.When.Str("field") + " " + tp.When.Str("op", "==") + " " + tp.When["value"] : "") + (tp.Pause ? ", pauses" : ""),
                 () =>
                 {
                     var sb = new StringBuilder(); int total = 0, shown = 0;
                     foreach (var m in patched) { TraceInfo ti; if (!Traced.TryGetValue(m, out ti)) continue; total += ti.Count; if (ti.Count > 0 && shown++ < 12) sb.Append(' ').Append(m.DeclaringType.Name).Append('.').Append(m.Name).Append(" x").Append(ti.Count).Append(';'); }
-                    return total + " call(s) total;" + (total == 0 ? " no traced method has been called yet" : sb.ToString());
+                    return total + " call(s) total, " + Math.Min(tp.Hits, tp.Max) + " hit(s) recorded" + (tp.Hits > tp.Max ? " (maxHits " + tp.Max + " reached, later hits dropped)" : "") + ";"
+                           + (total == 0 ? " no traced method has been called yet" : sb.ToString());
                 },
                 () =>
                 {
@@ -269,10 +378,22 @@ namespace UDriver
                             try { _unpatch.Invoke(_harmony, new object[] { m, patch }); } catch { }
                     }
                 });
-            r.Text("probe " + p.Id + ": tracing " + patched.Count + " method(s) matching '" + pattern + "'. Calls appear as 'trace' events; probe_list shows call counts.");
+            p.Hits = tp.Log;
+            r.Text("probe " + p.Id + ": tracing " + patched.Count + " method(s) matching '" + pattern + "'. Hits appear as 'trace' events; read them page by page with probe_list id=" + p.Id + " offset=0."
+                   + (tp.Pause ? " Each hit pauses the game: " + (Application.isEditor ? "resume with editor_play action=resume." : "resume with time_control action=resume.") : ""));
+            if (tp.Capture != null || tp.When != null)
+                foreach (var m in patched)
+                {
+                    TraceInfo ti; if (!Traced.TryGetValue(m, out ti)) continue;
+                    var bad = new List<string>();
+                    if (ti.When != null && ti.When.Root == -2) bad.Add(ti.When.Text);
+                    if (ti.Capture != null) foreach (var c in ti.Capture) if (c.Root == -2) bad.Add(c.Text);
+                    if (bad.Count > 0) r.Text("  note: " + m.DeclaringType.Name + "." + m.Name + " has no 'this' or parameter for: " + string.Join(", ", bad) + " (parameters: " + string.Join(", ", Array.ConvertAll(m.GetParameters(), x => x.Name)) + ")");
+                }
             for (int i = 0; i < patched.Count && i < 25; i++) r.Text("  " + patched[i].DeclaringType.Name + "." + patched[i].Name);
             if (patched.Count > 25) r.Text("  ... and " + (patched.Count - 25) + " more");
             if (failed.Count > 0) r.Text(failed.Count + " method(s) could not be patched, e.g. " + failed[0]);
+            return p.Id;
         }
 
         // ---------------- profiler ----------------
@@ -353,22 +474,6 @@ namespace UDriver
                 if (n < limit) { r.Text("  " + label + " (" + d.UnitType + ")"); n++; } else more++;
             }
             r.Text(n + " counter(s)" + (more > 0 ? ", " + more + " more - use 'contains' to filter" : "") + ". Add one with profiler_get add=[\"Category/Name\"].");
-        }
-
-        static void MemoryTop(JObject a, ToolResponse r)
-        {
-            string name = a.Str("type", "Texture");
-            var type = typeof(UnityEngine.Object).Assembly.GetType("UnityEngine." + name, false) ?? StateTools.FindType("UnityEngine." + name) ?? StateTools.FindType(name);
-            if (type == null || !typeof(UnityEngine.Object).IsAssignableFrom(type)) throw new ToolException("'" + name + "' is not a UnityEngine.Object type. Try Texture, Texture2D, RenderTexture, Mesh, AudioClip, Material, Sprite, Font, Shader, AnimationClip.");
-            var objs = Resources.FindObjectsOfTypeAll(type);
-            var list = new List<KeyValuePair<long, UnityEngine.Object>>();
-            long total = 0;
-            foreach (var o in objs) { long sz = Profiler.GetRuntimeMemorySizeLong(o); total += sz; list.Add(new KeyValuePair<long, UnityEngine.Object>(sz, o)); }
-            list.Sort((x, y) => y.Key.CompareTo(x.Key));
-            r.Text(objs.Length + " " + type.Name + " object(s) loaded, total " + Val(total, "bytes"));
-            int limit = a.Int("limit", 15);
-            for (int i = 0; i < list.Count && i < limit; i++)
-                r.Text("  " + Val(list[i].Key, "bytes") + "  " + list[i].Value.GetType().Name + " \"" + list[i].Value.name + "\"");
         }
     }
 }

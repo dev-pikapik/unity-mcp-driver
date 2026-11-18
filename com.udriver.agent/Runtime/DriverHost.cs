@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using UnityEngine;
 
 namespace UDriver
@@ -8,11 +9,22 @@ namespace UDriver
     {
         float _nextHook;
 
+        void Pump()
+        {
+            Job job;
+            while (Driver.Jobs.TryDequeue(out job)) StartCoroutine(Driver.RunJob(job));
+        }
+
+        IEnumerator Start()
+        {
+            var end = new WaitForEndOfFrame();
+            while (true) { yield return end; Pump(); }
+        }
+
         void Update()
         {
             EventStore.Tick();
-            Job job;
-            while (Driver.Jobs.TryDequeue(out job)) StartCoroutine(Driver.RunJob(job));
+            Pump();
             if (Time.unscaledTime >= _nextHook)
             {
                 _nextHook = Time.unscaledTime + 0.5f;
@@ -23,6 +35,7 @@ namespace UDriver
         void LateUpdate()
         {
             ProbeTools.Tick();
+            Pump();
         }
 
         void OnDestroy()

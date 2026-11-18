@@ -67,15 +67,55 @@ namespace UDriver
             return jpg;
         }
 
+        /// <summary>The end of a frame never comes in batch mode: nothing is rendered there.</summary>
+        static WaitForEndOfFrame EndOfFrame()
+        {
+            if (Application.isBatchMode) throw new ToolException("nothing is rendered in batch mode (-batchmode), so there is no frame to capture. Start the game or editor with a window for screenshots and frame recording.");
+            return new WaitForEndOfFrame();
+        }
+
         static IEnumerator Screenshot(JObject a, ToolResponse r)
         {
-            yield return new WaitForEndOfFrame();
+            string cam = a.Str("camera");
+            if (cam != null) { CameraShot(RenderTools.FindCamera(cam), a, r); yield break; }
+            yield return EndOfFrame();
             int w, h;
             var px = Grab(a.Int("maxWidth", 1024), out w, out h);
             float scale = w / (float)Screen.width;
             r.Text("screen " + Screen.width + "x" + Screen.height + ", image " + w + "x" + h + ", frame " + Time.frameCount
                    + (Mathf.Abs(scale - 1f) > 0.001f ? ". Image is scaled: screen_coord = image_coord * " + (1f / scale).ToString("0.###") : ". Image coords = screen coords"));
             if (a.Bool("annotate")) r.Text(Annotate(px, w, h, scale));
+            r.Image(Encode(px, w, h, a.Int("quality", 75)), "image/jpeg");
+        }
+
+        /// <summary>Renders one camera into a temporary texture: what that camera alone sees, without overlay UI.</summary>
+        static void CameraShot(Camera cam, JObject a, ToolResponse r)
+        {
+            if (Application.isBatchMode) throw new ToolException("nothing is rendered in batch mode (-batchmode). Start the game or editor with a window for screenshots.");
+            int cw = Mathf.Max(1, cam.pixelWidth), ch = Mathf.Max(1, cam.pixelHeight);
+            int w = Mathf.Clamp(a.Int("maxWidth", 1024), 16, Mathf.Max(16, cw)), h = Mathf.Max(1, Mathf.RoundToInt(ch * (w / (float)cw)));
+            var rt = RenderTexture.GetTemporary(w, h, 24);
+            var prevTarget = cam.targetTexture;
+            var prevActive = RenderTexture.active;
+            Color32[] px;
+            try
+            {
+                cam.targetTexture = rt;
+                cam.Render();
+                RenderTexture.active = rt;
+                var tex = new Texture2D(w, h, TextureFormat.RGBA32, false);
+                tex.ReadPixels(new Rect(0, 0, w, h), 0, 0);
+                tex.Apply();
+                px = tex.GetPixels32();
+                UnityEngine.Object.Destroy(tex);
+            }
+            finally
+            {
+                cam.targetTexture = prevTarget;
+                RenderTexture.active = prevActive;
+                RenderTexture.ReleaseTemporary(rt);
+            }
+            r.Text("camera \"" + cam.name + "\" " + StateTools.IdOf(cam) + " (" + cw + "x" + ch + "), image " + w + "x" + h + ", frame " + Time.frameCount + ". Rendered from this camera alone: no other cameras, no overlay UI.");
             r.Image(Encode(px, w, h, a.Int("quality", 75)), "image/jpeg");
         }
 
@@ -183,6 +223,7 @@ namespace UDriver
 
         static IEnumerator OneShot(string label)
         {
+            if (Application.isBatchMode) { Debug.LogWarning("[UDriver] frame capture skipped: nothing is rendered in batch mode"); yield break; }
             yield return new WaitForEndOfFrame();
             try { Store(label); } catch (Exception e) { Debug.LogWarning("[UDriver] frame capture failed: " + e.Message); }
         }
@@ -213,7 +254,7 @@ namespace UDriver
                 _recWidth = a.Int("maxWidth", 480);
                 _onlyChanges = a.Bool("onlyChanges", true);
                 _cap = Mathf.Clamp(Mathf.RoundToInt(a.Num("seconds", 20) * (fps <= 0 ? 60 : fps)), 10, 1500);
-                if (!_rec) { _rec = true; Driver.Host.StartCoroutine(RecLoop()); }
+                if (!_rec) { EndOfFrame(); _rec = true; Driver.Host.StartCoroutine(RecLoop()); }
             }
             else if (action == "stop") _rec = false;
             else if (action == "clear") Frames.Clear();
@@ -253,9 +294,13 @@ namespace UDriver
             Time.timeScale = 0;
         }
 
+        static string _timeBy;
+
         static IEnumerator TimeControl(JObject a, ToolResponse r)
         {
-            string action = a.Str("action", "status");
+            string action = a.Str("action", "status"), me = Driver.Current != null ? Driver.Current.Client : "";
+            if (_timeBy != null && _timeBy != me) r.Text("note: time was last changed by " + _timeBy);
+            if (action != "status") _timeBy = me;
             if (action == "pause") Pause();
             else if (action == "resume") Time.timeScale = _savedScale > 0 ? _savedScale : 1f;
             else if (action == "scale") { Time.timeScale = Mathf.Max(0, a.Num("scale", 1)); if (Time.timeScale > 0) _savedScale = Time.timeScale; }

@@ -1,6 +1,3 @@
-// MCP over HTTP ("Streamable HTTP", JSON responses) for remote connectors, protected by OAuth 2.1 with PKCE.
-// The listener (Kestrel) binds to 127.0.0.1 only; a tunnel (e.g. cloudflared) provides the public HTTPS address.
-// Kestrel is used instead of HttpListener because HttpListener rejects requests whose Host header is the public name.
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
@@ -20,6 +17,7 @@ internal static partial class HttpMode
     {
         public Dictionary<string, Client> Clients { get; set; } = new();
         public Dictionary<string, DateTime> Access { get; set; } = new();          // sha256(token) -> expiry
+        public Dictionary<string, string> AccessClient { get; set; } = new();      // sha256(token) -> client id
         public Dictionary<string, string> RefreshClient { get; set; } = new();     // sha256(token) -> client id
         public Dictionary<string, DateTime> Refresh { get; set; } = new();
     }
@@ -31,15 +29,28 @@ internal static partial class HttpMode
     static readonly List<string> RedirectHosts = new()
     {
         "claude.ai", "claude.com",
-        // Gemini: the app page, its per-user OAuth callback, and the Gemini Enterprise callback.
-        "gemini.google.com", "oauth-redirect.googleusercontent.com", "oauth-redirect-sandbox.googleusercontent.com",
+        // Google-hosted agent apps: per-user OAuth callbacks and the enterprise callback.
+        "oauth-redirect.googleusercontent.com", "oauth-redirect-sandbox.googleusercontent.com",
         "oauth-redirect-test.googleusercontent.com", "vertexaisearch.cloud.google.com",
+    };
+    static readonly Dictionary<string, string> RedirectPaths = new()
+    {
+        ["claude.ai"] = "/api/mcp/auth_callback", ["claude.com"] = "/api/mcp/auth_callback",
+        ["oauth-redirect.googleusercontent.com"] = "/r/", ["oauth-redirect-sandbox.googleusercontent.com"] = "/r/",
+        ["oauth-redirect-test.googleusercontent.com"] = "/r/", ["vertexaisearch.cloud.google.com"] = "/oauth-redirect",
     };
     static int _port;
 
-    // Wrong-password lockout, per client address, plus a much higher global cap so guessing from many addresses stays limited too.
-    static readonly Dictionary<string, (int Fails, DateTime Seen, DateTime LockedUntil)> Failures = new();
-    static int _globalFails; static DateTime _globalWindowStart, _globalLockedUntil;
+    // Wrong passwords and codes are counted per address and in total; over the limit the answer is 429 before any hashing.
+    static readonly Dictionary<string, (int Fails, DateTime Seen)> Failures = new();
+    static int _globalFails; static DateTime _globalWindowStart;
+    static readonly SemaphoreSlim Checking = new(1, 1);
+    const int IpLimit = 10, AllLimit = 50;
+    const string TooMany = "Too many wrong attempts. Wait 10 minutes, then try again.";
+    const string CheckBusy = "Another sign-in is being checked. Try again in a moment.";
+    static readonly Dictionary<string, Program.Session> Agents = new();
+    static readonly Dictionary<string, (DateTime Until, string Client, JsonObject Reply)> Rotated = new();   // sha256(old refresh token) -> its replacement
+    const string Pbkdf = "pbkdf2-sha256:";
     static readonly Queue<(DateTime At, string Ip)> Registrations = new();
 
     static string Env(string k) => Environment.GetEnvironmentVariable(k) ?? "";
@@ -47,21 +58,53 @@ internal static partial class HttpMode
     static string Hash(string s) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(s)));
     static bool Same(string a, string b) => CryptographicOperations.FixedTimeEquals(SHA256.HashData(Encoding.UTF8.GetBytes(a)), SHA256.HashData(Encoding.UTF8.GetBytes(b)));
 
+    static string HashPassword(string password)
+    {
+        const int iterations = 600000;
+        byte[] salt = RandomNumberGenerator.GetBytes(16);
+        byte[] hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, iterations, HashAlgorithmName.SHA256, 32);
+        return $"{Pbkdf}{iterations}:{Convert.ToBase64String(salt)}:{Convert.ToBase64String(hash)}";
+    }
+
+    static bool PasswordOk(string given, string stored)
+    {
+        if (!stored.StartsWith(Pbkdf)) return stored.Length > 0 && Same(given, stored);
+        var p = stored[Pbkdf.Length..].Split(':');
+        try
+        {
+            byte[] want = Convert.FromBase64String(p[2]);
+            return p.Length == 3 && int.TryParse(p[0], out int n) && n is >= 10000 and <= 10000000
+                   && CryptographicOperations.FixedTimeEquals(Rfc2898DeriveBytes.Pbkdf2(given, Convert.FromBase64String(p[1]), n, HashAlgorithmName.SHA256, want.Length), want);
+        }
+        catch { return false; }
+    }
+
+    /// <summary>Stores the owner password as a PBKDF2 hash only; a plain one left in remote.env is replaced.</summary>
+    static void SetPassword(string plain)
+    {
+        _password = HashPassword(plain);
+        SetSetting("UDRIVER_OWNER_PASSWORD", _password);
+    }
+
     public static async Task Run(int port)
     {
         _public = Env("UDRIVER_PUBLIC_URL").TrimEnd('/');
-        _password = Env("UDRIVER_OWNER_PASSWORD");
+        _password = Env("UDRIVER_OWNER_PASSWORD") is { Length: > 0 } envPass ? envPass : GetSetting("UDRIVER_OWNER_PASSWORD") ?? "";
+        if (_password.Length >= 12 && !_password.StartsWith(Pbkdf))
+        {
+            string plain = _password;
+            _password = HashPassword(plain);
+            try { if (GetSetting("UDRIVER_OWNER_PASSWORD") == plain) SetSetting("UDRIVER_OWNER_PASSWORD", _password); }
+            catch (Exception e) { Console.Error.WriteLine("UDriver: could not replace the plain password in " + EnvFile + ": " + e.Message); }
+        }
+        Program.Solo.Label = "owner (panel)";
         _urlSecret = Env("UDRIVER_URL_SECRET");
         bool secretMode = Env("UDRIVER_AUTH") == "secret-url";
         _panel = Env("UDRIVER_PANEL") == "1";
         _port = port;
-        bool configured = _password.Length >= 12 && _public.StartsWith("http") && (!_panel || File.Exists(TunnelYml));
-        if (_panel && !secretMode && !configured)
-        {
-            // First start: nothing is set up yet. Serve only the local setup form.
-            _setupMode = true; _public = "";
-        }
-        else if (secretMode ? _urlSecret.Length < 32 : !configured)
+        if (_panel) _public = RemoteSaved() ? (GetSetting("UDRIVER_PUBLIC_URL") ?? "").TrimEnd('/') : "";
+        bool configured = _password.Length >= 12 && _public.StartsWith("http");
+        if (secretMode ? _urlSecret.Length < 32 : !_panel && !configured)
         {
             Console.Error.WriteLine(secretMode
                 ? "UDRIVER_URL_SECRET must be at least 32 characters."
@@ -69,18 +112,22 @@ internal static partial class HttpMode
             Environment.Exit(2);
         }
         foreach (var h in Env("UDRIVER_OAUTH_REDIRECT_HOSTS").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) RedirectHosts.Add(h);
-        _storeFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".udriver", "oauth.json");
+        _storeFile = Path.Combine(Program.HomeDir, "oauth.json");
         try { _store = JsonSerializer.Deserialize<Store>(File.ReadAllText(_storeFile)) ?? new Store(); } catch { _store = new Store(); }
 
         var builder = WebApplication.CreateSlimBuilder();
         builder.Logging.ClearProviders();
         builder.WebHost.ConfigureKestrel(o =>
         {
-            o.Listen(IPAddress.Loopback, port);          // loopback only; never exposed directly
+            o.Listen(IPAddress.Loopback, port);
             o.Limits.MaxRequestBodySize = 4 * 1024 * 1024;
+            o.Limits.MaxConcurrentConnections = 200;
             o.AddServerHeader = false;
         });
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => { KillTunnel(); Program.StopLaunched(); };
         var app = builder.Build();
+        // The launcher opens the panel only when the process on the port is the one named here.
+        if (_panel) app.Lifetime.ApplicationStarted.Register(() => Program.WritePrivate(PidFile, Environment.ProcessId.ToString()));
         app.Run(async ctx =>
         {
             try { await Handle(ctx, secretMode); }
@@ -89,9 +136,7 @@ internal static partial class HttpMode
         if (_panel)
         {
             StartPanel();
-            Console.Error.WriteLine(_setupMode
-                ? $"UDriver: open http://127.0.0.1:{port}/panel in your browser and fill in the setup form."
-                : $"UDriver IS RUNNING. Panel: http://127.0.0.1:{port}/panel  and  {_public}/panel\nTo stop: use the button in the panel or close this window.");
+            Console.Error.WriteLine($"UDriver IS RUNNING. Panel: http://127.0.0.1:{port}/panel" + (_public.Length > 0 ? $"  and  {_public}/panel" : "") + "\nTo stop: use the button in the panel or close this window.");
         }
         else Console.Error.WriteLine($"UDriver MCP (HTTP) on http://127.0.0.1:{port}  auth: {(secretMode ? "secret URL" : "OAuth")}  public: {_public}");
         await app.RunAsync();
@@ -102,7 +147,7 @@ internal static partial class HttpMode
         try
         {
             var now = DateTime.UtcNow;
-            foreach (var k in _store.Access.Where(x => x.Value < now).Select(x => x.Key).ToList()) _store.Access.Remove(k);
+            foreach (var k in _store.Access.Where(x => x.Value < now).Select(x => x.Key).ToList()) { _store.Access.Remove(k); _store.AccessClient.Remove(k); }
             foreach (var k in _store.Refresh.Where(x => x.Value < now).Select(x => x.Key).ToList()) { _store.Refresh.Remove(k); _store.RefreshClient.Remove(k); }
             Program.WritePrivate(_storeFile, JsonSerializer.Serialize(_store));
         }
@@ -125,36 +170,60 @@ internal static partial class HttpMode
     static Task OAuthError(HttpContext ctx, int status, string error, string description) =>
         Json(ctx, status, new JsonObject { ["error"] = error, ["error_description"] = description });
 
-    /// <summary>The visitor's address: Cloudflare's header when the request came through the tunnel, otherwise the TCP peer.</summary>
+    /// <summary>The visitor's address: Cloudflare's header for requests that came through the tunnel, else the connection.</summary>
     static string ClientIp(HttpContext ctx)
     {
         string ip = ctx.Request.Headers["Cf-Connecting-Ip"].ToString();
-        return ip.Length is > 0 and <= 64 ? ip : ctx.Connection.RemoteIpAddress?.ToString() ?? "";
+        bool tunnel = Uri.TryCreate(_public, UriKind.Absolute, out var pu) && ctx.Request.Host.Value == pu.Authority;
+        return tunnel && ip.Length is > 0 and <= 64 ? ip : ctx.Connection.RemoteIpAddress?.ToString() ?? "";
     }
 
-    /// <summary>Checks the owner password. Returns null if correct, otherwise the message to show. 5 wrong attempts lock that address for 10 minutes.</summary>
-    static string? CheckPassword(HttpContext ctx, string given)
+    static int StatusOf(string? error) => error is TooMany or CheckBusy ? 429 : 200;
+
+    static Task<string?> CheckPassword(HttpContext ctx, string given) => Slow(ctx, () => PasswordOk(given, _password), "Wrong password.");
+
+    /// <summary>Runs one check at a time; refuses without running it once this address or everyone together failed too often.</summary>
+    static async Task<string?> Slow(HttpContext ctx, Func<bool> check, string error)
     {
-        const string wait = "Too many wrong attempts. Please wait 10 minutes.";
+        bool local = IsLocal(ctx);
         string ip = ClientIp(ctx);
-        var now = DateTime.UtcNow;
-        lock (Gate)
+        var window = TimeSpan.FromMinutes(10);
+        bool Over()
         {
-            if (now < _globalLockedUntil) return wait;
-            var f = Failures.GetValueOrDefault(ip);
-            if (now < f.LockedUntil) return wait;
-            if (Same(given, _password)) { Failures.Remove(ip); return null; }
-            if (now - f.Seen > TimeSpan.FromMinutes(10)) f.Fails = 0;
-            f.Seen = now;
-            if (++f.Fails >= 5) { f.LockedUntil = now.AddMinutes(10); f.Fails = 0; }
-            // ponytail: when full, forget addresses that are not locked; the global cap below bounds what that gives away.
-            if (Failures.Count >= 1000 && !Failures.ContainsKey(ip))
-                foreach (var k in Failures.Where(x => x.Value.LockedUntil < now).Select(x => x.Key).ToList()) Failures.Remove(k);
-            Failures[ip] = f;
-            if (now - _globalWindowStart > TimeSpan.FromMinutes(10)) { _globalWindowStart = now; _globalFails = 0; }
-            if (++_globalFails >= 100) _globalLockedUntil = now.AddMinutes(10);
-            return "Wrong password.";
+            if (local) return false;
+            var now = DateTime.UtcNow;
+            lock (Gate)
+            {
+                if (now - _globalWindowStart > window) { _globalWindowStart = now; _globalFails = 0; }
+                var f = Failures.GetValueOrDefault(ip);
+                return _globalFails >= AllLimit || now - f.Seen <= window && f.Fails >= IpLimit;
+            }
         }
+        if (Over()) return TooMany;
+        if (!await Checking.WaitAsync(TimeSpan.FromSeconds(10))) return CheckBusy;
+        try
+        {
+            if (Over()) return TooMany;
+            bool ok = check();
+            var now = DateTime.UtcNow;
+            lock (Gate)
+            {
+                if (ok) { Failures.Remove(ip); return null; }
+                if (!local)
+                {
+                    var f = Failures.GetValueOrDefault(ip);
+                    if (now - f.Seen > window) f.Fails = 0;
+                    f.Seen = now; f.Fails++;
+                    if (Failures.Count >= 1000 && !Failures.ContainsKey(ip))
+                        foreach (var k in Failures.Where(x => now - x.Value.Seen > window).Select(x => x.Key).ToList()) Failures.Remove(k);
+                    if (Failures.Count < 1000 || Failures.ContainsKey(ip)) Failures[ip] = f;
+                    _globalFails++;
+                }
+            }
+            await Task.Delay(700);
+            return error;
+        }
+        finally { Checking.Release(); }
     }
 
     static async Task<Dictionary<string, string>> Form(HttpContext ctx)
@@ -176,7 +245,7 @@ internal static partial class HttpMode
     {
         string path = ctx.Request.Path.Value ?? "/", verb = ctx.Request.Method;
 
-        // Accept only our own names: the public one (via the tunnel) and the local one. Anything else is a rebinding attempt.
+        // Only our own names; anything else is DNS rebinding.
         string host = ctx.Request.Host.Value ?? "";
         string publicHost = Uri.TryCreate(_public, UriKind.Absolute, out var pu) ? pu.Authority : "";
         if (host != publicHost && host != "127.0.0.1:" + _port && host != "localhost:" + _port)
@@ -184,14 +253,14 @@ internal static partial class HttpMode
 
         if (_panel && !secretMode && (path == "/" || path == "/panel" || path.StartsWith("/panel/")))
         { await Panel(ctx, path, verb, IsLocal(ctx)); return; }
-        if (_setupMode) { await Write(ctx, 503, "text/plain; charset=utf-8", "UDriver is not set up yet"); return; }
+        if (_panel && _public.Length == 0) { await Write(ctx, 503, "text/plain; charset=utf-8", "Remote access to UDriver is off"); return; }
 
-        // Browsers attach Origin to cross-site requests; only the connector's own sites may call in from a page.
+        // Pages may call in only from the connector's own sites.
         string origin = ctx.Request.Headers["Origin"].ToString();
         if (origin.Length > 0 && origin != _public && !(Uri.TryCreate(origin, UriKind.Absolute, out var ou) && RedirectHosts.Contains(ou.Host)))
         { await OAuthError(ctx, 403, "forbidden", "origin not allowed"); return; }
 
-        // Connectors that call from the browser (Gemini) need CORS. Bearer tokens only, no cookies, so no credentials flag.
+        // Bearer tokens only, so CORS without credentials.
         if (origin.Length > 0 && origin != _public)
         {
             var h = ctx.Response.Headers;
@@ -211,6 +280,7 @@ internal static partial class HttpMode
         if (secretMode)
         {
             if (!Same(path, "/mcp/" + _urlSecret)) { await Write(ctx, 404, "text/plain", "not found"); return; }
+            Program.Current.Value = Agent("", IsLocal(ctx));
             await Mcp(ctx); return;
         }
 
@@ -237,21 +307,38 @@ internal static partial class HttpMode
         else if (path == "/mcp")
         {
             string auth = ctx.Request.Headers["Authorization"].ToString();
-            bool ok = false;
+            string? clientId = null;
             if (auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
-                lock (Gate) ok = _store.Access.TryGetValue(Hash(auth.Substring(7).Trim()), out var exp) && exp > DateTime.UtcNow;
-            if (!ok)
+                lock (Gate)
+                {
+                    string key = Hash(auth.Substring(7).Trim());
+                    if (_store.Access.TryGetValue(key, out var exp) && exp > DateTime.UtcNow) _store.AccessClient.TryGetValue(key, out clientId);
+                }
+            if (clientId == null)
             {
                 await Write(ctx, 401, "application/json", "{\"error\":\"invalid_token\"}",
                     r => r.Headers["WWW-Authenticate"] = $"Bearer resource_metadata=\"{_public}/.well-known/oauth-protected-resource\"");
                 return;
             }
+            Program.Current.Value = Agent(clientId, IsLocal(ctx));
             await Mcp(ctx);
         }
         else await Write(ctx, 404, "text/plain", "not found");
     }
 
     // ---------------- MCP endpoint ----------------
+
+    static Program.Session Agent(string clientId, bool local)
+    {
+        Program.Session? s;
+        lock (Gate)
+        {
+            if (!Agents.TryGetValue(clientId, out s)) Agents[clientId] = s = new Program.Session { Client = clientId };
+            s.Local = local;
+        }
+        lock (s) if (s.Slot == 0 && !s.Off) Registry.Claim(s);
+        return s;
+    }
 
     static async Task Mcp(HttpContext ctx)
     {
@@ -287,9 +374,12 @@ internal static partial class HttpMode
 
     static bool RedirectAllowed(string uri)
     {
-        if (!Uri.TryCreate(uri, UriKind.Absolute, out var u)) return false;
-        if (u.Scheme == "https" && RedirectHosts.Contains(u.Host)) return true;
-        return u.Scheme == "http" && (u.Host == "localhost" || u.Host == "127.0.0.1");   // native apps on this machine
+        if (!Uri.TryCreate(uri, UriKind.Absolute, out var u) || u.UserInfo.Length > 0 || u.Fragment.Length > 0) return false;
+        if (u.Scheme == "http") return u.Host == "localhost" || u.Host == "127.0.0.1";   // native apps on this machine
+        if (u.Scheme != "https" || !u.IsDefaultPort || !RedirectHosts.Contains(u.Host)) return false;
+        if (!RedirectPaths.TryGetValue(u.Host, out var want)) return true;
+        string path = u.AbsolutePath;
+        return u.Query.Length == 0 && (want.EndsWith('/') ? path.Length > want.Length && path.StartsWith(want, StringComparison.Ordinal) && path.IndexOf('/', want.Length) < 0 : path == want);
     }
 
     static bool RedirectMatches(Client c, string uri)
@@ -306,7 +396,7 @@ internal static partial class HttpMode
         using (var rd = new StreamReader(ctx.Request.Body, Encoding.UTF8))
             try { req = JsonNode.Parse(await rd.ReadToEndAsync()) as JsonObject; } catch { req = null; }
         var all = (req?["redirect_uris"] as JsonArray)?.Select(x => x?.ToString() ?? "").ToList() ?? new List<string>();
-        // Gemini sends its production callbacks together with Google's sandbox/test ones: keep the allowed URIs, drop the rest.
+        // Some agent apps also send test callbacks: keep the allowed ones, drop the rest.
         var uris = all.Where(RedirectAllowed).ToList();
         if (uris.Count == 0 || all.Count > 10)
         { await OAuthError(ctx, 400, "invalid_redirect_uri", "redirect URIs must point to " + string.Join(", ", RedirectHosts) + " or to localhost"); return; }
@@ -316,7 +406,7 @@ internal static partial class HttpMode
         var now = DateTime.UtcNow;
         lock (Gate)
         {
-            // Registration needs no sign-in, so it is rate-limited, and at the cap the oldest app that never got a token goes first.
+            // Open registration: rate-limited; at the cap the oldest never-used app goes first.
             while (Registrations.Count > 0 && Registrations.Peek().At < now.AddMinutes(-10)) Registrations.Dequeue();
             if (Registrations.Count >= 100 || Registrations.Count(x => x.Ip == ip) >= 10) id = "";
             else
@@ -329,7 +419,7 @@ internal static partial class HttpMode
             }
         }
         if (id.Length == 0) { await OAuthError(ctx, 429, "too_many_requests", "too many app registrations, try again in a few minutes"); return; }
-        // A client that asks for a secret (Gemini asks for client_secret_post) gets one, but it is never checked: PKCE and the owner password protect sign-in.
+        // A requested client secret is issued but never checked: PKCE and the owner password protect sign-in.
         string method = (string?)req?["token_endpoint_auth_method"] ?? "none";
         if (method != "client_secret_post" && method != "client_secret_basic") method = "none";
         var reply = new JsonObject
@@ -341,7 +431,10 @@ internal static partial class HttpMode
         await Json(ctx, 201, reply);
     }
 
-    static string Page(Dictionary<string, string> p, string clientName, string redirectHost, string? error)
+    const string CodeField = """<label class="sr" for="otc">One-time code</label><input class="field mono" type="text" id="otc" name="otc" placeholder="One-time code" autofocus autocomplete="one-time-code" autocapitalize="characters" spellcheck="false">""";
+    const string PasswordField = """<label class="sr" for="password">Owner password</label><input class="field" type="password" id="password" name="password" placeholder="Owner password" autofocus autocomplete="current-password">""";
+
+    static string Page(Dictionary<string, string> p, string clientName, string redirect, string? error)
     {
         string H(string s) => WebUtility.HtmlEncode(s);
         var hidden = new StringBuilder();
@@ -349,12 +442,12 @@ internal static partial class HttpMode
             if (p.TryGetValue(k, out var v)) hidden.Append($"<input type=\"hidden\" name=\"{k}\" value=\"{H(v)}\">");
         return Shell($"""
             <main class="narrow">
-            <header class="hero">{Icon}<h1 class="title">Allow access?</h1><p class="subtitle">The app “{H(clientName)}” wants to control Unity on this computer.</p></header>
+            <header class="hero">{Icon}<h1 class="title">Allow access?</h1><p class="subtitle">The app “{H(clientName)}” wants to use your Unity games on this computer.{(_panel ? " Paste the one-time code from the UDriver panel." : "")}</p></header>
             <form method="post" action="/authorize">{hidden}<section>
-            <div class="group pad"><label class="sr" for="password">Owner password</label><input class="field" type="password" id="password" name="password" placeholder="Owner password" autofocus autocomplete="current-password"></div>
+            <div class="group pad">{(_panel ? CodeField : PasswordField)}</div>
             {(error != null ? $"<p class=\"foot err\" role=\"alert\">{H(error)}</p>" : "")}
             </section><div class="actions"><button class="btn primary" type="submit">Allow</button></div></form>
-            <p class="foot center">After you allow, you'll be sent back to {H(redirectHost)}.<br>If you didn't start this connection yourself, close this page.</p>
+            <p class="foot center">After you allow, you'll be sent back to {H(redirect)}<br>If you didn't start this connection yourself, close this page.</p>
             </main>
             """, "Allow access · UDriver");
     }
@@ -368,17 +461,18 @@ internal static partial class HttpMode
         Client? client;
         lock (Gate) _store.Clients.TryGetValue(p.GetValueOrDefault("client_id", ""), out client);
         string redirect = p.GetValueOrDefault("redirect_uri", "");
-        // Never redirect to an address that was not registered: show the error here instead.
         if (client == null || !RedirectMatches(client, redirect) || !RedirectAllowed(redirect))
         { await Write(ctx, 400, "text/plain; charset=utf-8", "Unknown app or redirect address. Remove the connector and add it again."); return; }
         if (p.GetValueOrDefault("response_type") != "code" || p.GetValueOrDefault("code_challenge", "").Length < 20 || p.GetValueOrDefault("code_challenge_method") != "S256")
         { await Write(ctx, 400, "text/plain; charset=utf-8", "Requests without PKCE (S256) are not accepted."); return; }
         string host = new Uri(redirect).Host;
 
-        if (ctx.Request.Method == "GET") { await Html(ctx, Page(p, client.Name, host, null)); return; }
+        if (ctx.Request.Method == "GET") { await Html(ctx, Page(p, client.Name, redirect, null)); return; }
 
-        string? err = CheckPassword(ctx, p.GetValueOrDefault("password", ""));
-        if (err != null) { await Task.Delay(700); await Html(ctx, Page(p, client.Name, host, err)); return; }
+        string? err = _panel
+            ? await Slow(ctx, () => TakeCode(p.GetValueOrDefault("otc", "")), "This code is wrong, already used or expired. Get a new code in the UDriver panel.")
+            : await CheckPassword(ctx, p.GetValueOrDefault("password", ""));
+        if (err != null) { await Html(ctx, Page(p, client.Name, redirect, err), StatusOf(err)); return; }
 
         string code = Rand();
         lock (Gate)
@@ -388,8 +482,7 @@ internal static partial class HttpMode
         }
         string sep = redirect.Contains('?') ? "&" : "?";
         string target = redirect + sep + "code=" + Uri.EscapeDataString(code) + (p.TryGetValue("state", out var st) ? "&state=" + Uri.EscapeDataString(st) : "");
-        // Not a 302: browsers apply this page's form-action to every hop of a redirect that answers a form post,
-        // and apps bounce through hosts we cannot list (Google's redirector does). A page that navigates on its own is exempt.
+        // Not a 302: the page's form-action would apply to every redirect hop.
         await Html(ctx, Shell($"""
             <main class="narrow">
             <header class="hero">{Icon}<h1 class="title">Access allowed</h1><p class="subtitle">Taking you back to {WebUtility.HtmlEncode(host)}…</p></header>
@@ -406,6 +499,7 @@ internal static partial class HttpMode
         lock (Gate)
         {
             _store.Access[Hash(access)] = DateTime.UtcNow.AddHours(1);
+            _store.AccessClient[Hash(access)] = clientId;
             _store.Refresh[Hash(refresh)] = DateTime.UtcNow.AddDays(30);
             _store.RefreshClient[Hash(refresh)] = clientId;
             Save();
@@ -417,7 +511,7 @@ internal static partial class HttpMode
     {
         var p = await Form(ctx);
         string grant = p.GetValueOrDefault("grant_type", ""), clientId = p.GetValueOrDefault("client_id", "");
-        // Some clients send the id with HTTP Basic (client_secret_basic). Clients are public: PKCE proves the caller, any secret is ignored.
+        // client_secret_basic is accepted; PKCE proves the caller, any secret is ignored.
         string basic = ctx.Request.Headers["Authorization"].ToString();
         if (clientId.Length == 0 && basic.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase))
             try { clientId = Uri.UnescapeDataString(Encoding.UTF8.GetString(Convert.FromBase64String(basic.Substring(6).Trim())).Split(':')[0]); } catch { }
@@ -437,13 +531,21 @@ internal static partial class HttpMode
         {
             string key = Hash(p.GetValueOrDefault("refresh_token", ""));
             bool ok;
+            JsonObject? again = null;
+            var now = DateTime.UtcNow;
             lock (Gate)
             {
-                ok = _store.Refresh.TryGetValue(key, out var exp) && exp > DateTime.UtcNow && _store.RefreshClient.GetValueOrDefault(key) == clientId;
+                foreach (var k in Rotated.Where(x => x.Value.Until < now).Select(x => x.Key).ToList()) Rotated.Remove(k);
+                if (Rotated.TryGetValue(key, out var r) && r.Client == clientId) again = r.Reply;
+                ok = again == null && _store.Refresh.TryGetValue(key, out var exp) && exp > now && _store.RefreshClient.GetValueOrDefault(key) == clientId;
                 if (ok) { _store.Refresh.Remove(key); _store.RefreshClient.Remove(key); }   // rotation
             }
+            // A client that lost the answer may retry for 30 s and gets the same new pair.
+            if (again != null) { await Json(ctx, 200, again.DeepClone()); return; }
             if (!ok) { await OAuthError(ctx, 400, "invalid_grant", "refresh token is invalid or expired"); return; }
-            await Json(ctx, 200, Issue(clientId));
+            var reply = Issue(clientId);
+            lock (Gate) Rotated[key] = (now.AddSeconds(30), clientId, reply);
+            await Json(ctx, 200, reply.DeepClone());
         }
         else await OAuthError(ctx, 400, "unsupported_grant_type", "use authorization_code or refresh_token");
     }

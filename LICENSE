@@ -1,21 +1,59 @@
-MIT License
+UDriver License 1.0
 
-Copyright (c) 2026 Unity MCP Driver contributors
+Copyright (c) 2026 Vladislav Pesotchi. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+"Software" means the source code, binaries and documentation in this
+repository. "Owner" means the copyright holder named above.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. What you may do
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+   Free of charge, you may:
+
+   a. download, install and run the Software for any purpose, including
+      commercial work;
+   b. modify the Software for your own use or for use inside your own
+      organization;
+   c. include the Unity package from the Software in builds of your own
+      applications, provided the Software is not the main purpose of those
+      builds.
+
+2. What you may not do
+
+   Without prior written permission from the Owner, you may not:
+
+   a. distribute, publish, sublicense, sell, rent or lease the Software or
+      any modified version of it, in source or binary form, except as allowed
+      in section 1c;
+   b. offer the Software, or a product or service that derives its main
+      value from the Software, to third parties;
+   c. remove or alter any copyright, license or attribution notice.
+
+   Forking this repository on GitHub is allowed only for preparing
+   contributions to it.
+
+3. Contributions
+
+   By submitting a contribution to this repository you grant the Owner a
+   perpetual, worldwide, irrevocable, royalty-free license to use, modify,
+   distribute, sublicense and relicense it as part of the Software.
+
+4. Ownership
+
+   The Software is licensed, not sold. The Owner keeps all rights that this
+   license does not expressly grant.
+
+5. Termination
+
+   Your rights under this license end automatically if you break its terms.
+   You must then stop using the Software and delete every copy you hold.
+
+6. No warranty
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   OWNER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+   ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Permission requests: open an issue in this repository.
