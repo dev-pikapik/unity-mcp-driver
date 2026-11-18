@@ -183,14 +183,14 @@ internal static partial class HttpMode
     }
 
     /// <summary>Every HTML page goes out through here: no framing, and only our own &lt;script&gt; and &lt;style&gt; blocks apply (a fresh nonce per response).</summary>
-    static Task Html(HttpContext ctx, string html, int status = 200, string formAction = "'self'")
+    static Task Html(HttpContext ctx, string html, int status = 200)
     {
         string nonce = Rand(18);
         html = html.Replace("<script>", $"<script nonce=\"{nonce}\">").Replace("<style>", $"<style nonce=\"{nonce}\">");
         return Write(ctx, status, "text/html; charset=utf-8", html, r =>
         {
             r.Headers["X-Frame-Options"] = "DENY";
-            r.Headers["Content-Security-Policy"] = $"default-src 'self'; style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'; frame-ancestors 'none'; form-action {formAction}; base-uri 'none'";
+            r.Headers["Content-Security-Policy"] = $"default-src 'self'; style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
             r.Headers["Referrer-Policy"] = "same-origin";   // not no-referrer: then browsers send "Origin: null" on form posts and the origin checks reject them
         });
     }
@@ -550,7 +550,7 @@ internal static partial class HttpMode
         .act:focus-visible{outline-offset:-3px}
         .act.danger{color:var(--red)} .act.center{justify-content:center} .act.nav{color:var(--label)}
         .chev{margin-left:auto;color:var(--label-2);font-size:20px;line-height:1}
-        .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:32px;padding:6px 14px;margin:0;border:0;border-radius:10px;font:inherit;font-size:15px;font-weight:500;white-space:nowrap;cursor:pointer;flex:none;-webkit-tap-highlight-color:transparent;transition:filter .15s,opacity .15s}
+        .btn{display:inline-flex;text-decoration:none;align-items:center;justify-content:center;gap:8px;min-height:32px;padding:6px 14px;margin:0;border:0;border-radius:10px;font:inherit;font-size:15px;font-weight:500;white-space:nowrap;cursor:pointer;flex:none;-webkit-tap-highlight-color:transparent;transition:filter .15s,opacity .15s}
         .btn:hover{filter:brightness(1.08)} .btn:active{filter:brightness(.9)}
         .btn:disabled{opacity:.45;cursor:default;filter:none}
         .btn.tinted{background:var(--accent-tint);color:var(--accent)}

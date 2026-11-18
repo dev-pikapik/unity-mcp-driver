@@ -375,12 +375,10 @@ internal static partial class HttpMode
         { await Write(ctx, 400, "text/plain; charset=utf-8", "Requests without PKCE (S256) are not accepted."); return; }
         string host = new Uri(redirect).Host;
 
-        // The form posts here and is then redirected to the app, so form-action must allow the app's origin too.
-        string formAction = "'self' " + new Uri(redirect).GetLeftPart(UriPartial.Authority);
-        if (ctx.Request.Method == "GET") { await Html(ctx, Page(p, client.Name, host, null), formAction: formAction); return; }
+        if (ctx.Request.Method == "GET") { await Html(ctx, Page(p, client.Name, host, null)); return; }
 
         string? err = CheckPassword(ctx, p.GetValueOrDefault("password", ""));
-        if (err != null) { await Task.Delay(700); await Html(ctx, Page(p, client.Name, host, err), formAction: formAction); return; }
+        if (err != null) { await Task.Delay(700); await Html(ctx, Page(p, client.Name, host, err)); return; }
 
         string code = Rand();
         lock (Gate)
@@ -390,8 +388,16 @@ internal static partial class HttpMode
         }
         string sep = redirect.Contains('?') ? "&" : "?";
         string target = redirect + sep + "code=" + Uri.EscapeDataString(code) + (p.TryGetValue("state", out var st) ? "&state=" + Uri.EscapeDataString(st) : "");
-        ctx.Response.Headers["Cache-Control"] = "no-store";
-        ctx.Response.Redirect(target);
+        // Not a 302: browsers apply this page's form-action to every hop of a redirect that answers a form post,
+        // and apps bounce through hosts we cannot list (Google's redirector does). A page that navigates on its own is exempt.
+        await Html(ctx, Shell($"""
+            <main class="narrow">
+            <header class="hero">{Icon}<h1 class="title">Access allowed</h1><p class="subtitle">Taking you back to {WebUtility.HtmlEncode(host)}…</p></header>
+            <div class="actions"><a class="btn primary" id="go" href="{WebUtility.HtmlEncode(target)}">Continue</a></div>
+            <p class="foot center">If nothing happens in a few seconds, press Continue.</p>
+            </main>
+            <script>location.replace(document.getElementById("go").href)</script>
+            """, "Access allowed · UDriver"));
     }
 
     static JsonObject Issue(string clientId)
