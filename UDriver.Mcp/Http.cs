@@ -29,6 +29,7 @@ internal static partial class HttpMode
     static readonly List<string> RedirectHosts = new()
     {
         "claude.ai", "claude.com",
+        "chatgpt.com",
         // Google-hosted agent apps: per-user OAuth callbacks and the enterprise callback.
         "oauth-redirect.googleusercontent.com", "oauth-redirect-sandbox.googleusercontent.com",
         "oauth-redirect-test.googleusercontent.com", "vertexaisearch.cloud.google.com",
@@ -340,6 +341,16 @@ internal static partial class HttpMode
         if (!Uri.TryCreate(uri, UriKind.Absolute, out var u) || u.UserInfo.Length > 0 || u.Fragment.Length > 0) return false;
         if (u.Scheme == "http") return u.Host == "localhost" || u.Host == "127.0.0.1";   // native apps on this machine
         if (u.Scheme != "https" || !u.IsDefaultPort || !RedirectHosts.Contains(u.Host)) return false;
+        if (u.Host == "chatgpt.com")
+        {
+            const string callbackPrefix = "/connector/oauth/";
+            string callbackPath = u.AbsolutePath;
+            if (u.Query.Length != 0) return false;
+            if (callbackPath == "/connector_platform_oauth_redirect") return true;
+            if (!callbackPath.StartsWith(callbackPrefix, StringComparison.Ordinal) || callbackPath.Length == callbackPrefix.Length)
+                return false;
+            return callbackPath[callbackPrefix.Length..].All(c => char.IsAsciiLetterOrDigit(c) || c == '-' || c == '_');
+        }
         if (!RedirectPaths.TryGetValue(u.Host, out var want)) return true;
         string path = u.AbsolutePath;
         return u.Query.Length == 0 && (want.EndsWith('/') ? path.Length > want.Length && path.StartsWith(want, StringComparison.Ordinal) && path.IndexOf('/', want.Length) < 0 : path == want);

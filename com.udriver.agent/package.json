@@ -1,6 +1,6 @@
 {
   "name": "com.udriver.agent",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "displayName": "UDriver - agent test driver",
   "description": "In-game driver that lets an agent (via MCP) see and operate a Unity client: UI Toolkit tree, input, screenshots, events, logs, reflection, probes, profiler.",
   "unity": "6000.0",
