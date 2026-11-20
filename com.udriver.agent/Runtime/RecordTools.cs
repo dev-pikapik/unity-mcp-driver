@@ -301,8 +301,10 @@ namespace UDriver
                 if (_play != null && _play.Result == null) throw new ToolException("another replay (" + _play.Id + ") is running");
                 if (_rec != null) throw new ToolException("stop the recording (rec_stop) before replaying");
                 string file = Path.Combine(StateTools.ExportDir(), id + ".json");
-                if (!File.Exists(file)) throw new ToolException("no recording " + id + " in " + StateTools.ExportDir());
-                BeginReplay(JObject.Parse(File.ReadAllText(file)), boot);
+                string json = null;
+                Sandbox.Own(() => { if (File.Exists(file)) json = File.ReadAllText(file); });
+                if (json == null) throw new ToolException("no recording " + id + " in " + StateTools.ExportDir());
+                BeginReplay(JObject.Parse(json), boot);
             }
             var p = _play;
             int wait = 0;

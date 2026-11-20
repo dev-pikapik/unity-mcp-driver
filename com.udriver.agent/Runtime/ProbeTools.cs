@@ -484,18 +484,19 @@ namespace UDriver
             long limit = StateTools.ExportLimit();
             StateTools.MakeRoom(dir, Math.Min(frames * 100000L, limit));
             string file = Path.Combine(dir, "profile-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N", System.Globalization.CultureInfo.InvariantCulture).Substring(0, 6));
-            Profiler.logFile = file;
+            Sandbox.Own(() => Profiler.logFile = file);
             Profiler.enableBinaryLog = true;
             Profiler.enabled = true;
             try { for (int i = 0; i < frames; i++) yield return null; }
             finally { Profiler.enabled = false; Profiler.enableBinaryLog = false; Profiler.logFile = ""; }
             file += ".raw";
-            if (!File.Exists(file)) throw new ToolException("Unity did not write the profiler capture on this platform");
+            long size = -1;
+            Sandbox.Own(() => { if (File.Exists(file)) size = new FileInfo(file).Length; });
+            if (size < 0) throw new ToolException("Unity did not write the profiler capture on this platform");
             Driver.OwnerOnly(file, false);
-            long size = new FileInfo(file).Length;
             if (size > limit)
             {
-                File.Delete(file);
+                Sandbox.Own(() => File.Delete(file));
                 throw new ToolException("the capture was " + size / 1048576 + " MB, over the " + limit / 1048576 + " MB limit of the exports folder (the owner sets it with UDRIVER_EXPORTS_MAX_MB), and was deleted");
             }
             StateTools.MakeRoom(dir, size, file);

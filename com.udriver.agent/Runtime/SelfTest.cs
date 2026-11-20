@@ -269,7 +269,8 @@ namespace UDriver
             yield return Tool("state_export", new JObject { ["path"] = StateTools.IdOf(big.GetRange(0, 50)) }, t);
             var m = System.Text.RegularExpressions.Regex.Match(t.AllText(), @" to (.+?\.jsonl)");
             string file = m.Success ? m.Groups[1].Value : null;
-            int lines = file != null && System.IO.File.Exists(file) ? System.IO.File.ReadAllLines(file).Length : -1;
+            int lines = -1;
+            if (file != null) Sandbox.Own(() => { if (System.IO.File.Exists(file)) lines = System.IO.File.ReadAllLines(file).Length; });
             if (lines >= 0) Sandbox.Own(() => System.IO.File.Delete(file));
             Check("state_export writes JSONL into ~/.udriver/exports", lines == 50 && file.Contains(System.IO.Path.Combine(".udriver", "exports")), t.AllText());
 

@@ -717,9 +717,10 @@ namespace UDriver
                 if (sw.ElapsedMilliseconds > 110000) throw new ToolException("the snapshot did not finish within 110 s");
                 yield return null;
             }
-            if (!ok || !File.Exists(file)) throw new ToolException("Unity could not take the memory snapshot on this platform");
+            long size = -1;
+            if (ok) Sandbox.Own(() => { if (File.Exists(file)) size = new FileInfo(file).Length; });
+            if (size < 0) throw new ToolException("Unity could not take the memory snapshot on this platform");
             Driver.OwnerOnly(file, false);
-            long size = new FileInfo(file).Length;
             if (size > limit)
             {
                 Sandbox.Own(() => File.Delete(file));

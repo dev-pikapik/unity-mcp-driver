@@ -1028,7 +1028,8 @@ namespace UDriver
         /// <summary>Deletes the oldest files, never keep, until the folder has room for reserve more bytes besides keep.</summary>
         internal static void MakeRoom(string dir, long reserve, string keep = null)
         {
-            var files = new DirectoryInfo(dir).GetFiles();
+            FileInfo[] files = null;
+            Sandbox.Own(() => files = new DirectoryInfo(dir).GetFiles());
             Array.Sort(files, (x, y) => x.LastWriteTimeUtc.CompareTo(y.LastWriteTimeUtc));
             long total = 0, limit = ExportLimit();
             foreach (var f in files) if (f.FullName != keep) total += f.Length;

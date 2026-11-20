@@ -147,7 +147,7 @@ namespace UDriver
                     ["project"] = Application.isEditor ? Path.GetDirectoryName(Application.dataPath) : GamePath(),
                     ["pid"] = System.Diagnostics.Process.GetCurrentProcess().Id, ["unity"] = Application.unityVersion, ["port"] = port,
                 };
-                File.Delete(FileFor(port, ".token"));
+                Sandbox.Own(() => File.Delete(FileFor(port, ".token")));
                 WritePrivate(FileFor(port, ".json"), info.ToString(Formatting.None));
             }
             catch (Exception e) { Debug.LogWarning("[UDriver] could not write the discovery file (app_connect will not find this game, app_launch will): " + e.Message); }

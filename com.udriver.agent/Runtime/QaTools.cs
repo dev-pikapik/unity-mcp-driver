@@ -1165,10 +1165,10 @@ namespace UDriver
             Texture2D bt = null;
             if (act == "compare")
             {
-                if (!File.Exists(file)) throw new ToolException("no baseline '" + name + "' in " + dir + " - save one first with action=save");
-                bt = new Texture2D(2, 2);
                 byte[] saved = null;
-                Sandbox.Own(() => saved = File.ReadAllBytes(file));
+                Sandbox.Own(() => { if (File.Exists(file)) saved = File.ReadAllBytes(file); });
+                if (saved == null) throw new ToolException("no baseline '" + name + "' in " + dir + " - save one first with action=save");
+                bt = new Texture2D(2, 2);
                 bt.LoadImage(saved);
             }
             yield return new WaitForEndOfFrame();
