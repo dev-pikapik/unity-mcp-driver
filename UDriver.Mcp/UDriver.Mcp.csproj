@@ -15,9 +15,12 @@
     <Compile Include="../com.udriver.agent/Runtime/ToolManifest.cs" Link="ToolManifest.cs" />
     <EmbeddedResource Include="../com.udriver.agent/Runtime/*.cs" LogicalName="rt/%(Filename)%(Extension)" />
     <EmbeddedResource Include="$(PkgNewtonsoft_Json)/lib/netstandard2.0/Newtonsoft.Json.dll" LogicalName="Newtonsoft.Json.dll" />
+    <EmbeddedResource Include="$(PkgLib_Harmony)/lib/net48/0Harmony.dll" LogicalName="0Harmony.dll" />
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="Lib.Harmony" Version="2.4.3" GeneratePathProperty="true" ExcludeAssets="all" PrivateAssets="all" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.12.0" />
+    <PackageReference Include="Mono.Cecil" Version="0.11.6" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" GeneratePathProperty="true" ExcludeAssets="all" PrivateAssets="all" />
     <PackageReference Include="Terminal.Gui" Version="2.5.0" />
     <PackageReference Include="Velopack" Version="1.2.161" />

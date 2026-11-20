@@ -67,6 +67,19 @@ static class Inject
         catch (Exception) { return ""; }
     }
 
+    /// <summary>Why this build's own code could get past UDriver's in-process wall; "" when it cannot.</summary>
+    internal static string Native(Registry.Game g)
+    {
+        if (g.Kind != "build") return "";
+        try
+        {
+            string exe = GameExe(g.Path), data = DataDir(exe);
+            if (!Directory.Exists(data)) return "its files cannot be found at " + g.Path;
+            return IsIl2Cpp(exe, data) ? "it is built with IL2CPP, so all its code is native" : Eval.Native(Path.Combine(data, "Managed"));
+        }
+        catch (Exception e) { return "its code cannot be read: " + e.Message; }
+    }
+
     /// <summary>Makes sure the game at this game file has the agent; an error text when it cannot.</summary>
     internal static string? Ensure(string exe)
     {
@@ -120,6 +133,7 @@ static class Inject
             File.WriteAllText(list, sa.ToJsonString());
 
             var rl = File.Exists(loads) ? JsonNode.Parse(File.ReadAllText(loads))! : new JsonObject { ["root"] = new JsonArray() };
+            rl["root"]!.AsArray().Insert(0, new JsonObject { ["assemblyName"] = "UDriver.Runtime", ["nameSpace"] = "UDriver", ["className"] = "Sandbox", ["methodName"] = "Early", ["loadTypes"] = 4, ["isUnityClass"] = false });
             rl["root"]!.AsArray().Add(new JsonObject { ["assemblyName"] = "UDriver.Runtime", ["nameSpace"] = "UDriver", ["className"] = "Driver", ["methodName"] = "Boot", ["loadTypes"] = 1, ["isUnityClass"] = false });
             File.WriteAllText(loads, rl.ToJsonString());
 
@@ -132,6 +146,7 @@ static class Inject
             }
         }
         catch (Exception e) { Undo(exe); return "UDriver could not be added to this game: " + e.Message; }
+        Eval.Native(managed);
         return null;
     }
 
@@ -151,7 +166,7 @@ static class Inject
         return "The original game files are back.";
     }
 
-    static byte[] Resource(string name)
+    internal static byte[] Resource(string name)
     {
         using var s = Self.GetManifestResourceStream(name)!;
         using var m = new MemoryStream();

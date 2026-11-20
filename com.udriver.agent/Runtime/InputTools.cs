@@ -29,18 +29,59 @@ namespace UDriver
 
         internal static void Register()
         {
-            Driver.Register("ui_click", Leased(Click));
-            Driver.Register("ui_hover", Leased(Hover));
-            Driver.Register("ui_drag", Leased(Drag));
-            Driver.Register("pointer", Leased(Pointer));
-            Driver.Register("ui_scroll", Leased(Scroll));
-            Driver.Register("ui_scroll_to", Leased(ScrollTo));
-            Driver.Register("ui_set_value", Leased(SetValue));
-            Driver.Register("ui_focus", Leased(Focus));
-            Driver.Register("type_text", Leased(TypeText));
-            Driver.Register("key", Leased(KeyTool));
-            Driver.Register("play", Leased(Play));
+            Driver.Register("ui_click", Leased("ui_click", Click));
+            Driver.Register("ui_hover", Leased("ui_hover", Hover));
+            Driver.Register("ui_drag", Leased("ui_drag", Drag));
+            Driver.Register("pointer", Leased("pointer", Pointer));
+            Driver.Register("ui_scroll", Leased("ui_scroll", Scroll));
+            Driver.Register("ui_scroll_to", Leased("ui_scroll_to", ScrollTo));
+            Driver.Register("ui_set_value", Leased("ui_set_value", SetValue));
+            Driver.Register("ui_focus", Leased("ui_focus", Focus));
+            Driver.Register("type_text", Leased("type_text", TypeText));
+            Driver.Register("key", Leased("key", KeyTool));
+            Driver.Register("play", Leased("play", Play));
             Driver.Register("input_actions", Driver.Sync((a, r) => Inj.Describe(r)));
+            Driver.Register("take_controls", Driver.Sync(TakeControls));
+        }
+
+        // ---------------- one agent controls the input until it is idle ----------------
+
+        const float OwnerIdle = 30f;
+        static string _owner, _ownerName;
+        static float _ownerLast;
+
+        static string Owner(Job me)
+        {
+            if (_owner == null || Time.realtimeSinceStartup - _ownerLast >= OwnerIdle) return null;
+            return me != null && me.Holder == _owner ? null : _ownerName;
+        }
+
+        static void Own(Job me)
+        {
+            if (Owner(me) is string other)
+                throw new ToolException("This game is being controlled by " + other + " right now. You can still read it, take screenshots, inspect memory and profile it. " +
+                                        "Input frees up after " + OwnerIdle + " s without input from " + other + "; meanwhile coordinate with team_post or work in another instance (list_instances).");
+            _owner = me.Holder; _ownerName = me.Client; _ownerLast = Time.realtimeSinceStartup;
+        }
+
+        internal static string Controls(Job me)
+        {
+            if (_owner == null || Time.realtimeSinceStartup - _ownerLast >= OwnerIdle) return "controls free";
+            return (me != null && me.Holder == _owner ? "controlled by you" : "controlled by " + _ownerName) + " (idle " + (int)(Time.realtimeSinceStartup - _ownerLast) + " s)";
+        }
+
+        static void TakeControls(JObject a, ToolResponse r)
+        {
+            var me = Driver.Current;
+            if (me == null) throw new ToolException("take_controls needs a caller");
+            if (a.Bool("release", false))
+            {
+                if (_owner == me.Holder) _owner = null;
+                r.Text("Released the controls.");
+                return;
+            }
+            Own(me);
+            r.Text("You control this game. Other agents get an error on input until you are idle for " + OwnerIdle + " s or call take_controls release=true.");
         }
 
         // ---------------- one agent at a time on the input devices ----------------
@@ -49,11 +90,14 @@ namespace UDriver
         static float _leaseEnd;
         const float LeaseWait = 10f;
 
-        static ToolHandler Leased(ToolHandler h) { return (a, r) => WithLease(h, a, r); }
+        static ToolHandler Leased(string name, ToolHandler h) { return (a, r) => WithLease(name, h, a, r); }
 
-        static IEnumerator WithLease(ToolHandler h, JObject a, ToolResponse r)
+        internal static void EnsureDevices() { Inj.Ensure(); }
+
+        static IEnumerator WithLease(string name, ToolHandler h, JObject a, ToolResponse r)
         {
             var me = Driver.Current;
+            if (me != null) Own(me);
             float t0 = Time.realtimeSinceStartup;
             while (me != null && _lease != null && _lease != me && !_lease.Done.IsSet && _lease.Client != me.Client)
             {
@@ -66,8 +110,15 @@ namespace UDriver
             var prev = _lease;
             _lease = me;
             _leaseEnd = Time.realtimeSinceStartup;
+            int sent = Inj.Sent;
+            var rec = RecordTools.Action(name, a);
             try { yield return h(a, r); }
-            finally { if (_lease == me) _lease = prev != null && prev != me && !prev.Done.IsSet ? prev : null; }
+            finally
+            {
+                RecordTools.End(rec, Inj.Sent != sent, r);
+                if (_lease == me) _lease = prev != null && prev != me && !prev.Done.IsSet ? prev : null;
+                if (me != null && _owner == me.Holder) _ownerLast = Time.realtimeSinceStartup;
+            }
         }
 
         const int MaxHoldMs = 10000;
@@ -862,8 +913,11 @@ namespace UDriver
             static Gamepad _pad;
             static readonly HashSet<Key> Held = new HashSet<Key>();
 
-            static void Ensure()
+            public static int Sent;
+
+            public static void Ensure()
             {
+                Sent++;
                 if (_mouse == null || !_mouse.added)
                 {
                     // Keep receiving injected input while the game window is in the background.
@@ -1005,6 +1059,8 @@ namespace UDriver
         static class Inj
         {
             public static readonly bool Available = false;
+            public static readonly int Sent = 0;
+            public static void Ensure() { }
             public static void SendMouse(Vector2 screenTopLeft, int buttons, Vector2 scroll) { }
             public static void SendKey(string name, bool down) { }
             public static void SendText(char c) { }

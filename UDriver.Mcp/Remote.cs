@@ -47,6 +47,12 @@ internal static partial class HttpMode
         return code;
     }
 
+    /// <summary>New agents may register only while a code issued on this computer is waiting to be used.</summary>
+    static bool CodeLive()
+    {
+        lock (Gate) { OneTime.RemoveAll(x => x.Exp < DateTime.UtcNow); return OneTime.Count > 0; }
+    }
+
     /// <summary>True once per issued code; every live code is compared, each in constant time.</summary>
     static bool TakeCode(string given)
     {

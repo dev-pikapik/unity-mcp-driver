@@ -18,12 +18,13 @@ namespace UDriver
         IEnumerator Start()
         {
             var end = new WaitForEndOfFrame();
-            while (true) { yield return end; Pump(); }
+            while (true) { yield return end; RecordTools.Tick(2); Pump(); }
         }
 
         void Update()
         {
             EventStore.Tick();
+            RecordTools.Tick(0);
             Pump();
             if (Time.unscaledTime >= _nextHook)
             {
@@ -35,6 +36,7 @@ namespace UDriver
         void LateUpdate()
         {
             ProbeTools.Tick();
+            RecordTools.Tick(1);
             Pump();
         }
 

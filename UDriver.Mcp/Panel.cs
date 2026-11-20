@@ -381,6 +381,11 @@ internal static partial class HttpMode
                 bool removed = Registry.Remove(form.GetValueOrDefault("id", ""));
                 await Json(ctx, removed ? 200 : 400, removed ? new JsonObject { ["ok"] = true } : Fail("This game is no longer in the list."));
                 return;
+            case "/panel/api/games/clear-mark" when local:
+                string cm = form.GetValueOrDefault("id", "");
+                bool cleared = Registry.Games.FirstOrDefault(g => g.Id == cm || g.Name == cm) is { } cg && Registry.ClearMark(cg.Id);
+                await Json(ctx, cleared ? 200 : 400, cleared ? new JsonObject { ["ok"] = true } : Fail("This game has no mark to clear."));
+                return;
             case "/panel/api/games/start" when local:
                 if (Registry.Games.FirstOrDefault(g => g.Id == form.GetValueOrDefault("id")) is not { } sg) { await Json(ctx, 400, Fail("This game is no longer in the list.")); return; }
                 var started = await Program.Launch(new JsonObject { ["path"] = sg.Id, ["waitSec"] = 60 }, true);
@@ -449,6 +454,21 @@ internal static partial class HttpMode
                     : enable && !local ? LocalOnly : null;
                 if (toolErr == null) Registry.SetTool(toolNames, forClient.Length > 0 ? forClient : null, enable);
                 await Json(ctx, toolErr == null ? 200 : 400, toolErr == null ? new JsonObject { ["ok"] = true } : Fail(toolErr));
+                return;
+            case "/panel/api/levels/set":
+                bool lvOn = form.GetValueOrDefault("enabled") == "true", lvLocal = form.GetValueOrDefault("for") != "remote";
+                string? lvErr = !int.TryParse(form.GetValueOrDefault("level"), out int lv) || lv is < 0 or > 3 ? "The level must be 0, 1, 2 or 3."
+                    : lv == 3 && !lvLocal ? "Computer access is never available over remote access."
+                    : !local && (lvOn || lv == 3) ? LocalOnly : null;
+                if (lvErr == null) { if (lv == 3) Registry.SetComputer(lvOn); else Registry.SetLevel(lv, lvLocal, lvOn); }
+                await Json(ctx, lvErr == null ? 200 : 400, lvErr == null ? new JsonObject { ["ok"] = true } : Fail(lvErr));
+                return;
+            case "/panel/api/game-key" when local:
+                if (!int.TryParse(form.GetValueOrDefault("port"), out int kp) || kp is < 1024 or > 65535) { await Json(ctx, 400, Fail("Unknown port.")); return; }
+                string key = form.GetValueOrDefault("key", "");
+                if (key.Length > 0 && !(key.Length is >= 32 and <= 128 && key.All(char.IsAsciiHexDigit))) { await Json(ctx, 400, Fail("Unknown key.")); return; }
+                if (key.Length > 0) Program.Keep(kp, key); else key = await Program.TokenFor(kp);
+                await Json(ctx, key.Length > 0 ? 200 : 404, key.Length > 0 ? new JsonObject { ["ok"] = true, ["key"] = key } : Fail("This game is not connected."));
                 return;
             case "/panel/api/devices/disconnect":
                 bool off = DisconnectDevice(form.GetValueOrDefault("id", "-"));
@@ -524,7 +544,15 @@ internal static partial class HttpMode
         foreach (var k in gone) Registry.ForgetClient(k);
     }
 
-    static readonly string[] ToolGroups = { "Look", "Play", "Change" };   // by access level: watch, play, full
+    static readonly string[] ToolGroups = { "Look", "Play", "Change", "Computer" };   // by tool level 0-3
+
+    static readonly string[] LevelTexts =
+    {
+        "Sees the screen, the scene, values, logs and performance. Changes nothing.",
+        "Also clicks, types, presses keys, starts and stops your games and runs tests, like a player.",
+        "Also changes values, scenes and builds inside the game and its project. At your own risk.",
+        "Also runs any game code and editor menu commands, which can reach files, programs and the network of this computer. At your own risk. Never over remote access.",
+    };
 
     static readonly Dictionary<string, string> ToolTitles = new()
     {
@@ -536,34 +564,38 @@ internal static partial class HttpMode
         ["play"] = "Play for a while", ["input_actions"] = "List game controls", ["screenshot"] = "Take a screenshot", ["frames_record"] = "Record frames",
         ["frames_get"] = "View recorded frames", ["time_control"] = "Pause or step time", ["events_query"] = "Read game events", ["events_config"] = "Choose logged events",
         ["errors"] = "Read errors", ["wait_for"] = "Wait for something", ["scene_tree"] = "Read the scene", ["state_get"] = "Read a value",
-        ["state_query"] = "Search values", ["state_export"] = "Export values to a file", ["state_set"] = "Change a value", ["state_call"] = "Call game code",
+        ["state_query"] = "Search values", ["state_export"] = "Export values to a file", ["state_set"] = "Change a value", ["state_call"] = "Call game code", ["eval"] = "Run C# in the game",
         ["types_find"] = "Find code types", ["type_members"] = "List a type's members", ["watch_add"] = "Watch a value", ["trace_add"] = "Trace calls",
         ["trigger_add"] = "React to events", ["probe_list"] = "List probes", ["probe_remove"] = "Remove a probe", ["profiler_get"] = "Read performance",
         ["profiler_list"] = "List performance counters", ["memory_summary"] = "Memory overview", ["memory_top"] = "Biggest memory users", ["memory_snapshot"] = "Compare memory",
-        ["memory_watch"] = "Watch memory growth", ["memory_refs"] = "Find what holds memory", ["memory_capture"] = "Save a memory capture", ["render_stats"] = "Rendering stats",
+        ["memory_watch"] = "Watch memory growth", ["memory_refs"] = "Find what holds memory", ["memory_capture"] = "Save a memory capture", ["profiler_capture"] = "Save a profiler capture", ["leak_check"] = "Check an action for leaks", ["rec_start"] = "Start recording", ["rec_stop"] = "Stop and save the recording", ["rec_replay"] = "Replay a recording", ["rec_steps"] = "Read a recording's steps", ["render_stats"] = "Rendering stats",
         ["render_scene"] = "Inspect rendering", ["screen_pick"] = "What is at a point", ["locate"] = "Find an object on screen", ["self_test"] = "Check the driver",
         ["editor_status"] = "Editor status", ["editor_play"] = "Enter or leave Play Mode", ["editor_compile"] = "Compile scripts", ["editor_tests"] = "Run tests",
         ["editor_build"] = "Build the game", ["editor_scene"] = "Open or save scenes", ["editor_assets"] = "Find project assets", ["editor_menu"] = "Run an editor menu command",
+        ["list_instances"] = "List running copies", ["use_instance"] = "Switch to a copy", ["where_was_i"] = "Recall earlier work", ["take_controls"] = "Take the controls",
+        ["team_post"] = "Post to the team", ["team_read"] = "Read team posts", ["claim"] = "Claim a task", ["release"] = "Give back a task", ["launch_game"] = "Start game copies",
     };
 
     static readonly string[][] ToolFeatures =
     {
         new[] { "Screenshots", "screenshot", "render_scene", "frames_record", "frames_get" },
         new[] { "Scene and objects", "scene_tree", "state_get", "ui_tree", "state_query", "ui_find", "ui_inspect", "screen_pick", "locate" },
-        new[] { "Games and status", "targets", "status", "app_status", "app_connect", "input_actions", "batch" },
-        new[] { "Errors, events and timing", "errors", "events_query", "wait_for", "time_control" },
-        new[] { "Performance", "profiler_get", "profiler_list", "render_stats" },
-        new[] { "Memory", "memory_summary", "memory_top", "memory_snapshot", "memory_watch", "memory_refs" },
+        new[] { "Games and status", "targets", "status", "app_status", "app_connect", "input_actions", "batch", "list_instances", "where_was_i", "team_read" },
+        new[] { "Errors, events and timing", "errors", "events_query", "wait_for", "time_control", "rec_steps" },
+        new[] { "Performance", "profiler_get", "profiler_list", "profiler_capture", "render_stats" },
+        new[] { "Memory", "memory_summary", "memory_top", "memory_snapshot", "memory_watch", "memory_refs", "leak_check" },
         new[] { "Game code", "types_find", "type_members", "probe_list" },
         new[] { "Editor checks and builds", "editor_status", "editor_compile", "editor_tests", "editor_build", "editor_assets" },
-        new[] { "Press, tap and type", "ui_click", "key", "type_text", "ui_set_value", "ui_focus", "play" },
+        new[] { "Press, tap and type", "ui_click", "key", "type_text", "ui_focus", "play", "take_controls" },
+        new[] { "Switch game copies and share work with other agents", "use_instance", "team_post", "claim", "release" },
         new[] { "Drag, hover and scroll", "ui_drag", "ui_hover", "pointer", "ui_scroll", "ui_scroll_to" },
-        new[] { "Start and stop games", "app_launch", "app_kill", "editor_play" },
+        new[] { "Start and stop games", "app_launch", "launch_game", "app_kill", "editor_play" },
         new[] { "Watch values and react", "watch_add", "trigger_add", "probe_remove", "events_config" },
-        new[] { "Save captures and self-check", "state_export", "memory_capture", "self_test" },
-        new[] { "Change values in the game", "state_set", "trace_add" },
+        new[] { "Record, replay and save captures", "rec_start", "rec_stop", "rec_replay", "state_export", "memory_capture", "self_test" },
+        new[] { "Change values in the game", "state_set", "ui_set_value", "trace_add", "eval" },
         new[] { "Run any game code, including code that writes files or uses the network", "state_call" },
-        new[] { "Editor menu commands", "editor_menu", "editor_scene" },
+        new[] { "Open and save scenes", "editor_scene" },
+        new[] { "Run any editor menu command", "editor_menu" },
     };
 
     static readonly Dictionary<string, (string Feature, int Order)> ToolFeature = ToolFeatures
@@ -596,13 +628,17 @@ internal static partial class HttpMode
             t["enabled"] = !off.Contains(n);
             t["offFor"] = new JsonArray(perClient.Where(x => x.Value.Contains(n)).Select(x => (JsonNode)x.Key!).ToArray());
             t["title"] = ToolTitles.GetValueOrDefault(n, n);
-            t["group"] = ToolGroups[Registry.Level((string?)t["access"] ?? "")];
+            t["group"] = ToolGroups[(int)t["level"]!];
             t["feature"] = ToolFeature.TryGetValue(n, out var f) ? f.Feature : (string)t["title"]!;
         }
         var sorted = tools.OfType<JsonObject>().OrderBy(t => Array.IndexOf(ToolGroups, (string)t["group"]!))
             .ThenBy(t => ToolFeature.TryGetValue((string)t["name"]!, out var f) ? f.Order : int.MaxValue).ToArray();
         tools.Clear();
-        return new JsonObject { ["tools"] = new JsonArray(sorted), ["clients"] = ClientsJson() };
+        var levels = new JsonArray(Enumerable.Range(0, 4).Select(i => (JsonNode)new JsonObject
+        {
+            ["level"] = i, ["name"] = Program.LevelNames[i], ["text"] = LevelTexts[i], ["local"] = Registry.LevelOn(i, true), ["remote"] = Registry.LevelOn(i, false),
+        }).ToArray());
+        return new JsonObject { ["tools"] = new JsonArray(sorted), ["clients"] = ClientsJson(), ["levels"] = levels };
     }
 
     static bool DisconnectAgent(int slot)
@@ -631,7 +667,7 @@ internal static partial class HttpMode
             {
                 ["id"] = g.Id, ["name"] = g.Name, ["kind"] = g.Kind, ["engine"] = Inject.Engine(g), ["path"] = g.Path, ["access"] = g.Access,
                 ["state"] = live.Any(t => t.Kind == "editor" && t.Up) ? "editor open" : live.Any(t => t.Kind == "game" && t.Live) || copies.Count > 0 ? "running" : "not running",
-                ["startedByUDriver"] = copies.Count > 0, ["exists"] = File.Exists(g.Path) || Directory.Exists(g.Path),
+                ["startedByUDriver"] = copies.Count > 0, ["exists"] = File.Exists(g.Path) || Directory.Exists(g.Path), ["changed"] = g.Mark.Length > 0, ["native"] = Registry.LevelOn(3, true) ? "" : Inject.Native(g),
             });
         }
         return new JsonObject { ["defaultAccess"] = Registry.DefaultAccess, ["games"] = games };
@@ -1006,16 +1042,22 @@ internal static partial class HttpMode
         <header class="top">{Icon}<h1>UDriver</h1><span class="st on" id="alive"><i class="dot"></i><span>On</span></span></header>
         <section><h2 class="sec-h">Games</h2>
         <div class="group" id="games">{(local ? $"""<button type="button" class="act" id="addgame">{Plus}Add a project or a build…</button>""" : """<div class="empty" id="addgame">Adding games, changing folders, launching games and raising access work only on the computer that runs UDriver.</div>""")}</div>
-        <p class="foot">Access is set for each game. {AccessText} No agent ever gets your files, terminal or other apps.</p></section>
+        <p class="foot">Access is set for each game. {AccessText} Without computer access, no agent gets your files, terminal or other apps.</p></section>
         <section><h2 class="sec-h" id="agents-h">Connected agents</h2>
         <div class="group" id="agents"><button type="button" class="act" id="copycmd">Copy command to connect an agent</button></div>
         <p class="foot">On this computer, add UDriver to your agent as an MCP server (the standard way agents plug in tools) with this command.</p></section>
         <section id="before-s" hidden><h2 class="sec-h">Allowed before</h2>
         <div class="group" id="before"></div>
         <p class="foot">These agents may come back without asking again. Remove one to make it ask next time.</p></section>
+        <section><h2 class="sec-h">What agents may do</h2>
+        <div class="group" id="levels-local"></div>
+        <p class="foot">Agents on this computer. Computer access can be turned on only on the computer that runs UDriver.</p>
+        <div class="group" id="levels-remote"></div>
+        <p class="foot">Remote agents. They never get computer access.{(local ? "" : " Turning a level on works only on the computer that runs UDriver.")}</p></section>
         <section><h2 class="sec-h">Tools · Look</h2><div class="group"><select class="field" id="tools-for" aria-label="Tool settings for"></select></div><div class="group" id="tools-Look"></div></section>
         <section><h2 class="sec-h">Tools · Play</h2><div class="group" id="tools-Play"></div></section>
-        <section><h2 class="sec-h">Tools · Change</h2><div class="group" id="tools-Change"></div>
+        <section><h2 class="sec-h">Tools · Change</h2><div class="group" id="tools-Change"></div></section>
+        <section><h2 class="sec-h">Tools · Computer access</h2><div class="group" id="tools-Computer"></div>
         <p class="foot">A switched-off feature is closed for every agent, including over the internet. A switch shows on while any of its tools is on.{(local ? "" : " Turning tools on works only on the computer that runs UDriver.")}</p></section>
         <section><h2 class="sec-h" id="devices-h">Connected devices</h2>
         <div class="group" id="devices"></div>
@@ -1166,8 +1208,11 @@ internal static partial class HttpMode
             if(full){
               k.append(el("span","sub","Engine: "+(g.engine||"Unity")),!g.exists?status("bad","Not found at this path. Use Change folder."):g.state==="editor open"?status("on","Editor open"):g.state==="running"?status("on","Running"):status("","Not running"));
               if(g.access==="none") k.append(status("bad","Not allowed — set access to use it"));
+              if(g.native&&g.exists) k.append(status("","This game calls code on the computer directly, so while Computer access is off agents can only look and play in it. Turn Computer access on to open everything."));
+              if(g.changed) k.append(status("bad","Changed by an agent while Computer access was off. Until you clear this, the game's own code is kept away from your computer."));
               const btns=el("div","btns");
               if(local) btns.append(button("link","Change folder…",()=>openGame(g)));
+              if(local&&g.changed) btns.append(button("pill","Clear the mark",async b=>{ if(await ask("Clear the mark on "+g.name+"?","An agent changed this game, and its saved data may still hold that change. Clear the mark only if you trust that data: the game's own code will be able to reach your computer again from its next start.","Clear the mark")) act(b,()=>post("/panel/api/games/clear-mark",{id:g.id})); }));
               if(g.kind==="build"&&g.exists){
                 if(g.state!=="running"){ if(local) btns.append(button("pill blue","Launch",b=>act(b,()=>post("/panel/api/games/start",{id:g.id}),"Launching…"))); }
                 else if(g.startedByUDriver) btns.append(button("pill","Stop",b=>act(b,()=>post("/panel/api/games/stop",{id:g.id}))));
@@ -1218,7 +1263,16 @@ internal static partial class HttpMode
           if(fs.dataset.k!==key){ fs.dataset.k=key; fs.replaceChildren(...opts.map(([v,n])=>{ const o=el("option",null,n); o.value=v; return o; })); }
           if(!opts.some(([v])=>v===who)) who=""; fs.value=who;
           const isOn=x=>x.enabled&&!(who&&x.offFor.includes(who));
-          for(const grp of ["Look","Play","Change"]){
+          const lvRow=(x,where)=>{
+            const row=el("div","row"), k=el("div","k"), l=el("label","name",x.level+" · "+x.name), sw=el("input","switch"), on=x[where];
+            sw.type="checkbox"; sw.setAttribute("role","switch"); sw.id=l.htmlFor="lv-"+where+x.level; sw.checked=on; sw.disabled=!local&&(!on||x.level===3);
+            sw.onchange=async()=>{ if(sw.checked&&x.level===3&&!await ask("Turn on computer access?",x.text,"Turn on")){ sw.checked=false; return; }
+              act(sw,()=>post("/panel/api/levels/set",{level:x.level,for:where,enabled:sw.checked})); };
+            k.append(l,el("span","sub",x.text)); row.append(k,sw); return row;
+          };
+          $("levels-local").replaceChildren(...t.levels.map(x=>lvRow(x,"local")));
+          $("levels-remote").replaceChildren(...t.levels.filter(x=>x.level<3).map(x=>lvRow(x,"remote")));
+          for(const grp of ["Look","Play","Change","Computer"]){
             const feats=[];
             for(const x of t.tools) if(x.group===grp){ const f=feats.find(f=>f.name===x.feature); if(f) f.tools.push(x); else feats.push({name:x.feature,tools:[x]}); }
             $("tools-"+grp).replaceChildren(...feats.map(f=>{

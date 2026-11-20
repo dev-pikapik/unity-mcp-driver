@@ -59,7 +59,18 @@ service is installed.
 | Unity Editor | `editor_status`, `editor_play`, `editor_compile`, `editor_tests`, `editor_build`, `editor_scene`, `editor_assets`, `editor_menu` |
 | Check | `self_test` |
 
-`editor_menu` is off unless you turn it on with the environment variable `UDRIVER_ENABLE_TOOLS=editor_menu`.
+Every tool has a level. In the panel, under **What agents may do**, each level is turned on or off in advance, separately
+for agents on this computer and for remote agents. A tool whose level is off is not shown to agents at all.
+
+- **0 Look.** Sees the screen, the scene, values, logs and performance. Changes nothing.
+- **1 Play.** Also clicks, types, presses keys, starts and stops your games and runs tests.
+- **2 Change the game.** Also changes values, scenes and builds inside the game and its project. At your own risk.
+- **3 Computer access.** Also runs any game code (`state_call`) and editor menu commands (`editor_menu`), which can reach
+  files, programs and the network of this computer. At your own risk.
+
+Levels 0 to 2 are on for agents on this computer, 0 and 1 for remote agents. Computer access is off; only you can turn
+it on, on the computer that runs UDriver (`udriver-mcp computer on`), and remote agents never get it.
+`udriver-mcp levels` shows the levels; `udriver-mcp levels on|off <0-2> [--remote]` changes them.
 `editor_build` writes builds only inside the project folder and the folders listed in the environment variable `UDRIVER_BUILDS_DIR`, and is off without it.
 
 ## Several games and access levels
@@ -86,7 +97,7 @@ through two steps: it installs `cloudflared`, signs you in to Cloudflare and let
 You need a domain in a Cloudflare account.
 
 Agents and devices get in with a **one-time code**. A code lets in one agent or one device, once, and expires in 10
-minutes. You get it in the panel on this computer or on a device that is already connected.
+minutes. You get it in the panel on this computer only. While no code is waiting, new agents cannot even register.
 
 - **Adding an agent.** Under Remote access, choose **Add a remote agent**. Paste the address into your agent and enter
   the code on the sign-in page.
@@ -106,7 +117,8 @@ Calls through remote access are limited to about 60 to 90 seconds, because the p
 
 The agent works only inside the games you add. UDriver doesn't give it your files, your terminal or other apps.
 
-- Games and the editor listen only on `127.0.0.1` and accept only requests with a random token made for each run.
+- Games and the editor listen only on `127.0.0.1` and accept only requests with a random key made for each run. The key
+  stays in memory, never in a file. A game or editor you start yourself gets its key once you allow it in the panel.
   Web pages can't reach them.
 - Reading and changing game data can't reach files, processes, the network or environment variables.
 - `app_launch` runs only the games you added, with short window and graphics arguments only.

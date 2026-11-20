@@ -7,15 +7,16 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using UDriver;
 
-internal static class Program
+internal static partial class Program
 {
     const string Instructions =
         "UDriver lets you see and operate a running Unity client. Typical flow: app_launch (or app_connect if the game/editor is already running) -> status -> " +
         "ui_tree / screenshot to see the screen -> act with ui_click, type_text, ui_set_value, ui_drag, ui_scroll, key -> wait_for to confirm the effect (pass sinceSeq from the action result). " +
         "To play the game itself (walk, jump, look around), learn the controls with input_actions and run a whole stretch in one play call. " +
-        "Several games and editors can run at once: targets lists them; pass target=<name> when more than one of a kind is running. " +
+        "Several games and editors, and several copies of one game, can run at once: list_instances lists them; pass instance=<name> or use_instance. Other agents may work alongside: where_was_i, take_controls, team_post / team_read, claim. " +
         "To investigate a bug without trusting the UI: events_query (logs, exceptions, UI events), types_find / type_members to discover the code, state_get to read any object, " +
         "watch_add / trace_add / trigger_add to set up your own probes, frames_record + frames_get for frame-by-frame, time_control to pause/step. Memory: memory_summary -> memory_snapshot take -> play -> memory_snapshot diff -> memory_refs (who holds it); memory_watch for slow growth. Slow frames: render_stats -> render_scene -> screenshot camera=... " +
         "Element ids (#N) come from ui_tree / ui_find and go stale when the UI is rebuilt; ids >= 1000000 are uGUI objects, smaller ones UI Toolkit. Always back a verdict with evidence (events, state values, screenshots). " +
@@ -34,6 +35,7 @@ internal static class Program
         public int Port, Pid;
         public bool Up, Live;
         public Process? Proc;
+        public JsonObject? Launch;
         public Registry.Game? Game;
     }
 
@@ -61,10 +63,11 @@ internal static class Program
     internal static readonly Session Solo = new() { Label = "agent " + Environment.ProcessId };
     internal static Session Me => Current.Value ?? Solo;
 
-    static void Used(Target t)
+    static void Used(Target t, JsonNode? res)
     {
         if (t.Kind == "editor") Me.LastEditor = t.Port; else Me.LastGame = t.Port;
         Me.LastTarget = t.Name;
+        Note(t, res);
     }
     static JsonArray? _liveTools;
     static string _liveSig = "";
@@ -82,31 +85,33 @@ internal static class Program
     static readonly HashSet<string> Disabled = new((Environment.GetEnvironmentVariable("UDRIVER_DISABLE_TOOLS") ?? "")
         .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 
-    static readonly HashSet<string> ObserveTools = new()
-    {
-        "app_status", "app_connect", "targets", "status", "ui_tree", "ui_find", "ui_inspect", "screenshot", "screen_pick", "locate", "scene_tree", "state_get",
-        "state_query", "errors", "types_find", "type_members", "events_query", "wait_for", "input_actions", "frames_get", "probe_list",
-        "profiler_get", "profiler_list", "memory_top", "memory_summary", "memory_snapshot", "memory_watch", "memory_refs", "render_stats", "render_scene",
-        "editor_status", "editor_assets",
-    };
     static readonly Dictionary<string, string[]> ObserveActions = new()
     {
         ["editor_compile"] = new[] { "status" }, ["editor_tests"] = new[] { "status", "results" }, ["editor_build"] = new[] { "status" },
         ["editor_scene"] = new[] { "list" }, ["time_control"] = new[] { "status" }, ["frames_record"] = new[] { "status" },
     };
-    /// <summary>Everything else (state_set, state_call, trace_add, editor_build, editor_scene, editor_menu, new tools) needs full access.</summary>
-    static readonly HashSet<string> PlayTools = new()
-    {
-        "app_launch", "app_kill", "ui_click", "ui_hover", "ui_drag", "pointer", "ui_scroll", "ui_scroll_to", "ui_set_value", "ui_focus", "type_text", "key", "play",
-        "frames_record", "time_control", "events_config", "watch_add", "trigger_add", "probe_remove", "state_export", "memory_capture", "self_test",
-        "editor_play", "editor_compile", "editor_tests",
-    };
-
     static int Need(string name, JsonObject? args)
     {
-        if (name == "batch" || ObserveTools.Contains(name)) return 0;
+        if (name == "leak_check") return (args?["action"] is JsonObject one ? new JsonArray(one.DeepClone()) : args?["action"] as JsonArray ?? new JsonArray())
+            .Select(c => c is JsonObject step && (string?)step["tool"] is string t ? Need(t, step["args"] as JsonObject) : 2).DefaultIfEmpty(0).Max();
+        if (name == "rec_replay") return (Recording((string?)args?["id"], out _, out _)?["actions"] as JsonArray ?? new JsonArray())
+            .Select(x => x?["input"]?.GetValue<bool>() == true ? 1 : Need((string?)x?["tool"] ?? "", x?["args"] as JsonObject)).Append(1).Max();
         if (ObserveActions.TryGetValue(name, out var ok) && ok.Contains((string?)args?["action"] ?? "status")) return 0;
-        return PlayTools.Contains(name) ? 1 : 2;
+        return ToolManifest.Level(name);
+    }
+
+    /// <summary>Agents on this computer: stdio and local keys, over loopback only. Everyone else is remote and never reaches level 3.</summary>
+    static bool LocalOrigin => Me.Local && (Me.Client is "" or StdioClient || Me.Client.StartsWith("l_"));
+
+    internal static readonly string[] LevelNames = { "Look", "Play", "Change the game", "Computer access" };
+
+    internal static string? LevelOff(int level)
+    {
+        if (level < 3) return Registry.LevelOn(level, LocalOrigin) ? null
+            : $"This needs level {level} ({LevelNames[level]}), which the owner has turned off for {(LocalOrigin ? "agents on this computer" : "remote agents")} in the UDriver panel.";
+        if (!LocalOrigin) return "This reaches beyond the game (level 3), which is never available to remote agents.";
+        return Registry.LevelOn(3, true) ? null
+            : "This could reach files, programs or the network outside the game, and Computer access is off. Only the owner can turn it on, on the computer that runs UDriver.";
     }
 
     /// <summary>The owner's access level for this game (UDriver panel); checked wherever a call reaches a game or editor.</summary>
@@ -114,15 +119,20 @@ internal static class Program
     {
         g ??= t?.Game;
         string level = g?.Access ?? (t == null ? Registry.DefaultAccess : "none");
-        if (Need(name, args) <= Registry.Level(level)) return null;
+        if (Math.Min(Need(name, args), 2) <= (g == null ? Registry.Level(level) : GameLevel(g))) return null;
         string game = g?.Name ?? t?.Name ?? "this game";
+        if (Registry.Level(level) >= 2)
+            return $"Not done: \"{game}\" calls code on the computer directly ({Inject.Native(g!)}), so while Computer access is off agents can only look and play in it. The owner can turn Computer access on in the UDriver panel.";
         return level == "none" ? $"\"{game}\" is not allowed: the owner has not given agents access to it. Ask the owner to set its access in the UDriver panel."
             : $"\"{game}\" allows {level} only; ask the owner to raise access in the UDriver panel.";
     }
 
-    static readonly HashSet<string> OffByDefault = new() { "editor_menu" };
-    static readonly HashSet<string> Enabled = new((Environment.GetEnvironmentVariable("UDRIVER_ENABLE_TOOLS") ?? "")
-        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+    /// <summary>The game's access level, held at Play while Computer access is off when the game's own code could get past the in-process wall.</summary>
+    static int GameLevel(Registry.Game g)
+    {
+        int level = Registry.Level(g.Access);
+        return level >= 2 && LevelOff(3) != null && Inject.Native(g).Length > 0 ? 1 : level;
+    }
 
     static readonly HashSet<string> SafeGameArgs = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -163,14 +173,12 @@ internal static class Program
     internal const string LinkClient = "link";
 
     static string? Blocked(string name, JsonObject? args) =>
-        Registry.ToolOff(name, Me.Client.Length > 0 ? Me.Client : StdioClient) ? $"'{name}' is turned off in the UDriver panel." : Configured(name, args);
+        Registry.ToolOff(name, Me.Client.Length > 0 ? Me.Client : StdioClient) ? $"'{name}' is turned off in the UDriver panel." : LevelOff(Need(name, args)) ?? Configured(name, args);
 
     /// <summary>Limits from the server's environment variables.</summary>
     static string? Configured(string name, JsonObject? args)
     {
         if (Disabled.Contains(name)) return $"'{name}' is disabled on this machine (UDRIVER_DISABLE_TOOLS).";
-        if (OffByDefault.Contains(name) && !Enabled.Contains(name))
-            return $"'{name}' is off by default because it can act outside the Unity project. A human can enable it with UDRIVER_ENABLE_TOOLS={name} in the MCP server configuration.";
         if (name == "editor_build" && args != null && (string?)args["action"] == "build")
         {
             var keys = args.Select(kv => kv.Key).Where(k => k.Equals("path", StringComparison.OrdinalIgnoreCase)).ToList();
@@ -186,7 +194,7 @@ internal static class Program
             }
             args["buildDirs"] = new JsonArray(BuildDirs.Select(d => (JsonNode)d).ToArray());
         }
-        if (!ReadOnly || ObserveTools.Contains(name)) return null;
+        if (!ReadOnly || ToolManifest.Level(name) == 0) return null;
         if (ObserveActions.TryGetValue(name, out var ok))
         {
             if (args == null) return null;
@@ -199,11 +207,15 @@ internal static class Program
 
     // ---------------- access tokens ----------------
 
+    /// <summary>Keys for games and editors: given to the ones UDriver starts, or paired with ones the owner allowed. Never written to disk.</summary>
     static readonly Dictionary<int, string> Tokens = new();
+
+    /// <summary>The panel server keeps the keys for every UDriver process on this computer.</summary>
+    internal static bool IsHub;
 
     internal static readonly string HomeDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".udriver");
 
-    static string TokenFile(int port) => Path.Combine(HomeDir, port + ".token");
+    internal static string HubFile => Path.Combine(HomeDir, "panel.port");
 
     /// <summary>The target name given by app_launch, shared by all agents; valid only while the same process runs on the port.</summary>
     static string NameFile(int port) => Path.Combine(HomeDir, port + ".name");
@@ -248,26 +260,64 @@ internal static class Program
         return sec;
     }
 
-    static string TokenFor(int port, bool reload = false)
+    internal static void Keep(int port, string key) { lock (Tokens) Tokens[port] = key; }
+
+    internal static async Task<string> TokenFor(int port, bool renew = false)
     {
-        lock (Tokens)
-        {
-            if (!reload && Tokens.TryGetValue(port, out var t)) return t;
-            try { t = File.ReadAllText(TokenFile(port)).Trim(); } catch { t = ""; }
-            if (t.Length > 0) Tokens[port] = t;
-            return t;
-        }
+        lock (Tokens) if (!renew && Tokens.TryGetValue(port, out var t)) return t;
+        string key = (IsHub || renew ? null : await Hub(port, null)) ?? await Pair(port);
+        lock (Tokens) if (key.Length > 0) Tokens[port] = key; else Tokens.Remove(port);
+        if (renew && key.Length > 0) await Hub(port, key);
+        return key;
     }
 
-    /// <summary>Re-reads the token file once on 401: the game may have restarted.</summary>
+    /// <summary>A key from the panel server, or (with key) a key for it to keep. Null when no panel runs.</summary>
+    internal static async Task<string?> Hub(int port, string? key)
+    {
+        try
+        {
+            if (IsHub || !int.TryParse(File.ReadAllText(HubFile).Trim(), out int hub)) return null;
+            using var req = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{hub}/panel/api/game-key")
+            {
+                Content = new FormUrlEncodedContent(new Dictionary<string, string> { ["port"] = port.ToString(), ["key"] = key ?? "" }),
+            };
+            req.Headers.Authorization = new("Bearer", File.ReadAllText(Path.Combine(HomeDir, "app.key")).Trim());
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var resp = await Http.SendAsync(req, cts.Token);
+            return resp.IsSuccessStatusCode && JsonNode.Parse(await resp.Content.ReadAsStringAsync())?["key"]?.ToString() is { Length: > 0 } k ? k : null;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>Gives a game or editor started by hand its key, once the owner has allowed it. The first program to pair keeps it until the game restarts.</summary>
+    internal static async Task<string> Pair(int port)
+    {
+        var all = await Targets();
+        if (all.FirstOrDefault(t => t.Port == port && t.Up) is not { } target || (target.Game?.Access ?? "none") == "none") return "";
+        string key;
+        lock (Tokens) key = all.Where(t => t.Pid == target.Pid && t.Port != port).Select(t => Tokens.GetValueOrDefault(t.Port)).FirstOrDefault(k => k != null)
+            ?? Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/pair") { Content = new StringContent("") };
+            req.Headers.TryAddWithoutValidation("X-UDriver-Token", key);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            using var resp = await Http.SendAsync(req, cts.Token);
+            return resp.IsSuccessStatusCode ? key : "";
+        }
+        catch { return ""; }
+    }
+
+    /// <summary>Gets a new key once on 401: the game may have restarted.</summary>
     static async Task<(int status, string body)> Http2(HttpMethod method, int port, string path, string? json, double timeoutSec = 0)
     {
         string call = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(8));
         for (int attempt = 0; ; attempt++)
         {
             using var req = new HttpRequestMessage(method, $"http://127.0.0.1:{port}{path}");
-            req.Headers.TryAddWithoutValidation("X-UDriver-Token", TokenFor(port, attempt > 0));
-            req.Headers.TryAddWithoutValidation("X-UDriver-Client", Me.Label);
+            req.Headers.TryAddWithoutValidation("X-UDriver-Token", await TokenFor(port, attempt > 0));
+            req.Headers.TryAddWithoutValidation("X-UDriver-Client", Who(Me));
+            req.Headers.TryAddWithoutValidation("X-UDriver-Holder", HolderId());
             req.Headers.TryAddWithoutValidation("X-UDriver-Call", call);
             if (json != null) req.Content = new StringContent(json, Encoding.UTF8, "application/json");
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(Cancel.Value);
@@ -293,7 +343,7 @@ internal static class Program
         try
         {
             using var req = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/cancel");
-            req.Headers.TryAddWithoutValidation("X-UDriver-Token", TokenFor(port));
+            req.Headers.TryAddWithoutValidation("X-UDriver-Token", await TokenFor(port));
             req.Content = new StringContent(new JsonObject { ["call"] = call }.ToJsonString(), Encoding.UTF8, "application/json");
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
             using var _ = await Http.SendAsync(req, cts.Token);
@@ -320,11 +370,38 @@ internal static class Program
         new() { Name = "app_status", Desc = "Is the launched process alive and is its driver reachable?", Params = Array.Empty<ToolParam>() },
         new() { Name = "app_connect", Desc = "Attach to an already running game or editor Play Mode instead of launching one; waits for it to answer.",
             Params = new[] { P("port", "integer", "Game driver port of an instance missing from targets."), P("editorPort", "integer", "Editor bridge port of an instance missing from targets.") } },
-        new() { Name = "targets", Desc = "Running Unity games and editors, one line each: name, kind, port, state, Unity version, build or project path. Pass the name as target to other tools.",
+        new() { Name = "rec_steps", Desc = "What a recording holds, as numbered steps a person can follow: each agent action with the frame and time it happened and what the game answered, logs, errors and scene changes; then the path of the recording file.",
+            Params = new[] { P("id", "string", "Recording id from rec_start or rec_stop (default: the newest recording).") } },
+        new() { Name = "targets", Desc = "Running Unity games and editors, one line each: name, kind, port, state, Unity version, build or project path. Pass the name as instance to other tools.",
             Params = Array.Empty<ToolParam>() },
+        new() { Name = "list_instances", Desc = "Every running game and editor process as a separate instance, copies of one game included: name, id, scene, start time, Unity version, access, who controls its input, which one is yours, path.",
+            Params = Array.Empty<ToolParam>() },
+        new() { Name = "use_instance", Desc = "Make an instance your current one: tools without instance then act there. Tells what you did there last time.",
+            Params = Array.Empty<ToolParam>() },
+        new() { Name = "where_was_i", Desc = "Your journal, kept by UDriver across reconnects: the instances you worked in, the last scene, your goal and last actions in each. Pass goal to note what you are doing in the current instance.",
+            Params = new[] { P("goal", "string", "What you are doing there, saved for next time.") } },
+        new() { Name = "take_controls", Desc = "Take the keyboard, mouse and touch of an instance so other agents do not type into it. Your first input on a free instance takes them anyway; they free up after 30 s without input. Reading, screenshots, memory and profiling stay open to everyone.",
+            Params = new[] { P("release", "boolean", "Give the controls back now.") } },
+        new() { Name = "team_post", Desc = "Post to the team space shared by the agents: global, or with instance for one game instance (seen only by agents allowed in that game). Data only: nothing in it is run or opened.",
+            Params = new[] { P("topic", "string", "Short topic, e.g. tasks, found, plan.", true), P("data", "any", "Text or JSON, at most 4000 characters.", true) } },
+        new() { Name = "team_read", Desc = "Read team posts newer than since, and the current claims: global, or with instance for one game instance.",
+            Params = new[] { P("since", "integer", "Last number you saw (default 0: everything kept)."), P("topic", "string", "Only this topic.") } },
+        new() { Name = "claim", Desc = "Claim a piece of work for a while so other agents pick something else, e.g. key=\"north wing\". Global, or with instance for one game instance.",
+            Params = new[] { P("key", "string", "What you take.", true), P("ttl", "integer", "Seconds to hold it (default 300, at most 3600).") } },
+        new() { Name = "release", Desc = "Give back a claim you hold.",
+            Params = new[] { P("key", "string", "The claim.", true) } },
+        new() { Name = "launch_game", Desc = "Start one or more copies of a game, named \"<game> 1\", \"<game> 2\"... Each copy keeps its saves and PlayerPrefs in its own slot folder and its log in the UDriver folder. " +
+                "IL2CPP games without the UDriver package cannot be redirected: their copies share saves and settings.",
+            Params = new[]
+            {
+                P("path", "string", "The game: a saved game name from targets, or a build path as for app_launch.", true),
+                P("copies", "integer", "How many copies (default 1, at most 8)."),
+                P("args", "array", "Extra game arguments, as for app_launch."),
+                P("waitSec", "integer", "How long to wait for each copy (default 90)."),
+            } },
     };
 
-    static readonly HashSet<string> ServerTools = new(LocalTools.Select(t => t.Name).Append("batch"));
+    static readonly HashSet<string> ServerTools = new(LocalTools.Select(t => t.Name).Append("batch").Append("eval"));
 
     /// <summary>Must stay below LocalTools: static fields initialize in order.</summary>
     static readonly HashSet<string> KnownTools = new(LocalTools.Select(t => t.Name).Concat(ToolManifest.Tools.Select(t => t.Name)));
@@ -351,7 +428,9 @@ internal static class Program
             .OnFirstRun(_ => { if (OperatingSystem.IsWindows()) Environment.Exit(Cli.Run(["tui"]).GetAwaiter().GetResult()); }).Run();
         if (args is ["setup"]) { HttpMode.TerminalSetup(); return; }
         if (args is ["inject" or "restore", var gamePath]) { Environment.ExitCode = Inject.Run(args[0], gamePath); return; }
-        if (args is ["tui" or "status" or "approve" or "deny" or "code" or "tools", ..]) { Environment.ExitCode = await Cli.Run(args); return; }
+        if (args is ["tui" or "status" or "approve" or "deny" or "code" or "tools" or "levels" or "computer" or "clear-mark", ..]) { Environment.ExitCode = await Cli.Run(args); return; }
+        // 1.0 game drivers left their keys in files.
+        try { foreach (var f in Directory.EnumerateFiles(HomeDir, "*.token")) File.Delete(f); } catch { }
         if (int.TryParse(Environment.GetEnvironmentVariable("UDRIVER_HTTP_PORT"), out int httpPort))
         {
             HttpOn = true;
@@ -412,7 +491,7 @@ internal static class Program
         }
         catch { }
         var json = Path.Combine(HomeDir, port + ".json");
-        try { if ((int?)JsonNode.Parse(File.ReadAllText(json))?["pid"] == p.Id) { File.Delete(TokenFile(port)); File.Delete(json); } } catch { }
+        try { if ((int?)JsonNode.Parse(File.ReadAllText(json))?["pid"] == p.Id) File.Delete(json); } catch { }
     }
 
     [DllImport("libc", SetLastError = true)] static extern int kill(int pid, int sig);
@@ -460,8 +539,9 @@ internal static class Program
             case "tools/call":
                 string name = (string?)prm?["name"] ?? throw new RpcError(-32602, "missing tool name");
                 var args = prm?["arguments"] as JsonObject ?? new JsonObject();
-                string? want = args["target"]?.ToString();
-                args.Remove("target");
+                string? want = args["instance"]?.ToString() ?? args["target"]?.ToString();
+                args.Remove("target"); args.Remove("instance");
+                Calling.Value = (name, args.ToJsonString());
                 Interlocked.Increment(ref CallCount); LastTool = KnownTools.Contains(name) ? name : "(project tool)"; LastCallUtc = Me.LastSeen = DateTime.UtcNow;
                 if (Blocked(name, args) is string refusal) return Result(refusal, true);
                 if (HttpOn)
@@ -470,9 +550,9 @@ internal static class Program
                     if (IntArg(args, "timeoutMs", 0) > 60000) args["timeoutMs"] = 60000;
                     if (name == "app_launch" && IntArg(args, "waitSec", 90) > 60) args["waitSec"] = 60;
                 }
-                if (name == "batch" && args["calls"] is JsonArray inner)
+                if ((name == "batch" ? args["calls"] : name == "leak_check" ? args["action"] is JsonObject one ? new JsonArray(one.DeepClone()) : args["action"] : null) is JsonArray inner)
                     foreach (var c in inner)
-                        if (Blocked((string?)c?["tool"] ?? "", c?["args"] as JsonObject ?? new JsonObject()) is string r2) return Result("batch refused: " + r2, true);
+                        if (Blocked((string?)c?["tool"] ?? "", c?["args"] as JsonObject ?? new JsonObject()) is string r2) return Result(name + " refused: " + r2, true);
                 var def = LocalTools.Concat(ToolManifest.Tools).FirstOrDefault(d => d.Name == name);
                 var unknown = def == null ? new List<string>() : args.Select(kv => kv.Key).Where(k => k != "timeoutMs" && !def.Params.Any(p => p.Name == k)).ToList();
                 var sw = Timing ? Stopwatch.StartNew() : null;
@@ -500,6 +580,18 @@ internal static class Program
         "app_status" or "targets" => await ListTargets(want),
         "app_connect" => await Connect(args, want),
         "batch" => await Batch(args, want),
+        "rec_start" => await RecStart(args, want),
+        "rec_replay" => await RecReplay(args, want),
+        "rec_steps" => RecSteps(args),
+        "list_instances" => await ListInstances(),
+        "use_instance" => await UseInstance(want),
+        "where_was_i" => await WhereWasI(args, want),
+        "take_controls" => await TakeControls(args, want),
+        "team_post" => await TeamPost(args, want),
+        "team_read" => await TeamRead(args, want),
+        "claim" => await Claim(args, want, true),
+        "release" => await Claim(args, want, false),
+        "launch_game" => await LaunchCopies(args),
         _ => await CallUnity(name, args, want),
     };
 
@@ -508,7 +600,7 @@ internal static class Program
     static JsonObject TargetParam() => new()
     {
         ["type"] = "string",
-        ["description"] = "Which game or editor to use: a name from targets. Optional while only one of the needed kind is running (then the last one used).",
+        ["description"] = "Which running game or editor instance to use: a name or id from list_instances. Default: your current instance; with only one running, that one.",
     };
 
     static JsonObject ToolJson(ToolDef d)
@@ -523,7 +615,8 @@ internal static class Program
             props[p.Name] = o;
             if (p.Required) req.Add(p.Name);
         }
-        if (d.Name != "app_launch" && d.Name != "targets") props["target"] = TargetParam();
+        if (d.Name is not ("app_launch" or "targets" or "list_instances" or "launch_game")) props["instance"] = TargetParam();
+        if (d.Name == "use_instance") req.Add("instance");
         return new JsonObject
         {
             ["name"] = d.Name, ["description"] = d.Desc,
@@ -535,12 +628,12 @@ internal static class Program
     {
         var tools = new JsonArray();
         var known = new HashSet<string>();
-        int top = Registry.Games.Select(g => Registry.Level(g.Access)).Append(-1).Max();
+        int top = Registry.Games.Select(GameLevel).Append(-1).Max();
         foreach (var d in LocalTools.Concat(ToolManifest.Tools))
         {
             known.Add(d.Name);
-            if (Blocked(d.Name, null) == null && (d.Name is "targets" or "app_status" || Need(d.Name, null) <= top
-                || d.Name == "app_launch" && BuildDirs.Length > 0 && Need(d.Name, null) <= Registry.Level(Registry.DefaultAccess))) tools.Add(ToolJson(d));
+            if (Blocked(d.Name, null) == null && (d.Name is "targets" or "app_status" || Math.Min(Need(d.Name, null), 2) <= top
+                || d.Name == "app_launch" && BuildDirs.Length > 0 && Math.Min(Need(d.Name, null), 2) <= Registry.Level(Registry.DefaultAccess))) tools.Add(ToolJson(d));
         }
         var live = _liveTools;
         if (live == null)
@@ -559,10 +652,10 @@ internal static class Program
         foreach (var t in live)
         {
             string n = (string?)t?["name"] ?? "";
-            if (t == null || Blocked(n, null) != null || Need(n, null) > Registry.Level(Registry.Games.FirstOrDefault(g => g.Id == (string?)t["game"])?.Access ?? "none") || !known.Add(n)) continue;
+            if (t == null || Blocked(n, null) != null || Math.Min(Need(n, null), 2) > (Registry.Games.FirstOrDefault(g => g.Id == (string?)t["game"]) is { } lg ? GameLevel(lg) : -1) || !known.Add(n)) continue;
             var copy = t.DeepClone();
             copy.AsObject().Remove("game");
-            if (copy["inputSchema"]?["properties"] is JsonObject props) props["target"] = TargetParam();
+            if (copy["inputSchema"]?["properties"] is JsonObject props) props["instance"] = TargetParam();
             tools.Add(copy);
         }
         return tools;
@@ -579,14 +672,14 @@ internal static class Program
                 list.Add(new JsonObject
                 {
                     ["name"] = n, ["description"] = desc,
-                    ["access"] = Registry.Levels[Need(n, null)], ["limit"] = Configured(n, null),
+                    ["level"] = Need(n, null), ["access"] = Registry.Levels[Math.Min(Need(n, null), 2)], ["limit"] = Configured(n, null),
                 });
         return list;
     }
 
     // ---------------- helpers ----------------
 
-    static JsonObject Result(string text, bool isError = false) => new()
+    internal static JsonObject Result(string text, bool isError = false) => new()
     {
         ["content"] = new JsonArray { new JsonObject { ["type"] = "text", ["text"] = text } },
         ["isError"] = isError,
@@ -648,7 +741,7 @@ internal static class Program
             try
             {
                 var j = JsonNode.Parse(File.ReadAllText(f))!;
-                if ((int?)j["pid"] is > 0 and int pid && Gone(pid)) { File.Delete(TokenFile(port)); File.Delete(f); continue; }
+                if ((int?)j["pid"] is > 0 and int pid && Gone(pid)) { File.Delete(f); continue; }
                 found[port] = new Target
                 {
                     Port = port, Kind = (string?)j["kind"] == "editor" ? "editor" : "game", Name = ((string?)j["name"] ?? "").Trim(),
@@ -662,6 +755,7 @@ internal static class Program
             {
                 if (!found.TryGetValue(l.Port, out var t)) found[l.Port] = t = new Target { Port = l.Port, Path = l.Path, Name = Path.GetFileNameWithoutExtension(l.Path) };
                 t.Proc = l.Proc;
+                t.Launch = l.Launch;
                 t.Owner = l.Owner;
                 if (l.Name.Length > 0) t.Name = l.Name;
             }
@@ -670,8 +764,8 @@ internal static class Program
             if (LaunchName(t.Port, t.Proc?.Id ?? t.Pid) is { Length: > 0 } n) { t.Name = n; named.Add(t); }
             else lock (Launched) if (Launched.Any(l => l.Port == t.Port && l.Name.Length > 0)) named.Add(t);
         var list = found.Values.OrderBy(t => t.Port).ToList();
-        // Only a UDriver driver counts: it left a token and an info file, and answers with the live process id written there.
-        await Task.WhenAll(list.Select(async t => t.Up = t.Pid > 0 && File.Exists(TokenFile(t.Port)) && await PingPid(t.Port) == t.Pid && Alive(t.Pid)));
+        // Only a UDriver driver counts: it left an info file, and answers with the live process id written there.
+        await Task.WhenAll(list.Select(async t => t.Up = t.Pid > 0 && await PingPid(t.Port) == t.Pid && Alive(t.Pid)));
         foreach (var t in list) t.Live = t.Up || (t.Proc != null ? !t.Proc.HasExited : t.Pid > 0 && Alive(t.Pid));
         list = list.Where(t => t.Live || t.Proc != null).ToList();
         Registry.Attach(list);
@@ -685,7 +779,7 @@ internal static class Program
             t.Name = name;
             for (int i = 2; (!named.Contains(t) && saved.Any(g => g.Id != t.Game?.Id && g.Name.Equals(t.Name, StringComparison.OrdinalIgnoreCase))) || !taken.Add(t.Kind + "/" + t.Name); i++) t.Name = name + "-" + i;
         }
-        string sig = string.Join(",", list.Where(t => t.Kind == "game" && t.Up).Select(t => t.Port));
+        string sig = string.Join(",", list.Where(t => t.Kind == "game" && t.Up).Select(t => t.Port + ":" + t.Game?.Access));
         if (sig != _liveSig) { _liveSig = sig; _liveTools = null; }
         return list;
     }
@@ -695,7 +789,7 @@ internal static class Program
     /// <summary>By target name, else by saved game while only one target of that kind uses it.</summary>
     static Target? Named(List<Target> all, string want, string kind = "")
     {
-        var byName = all.Where(t => t.Name.Equals(want, StringComparison.OrdinalIgnoreCase)).OrderBy(t => t.Kind == kind ? 0 : 1).FirstOrDefault();
+        var byName = all.Where(t => t.Name.Equals(want, StringComparison.OrdinalIgnoreCase) || InstanceId(t) == want).OrderBy(t => t.Kind == kind ? 0 : 1).FirstOrDefault();
         if (byName != null) return byName;
         var saved = all.Where(t => t.Game != null && (t.Game.Id == want || t.Game.Name.Equals(want, StringComparison.OrdinalIgnoreCase))).OrderBy(t => t.Kind == kind ? 0 : 1).ToList();
         return saved.Count(t => t.Kind == saved[0].Kind) == 1 ? saved[0] : null;
@@ -750,7 +844,7 @@ internal static class Program
         try { (status, text) = await Http2(HttpMethod.Post, port, "/call", body.ToJsonString()); }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException && !Cancel.Value.IsCancellationRequested) { return null; }
         if (status == 401)
-            return Result($"The game/editor on port {port} rejected the access token. It was probably started by another user or the token file {TokenFile(port)} is not readable. Restart it, or launch the build with app_launch.", true);
+            return Result($"The game or editor on port {port} is not connected to this UDriver. If the owner has not allowed it yet, ask them to set its access in the UDriver panel. If another program connected to it first, restart it, or start the build with app_launch.", true);
         JsonNode? json;
         try { json = JsonNode.Parse(text); }
         catch (System.Text.Json.JsonException)
@@ -768,8 +862,8 @@ internal static class Program
         var sw = Stopwatch.StartNew();
         while (true)
         {
-            var er = await TryCall(t.Port, name, args);
-            if (er != null) { Used(t); return er; }
+            var er = await Send(t.Port, name, args);
+            if (er != null) { Used(t, er); return er; }
             if (sw.Elapsed.TotalSeconds > 25) break;
             await Task.Delay(700, Cancel.Value);
         }
@@ -788,14 +882,16 @@ internal static class Program
         if (editorTool && t == null)
             return Result("No Unity editor with the UDriver package is open. Is the package installed and compiling without errors? (The editor is briefly offline during script reloads.)", true);
         if (t != null && Denied(name, args, t) is string no) return Result(no, true);
+        if (t?.Kind == "editor" && EditorLocked(name, args) is string locked) return Result(locked, true);
         if (t?.Kind == "editor") return await CallEditor(t, name, args);
 
-        var res = t == null ? null : await TryCall(t.Port, name, args);
-        if (res != null) { Used(t!); return res; }
-        if (ToolManifest.EditModeTools.Contains(name) && Pick(all, "editor", null, out _) is Target ed && Denied(name, args, ed) == null && await TryCall(ed.Port, name, args) is JsonNode er)
+        if (t != null && await Eval.Arm(t, Need(name, args) >= 2) is JsonNode refused) return refused;
+        var res = t == null ? null : await Send(t.Port, name, args);
+        if (res != null) { Used(t!, res); return res; }
+        if (ToolManifest.EditModeTools.Contains(name) && Pick(all, "editor", null, out _) is Target ed && Denied(name, args, ed) == null)
         {
-            Used(ed);
-            return er;
+            if (EditorLocked(name, args) is string locked2) return Result(locked2, true);
+            if (await Send(ed.Port, name, args) is JsonNode er) { Used(ed, er); return er; }
         }
         string game = t == null ? "No game is running." : $"The game '{t.Name}' is not reachable on port {t.Port}."
             + (t.Proc is { HasExited: true } p ? $" The launched game has exited (code {p.ExitCode}) - it may have crashed." : "");
@@ -805,11 +901,17 @@ internal static class Program
         return Result($"{game} Start it with app_launch, or run the game / editor Play Mode and call app_connect.", true);
     }
 
+    /// <summary>The editor runs its own and the project's tools on whatever an agent changes, and they cannot be walled in-process.</summary>
+    static string? EditorLocked(string name, JsonObject? args) => Need(name, args) >= 2 && LevelOff(3) != null
+        ? "Not done: with Computer access off, agents can look and play in the Unity editor but not change it, because the editor's own and the project's tools could act on a change outside the project. Change a running game instead, or ask the owner to turn on Computer access." : null;
+
+    static Task<JsonNode?> Send(int port, string name, JsonObject args) => name == "eval" ? Eval.Run(port, args) : TryCall(port, name, args);
+
     static bool GameTool(string tool) => !ServerTools.Contains(tool) && !tool.StartsWith("editor_", StringComparison.Ordinal);
 
     static string Step(JsonNode? c, string? want, out string? target)
     {
-        target = c?["target"]?.ToString() ?? want;
+        target = c?["instance"]?.ToString() ?? c?["target"]?.ToString() ?? want;
         return (string?)c?["tool"] ?? "";
     }
 
@@ -821,10 +923,10 @@ internal static class Program
         string output = (string?)args["output"] ?? "all";
         if (output is not ("all" or "last" or "errors")) return Result("output must be all, last or errors", true);
         foreach (var c in calls)
-            if (c is JsonObject step && step["args"] is JsonObject a && a["target"] is JsonNode at)
+            if (c is JsonObject step && step["args"] is JsonObject a && (a["instance"] ?? a["target"]) is JsonNode at)
             {
-                a.Remove("target");
-                step["target"] ??= at;
+                a.Remove("target"); a.Remove("instance");
+                step["target"] ??= at.DeepClone();
             }
         var content = new JsonArray();
         bool failed = false;
@@ -839,8 +941,9 @@ internal static class Program
                 while (end < calls.Count && GameTool(Step(calls[end], want, out var next)) && next == target && Denied((string?)calls[end]?["tool"] ?? "", calls[end]?["args"] as JsonObject, game) == null) end++;
                 var run = new JsonArray(calls.Skip(i).Take(end - i).Select(c => (JsonNode)new JsonObject { ["tool"] = (string?)c?["tool"], ["args"] = c?["args"]?.DeepClone() ?? new JsonObject(), ["quiet"] = c?["quiet"]?.DeepClone() }).ToArray());
                 string part = output == "last" && end < calls.Count ? "errors" : output;
-                res = await TryCall(game.Port, "batch", new JsonObject { ["calls"] = run, ["stopOnError"] = stop, ["first"] = i, ["output"] = part });
-                if (res != null) Used(game);
+                res = await Eval.Arm(game, run.Any(c => Need((string?)c?["tool"] ?? "", c?["args"] as JsonObject) >= 2))
+                      ?? await TryCall(game.Port, "batch", new JsonObject { ["calls"] = run, ["stopOnError"] = stop, ["first"] = i, ["output"] = part });
+                if (res != null) Used(game, res);
             }
             bool here = res == null;
             if (here)
@@ -869,7 +972,7 @@ internal static class Program
 
     // ---------------- process tools ----------------
 
-    internal static async Task<JsonNode> Launch(JsonObject args, bool byOwner = false)
+    internal static async Task<JsonNode> Launch(JsonObject args, bool byOwner = false, int slot = 0)
     {
         string path = (string?)args["path"] ?? throw new ArgumentException("path is required");
         var g = Registry.Find(path);
@@ -956,21 +1059,28 @@ internal static class Program
         string token = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
         psi.Environment["UDRIVER_TOKEN"] = token;
         lock (Tokens) Tokens[lp] = token;
+        _ = Hub(lp, token);
         psi.ArgumentList.Add("-udriver-port");
         psi.ArgumentList.Add(lp.ToString());
-        string? startupFile = null;
         if (args["startup"] is JsonArray startup && startup.Count > 0)
         {
             foreach (var c in startup)
-                if (((string?)c?["tool"] == "batch" ? "batch cannot run at startup; list the calls one by one" : Blocked((string?)c?["tool"] ?? "", c?["args"] as JsonObject ?? new JsonObject()) ?? (byOwner ? null : Denied((string?)c?["tool"] ?? "", c?["args"] as JsonObject, null, g))) is string r3)
+                if (((string?)c?["tool"] == "batch" ? "batch cannot run at startup; list the calls one by one" : (string?)c?["tool"] == "eval" ? "eval cannot run at startup" : !byOwner && LevelOff(3) != null && Need((string?)c?["tool"] ?? "", c?["args"] as JsonObject) >= 2 ? "a change at startup runs before UDriver can keep the computer closed; it needs Computer access" : Blocked((string?)c?["tool"] ?? "", c?["args"] as JsonObject ?? new JsonObject()) ?? (byOwner ? null : Denied((string?)c?["tool"] ?? "", c?["args"] as JsonObject, null, g))) is string r3)
                     return Result("startup refused: " + r3, true);
-            startupFile = Path.Combine(HomeDir, "startup-" + Guid.NewGuid().ToString("N") + ".json");
-            WritePrivate(startupFile, startup.ToJsonString());
-            psi.ArgumentList.Add("-udriver-startup");
-            psi.ArgumentList.Add(startupFile);
+            psi.Environment["UDRIVER_STARTUP"] = startup.ToJsonString();
         }
         if (args["args"] is JsonArray extra)
             foreach (var x in extra) if (x != null) psi.ArgumentList.Add(x.ToString());
+        string log = PlayerLog(real);
+        if (slot > 0)
+        {
+            log = Path.Combine(HomeDir, "logs", $"{Path.GetFileNameWithoutExtension(real)}-slot{slot}.log");
+            PrivateDir(Path.GetDirectoryName(log)!);
+            psi.ArgumentList.Add("-udriver-slot");
+            psi.ArgumentList.Add(slot.ToString());
+            psi.ArgumentList.Add("-logFile");
+            psi.ArgumentList.Add(log);
+        }
 
         var proc = Process.Start(psi) ?? throw new InvalidOperationException("could not start the process");
         Registry.Started(real, proc);
@@ -978,13 +1088,12 @@ internal static class Program
         lock (Launched)
         {
             Launched.RemoveAll(t => t.Port == lp);
-            Launched.Add(new Target { Port = lp, Path = real, Name = label, Proc = proc, Owner = Me.Label });
+            Launched.Add(new Target { Port = lp, Path = real, Name = label, Proc = proc, Owner = Me.Label, Launch = (JsonObject)args.DeepClone() });
         }
         int launchedPid = proc.Id;
         proc.EnableRaisingEvents = true;
         proc.Exited += (_, _) =>
         {
-            try { if (startupFile != null) File.Delete(startupFile); } catch { }
             try { if (LaunchName(lp, launchedPid) != null) File.Delete(NameFile(lp)); } catch { }
         };
         proc.OutputDataReceived += (_, _) => { };
@@ -996,7 +1105,7 @@ internal static class Program
         var sw = Stopwatch.StartNew();
         while (sw.Elapsed.TotalSeconds < waitSec)
         {
-            if (proc.HasExited) return Result($"The game exited during startup with code {proc.ExitCode}. Check its log: {PlayerLog(real)}", true);
+            if (proc.HasExited) return Result($"The game exited during startup with code {proc.ExitCode}. Check its log: {log}", true);
             int pid = await PingPid(lp);
             if (pid > 0 && pid != proc.Id)
             {
@@ -1020,6 +1129,67 @@ internal static class Program
         }
         return Result($"The game started (pid {proc.Id}) but its driver did not answer on port {lp} within {waitSec}s. " +
                       "Check that this is a Development Build containing the UDriver package (the driver stays off in release builds), then retry app_connect.", true);
+    }
+
+    static readonly Regex RecId = new("^rec-[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$");
+
+    static JsonObject? Recording(string? id, out string file, out string? error)
+    {
+        string dir = Path.Combine(HomeDir, "exports");
+        id ??= Directory.Exists(dir) ? Directory.GetFiles(dir, "rec-*.json").Select(Path.GetFileNameWithoutExtension).Where(n => RecId.IsMatch(n!)).Max() : null;
+        file = "";
+        error = id == null ? "No recordings yet: rec_start, then rec_stop." : !RecId.IsMatch(id) ? "id must be a recording id from rec_start or rec_stop, like rec-20261120-101500-ab12" : null;
+        if (error != null) return null;
+        file = Path.Combine(dir, id + ".json");
+        if (!File.Exists(file)) { error = $"No recording {id} in {dir}."; return null; }
+        return JsonNode.Parse(File.ReadAllText(file)) as JsonObject;
+    }
+
+    static JsonNode RecSteps(JsonObject args)
+    {
+        var rec = Recording((string?)args["id"], out var file, out var error);
+        if (rec == null) return Result(error!, true);
+        int n = 0;
+        var steps = (rec["steps"] as JsonArray ?? new JsonArray()).Select(x => (string?)x ?? "").Select(x => x.StartsWith("frame ", StringComparison.Ordinal) ? ++n + ". " + x : x);
+        return Result(string.Join("\n", steps) + "\nRecording file: " + file);
+    }
+
+    static async Task<JsonNode> RecStart(JsonObject args, string? want)
+    {
+        var t = Pick(await Targets(), "game", want, out _);
+        if (t is not { Proc.HasExited: false, Launch: not null } || t.Owner != Me.Label || args["fresh"] is JsonValue fv && fv.TryGetValue(out bool fresh) && !fresh)
+            return await CallUnity("rec_start", args, want);
+        if (Denied("rec_start", args, t) is string no) return Result(no, true);
+        var again = (JsonObject)t.Launch.DeepClone();
+        again["name"] = t.Name;
+        again["port"] = t.Port;
+        again["startup"] = new JsonArray(new JsonObject { ["tool"] = "rec_start", ["args"] = args.DeepClone() });
+        await Kill(t.Name, new JsonObject());
+        var up = await Launch(again);
+        return up["isError"]?.GetValue<bool>() == true ? up : await CallUnity("rec_start", args, t.Name);
+    }
+
+    static async Task<JsonNode> RecReplay(JsonObject args, string? want)
+    {
+        var rec = Recording((string?)args["id"], out _, out var error);
+        if (rec == null) return Result(error!, true);
+        if (rec["exact"]?.GetValue<bool>() != true) return await CallUnity("rec_replay", args, want);
+        string id = (string)args["id"]!, name = "replay-" + id[^4..];
+        var call = new JsonObject { ["id"] = id };
+        var (lastGame, lastTarget) = (Me.LastGame, Me.LastTarget);
+        var up = await Launch(new JsonObject
+        {
+            ["path"] = (string?)rec["game"], ["name"] = name, ["args"] = rec["args"]?.DeepClone(),
+            ["startup"] = new JsonArray(new JsonObject { ["tool"] = "rec_replay", ["args"] = call.DeepClone() }),
+        });
+        if (up["isError"]?.GetValue<bool>() == true) return up;
+        call["timeoutMs"] = Math.Min(600000, (rec["frames"]?.GetValue<int>() ?? 0) * 50 + 30000);
+        try { return await CallUnity("rec_replay", call, name); }
+        finally
+        {
+            await Kill(name, new JsonObject { ["force"] = true });
+            (Me.LastGame, Me.LastTarget) = (lastGame, lastTarget);
+        }
     }
 
     /// <summary>The file named after its NAME_Data folder, so UnityCrashHandler*.exe is skipped.</summary>
@@ -1063,14 +1233,14 @@ internal static class Program
 
     static async Task<JsonNode> Connect(JsonObject args, string? want)
     {
-        // Only ports where a UDriver instance has published a token: never poke arbitrary local services.
+        // Only ports where a UDriver instance has published its info file: never poke arbitrary local services.
         foreach (var (key, kind) in new[] { ("port", "game"), ("editorPort", "editor") })
         {
             if (args[key] == null) continue;
             int p = IntArg(args, key, 0);
             lock (Fixed)
             {
-                if (!Fixed.ContainsKey(p) && TokenFor(p, true).Length == 0) return Result($"refused: no UDriver instance has registered on port {p} (no token file).", true);
+                if (!Fixed.ContainsKey(p) && !File.Exists(Path.Combine(HomeDir, p + ".json"))) return Result($"refused: no UDriver instance has registered on port {p}.", true);
                 Fixed[p] = kind;
             }
             if (kind == "game") Me.LastGame = p; else Me.LastEditor = p;

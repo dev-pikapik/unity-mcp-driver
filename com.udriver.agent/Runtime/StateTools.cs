@@ -281,7 +281,7 @@ namespace UDriver
         }
 
         /// <summary>GameObject by hierarchy path or #u id; a path that matches several objects is an error listing them.</summary>
-        static GameObject FindGo(string path)
+        internal static GameObject FindGo(string path)
         {
             if (path.StartsWith("#u", StringComparison.Ordinal))
             {
@@ -1013,7 +1013,7 @@ namespace UDriver
         internal static string ExportDir()
         {
             string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".udriver", "exports");
-            Directory.CreateDirectory(dir);
+            Sandbox.Own(() => Directory.CreateDirectory(dir));
             Driver.OwnerOnly(dir, true);
             return dir;
         }
@@ -1036,7 +1036,7 @@ namespace UDriver
             {
                 if (total + reserve <= limit) break;
                 if (f.FullName == keep) continue;
-                try { f.Delete(); total -= f.Length; } catch { }
+                try { Sandbox.Own(f.Delete); total -= f.Length; } catch { }
             }
         }
 
@@ -1058,7 +1058,9 @@ namespace UDriver
             bool written = false;
             try
             {
-                using (var fs = new FileStream(file, FileMode.CreateNew, FileAccess.Write))
+                FileStream created = null;
+                Sandbox.Own(() => created = new FileStream(file, FileMode.CreateNew, FileAccess.Write));
+                using (var fs = created)
                 {
                     Driver.OwnerOnly(file, false);
                     using (var w = new StreamWriter(fs, new UTF8Encoding(false)))
@@ -1081,11 +1083,11 @@ namespace UDriver
                 }
                 written = size > 0;
             }
-            finally { if (!written) File.Delete(file); }
+            finally { if (!written) Sandbox.Own(() => File.Delete(file)); }
             if (size == 0 && !full) { r.Text("nothing was exported: " + path + (scan.Partial != null ? " - " + scan.Partial : " is empty")); yield break; }
             if (full && cap < ExportCap)
             {
-                File.Delete(file);
+                Sandbox.Own(() => File.Delete(file));
                 throw new ToolException("the collection is bigger than " + limit / 1048576 + " MB, the most the exports folder may hold (the owner sets it with UDRIVER_EXPORTS_MAX_MB); nothing was written. Export a smaller part or use a lower depth");
             }
             MakeRoom(dir, size, file);

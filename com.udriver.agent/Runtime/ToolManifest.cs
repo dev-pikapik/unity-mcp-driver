@@ -29,6 +29,24 @@ namespace UDriver
             for (int p = from; p <= to; p++) yield return p;
         }
 
+        /// <summary>How far a tool reaches: 0 looks, 1 plays, 2 changes the game, 3 may reach files, programs or the network outside the game.</summary>
+        public static int Level(string name) => Look.Contains(name) ? 0 : Play.Contains(name) ? 1 : Beyond.Contains(name) ? 3 : 2;
+
+        static readonly HashSet<string> Look = new HashSet<string>
+        {
+            "app_status", "app_connect", "targets", "batch", "status", "ui_tree", "ui_find", "ui_inspect", "screenshot", "screen_pick", "locate", "scene_tree", "state_get",
+            "state_query", "errors", "types_find", "type_members", "events_query", "wait_for", "input_actions", "frames_get", "probe_list",
+            "profiler_get", "profiler_list", "profiler_capture", "leak_check", "rec_steps", "memory_top", "memory_summary", "memory_snapshot", "memory_watch", "memory_refs", "render_stats", "render_scene",
+            "editor_status", "editor_assets", "list_instances", "where_was_i", "team_read",
+        };
+        static readonly HashSet<string> Play = new HashSet<string>
+        {
+            "app_launch", "app_kill", "ui_click", "ui_hover", "ui_drag", "pointer", "ui_scroll", "ui_scroll_to", "ui_focus", "type_text", "key", "play",
+            "frames_record", "time_control", "events_config", "watch_add", "trigger_add", "probe_remove", "state_export", "memory_capture", "self_test", "rec_start", "rec_stop", "rec_replay",
+            "editor_play", "editor_compile", "editor_tests", "take_controls", "launch_game", "use_instance", "team_post", "claim", "release",
+        };
+        static readonly HashSet<string> Beyond = new HashSet<string> { "state_call", "editor_menu" };
+
         static ToolParam P(string n, string t, string d, bool req = false) => new ToolParam { Name = n, Type = t, Desc = d, Required = req };
 
         static ToolDef T(string n, string d, params ToolParam[] p) => new ToolDef { Name = n, Desc = d, Params = p };
@@ -170,7 +188,7 @@ namespace UDriver
                 P("force", "boolean", "Also remove probes set by other agents.")),
 
             // ---- profiler / memory ----
-            T("profiler_get", "Current performance counters: frame time/fps, memory, GC, draw calls. 'add' registers extra counters (\"Category/Name\", see profiler_list).",
+            T("profiler_get", "Current performance counters averaged over the last 30 frames: fps, CPU main/render thread and GPU frame time, memory, GC allocations per frame (Development Build), draw calls. 'add' registers extra counters (\"Category/Name\", see profiler_list).",
                 P("add", "array", "Extra counters as \"Category/Name\" strings.")),
             T("profiler_list", "List available profiler counters/markers in this build.", P("contains", "string", "Name filter."), P("limit", "integer", "Default 60.")),
             T("memory_summary", "Memory at a glance, instantly: Unity used/reserved, managed heap, graphics, textures/meshes/materials/animations/RenderTextures/audio (count and bytes), object counts, GC allocations per frame. Start of a leak hunt: memory_summary -> memory_snapshot take -> play -> memory_snapshot diff -> memory_refs."),
@@ -190,6 +208,18 @@ namespace UDriver
                 P("from", "string", "Walk only from this state path instead of all roots."), P("maxDepth", "integer", "Longest path (default 16)."), P("maxNodes", "integer", "Objects to visit at most (default 2000000)."),
                 P("offset", "integer", "Skip this many entries of the destroyed/collections lists."), P("limit", "integer", "Paths or entries to show (default 5 paths, 20 entries).")),
             T("memory_capture", "Write a full memory snapshot (.snap for the Unity Memory Profiler package) to ~/.udriver/exports (owner-only; the folder keeps 2 GB by default and deletes its oldest files first) and return its path and size; editor or Development Build only. Use it when memory_snapshot and memory_refs are not detailed enough."),
+            T("profiler_capture", "Record N frames of the Unity Profiler into a .raw file in ~/.udriver/exports (owner-only, same limits as memory_capture) and return its path and size; open it in Window > Analysis > Profiler. Editor or Development Build only.",
+                P("frames", "integer", "Frames to record (default 120, max 3600).")),
+            T("leak_check", "Find a leak: runs the action once to warm up, counts Unity objects by type and managed collections, runs the action N more times, counts again and lists what grew by at least one per repeat. The action should leave the game as it found it (open and close a menu, load and leave a level); each of its tools needs its own level.",
+                P("action", "array", "The steps of one repeat: {tool, args} or an array of them, e.g. [{\"tool\":\"ui_click\",\"args\":{\"text\":\"Open\"}},{\"tool\":\"ui_click\",\"args\":{\"text\":\"Close\"}}].", true),
+                P("repeats", "integer", "How many times to repeat (default 5, 2-100)."), P("timeoutMs", "integer", "Allow more than 100 s for slow actions (up to 600000).")),
+
+            // ---- record and replay ----
+            T("rec_start", "Start recording the game: keyboard, mouse and gamepad input frame by frame, the agents' UI actions, logs and errors, the random seed and a state checksum every 30 frames, at a fixed 60 frames per second. Returns the recording id on the first line. A game started with app_launch is restarted first so the recording begins from a fresh start and rec_replay can repeat it exactly; any other game is recorded as it runs.",
+                P("fresh", "boolean", "false: record the running game without restarting it (rec_replay is then approximate)."), P("seed", "integer", "Random seed to start from (default: a new one).")),
+            T("rec_stop", "Stop the recording and save it to ~/.udriver/exports (owner-only). Without rec_start it saves the last 2 minutes, which are always kept. Returns the recording id on the first line; rec_steps shows what happened."),
+            T("rec_replay", "Play a recording back and compare the state checksums: answers \"match\" or \"diverged at frame N\" with the objects that differ. A recording from a fresh start replays in a new copy of the same build that is closed afterwards; otherwise it replays inside the running game and is marked approximate.",
+                P("id", "string", "Recording id from rec_start or rec_stop.", true)),
 
             // ---- rendering ----
             T("render_stats", "Measure rendering over N frames: frame time min/avg/p95/max and spikes, CPU main/render thread and GPU time, what bounds the frame, draw calls, batches, SetPass calls, triangles, vertices, shadow casters, RenderTexture count and memory. Start here when the frame is slow, then render_scene.",
@@ -213,6 +243,13 @@ namespace UDriver
                 P("action", "string", "play | stop | pause | resume | step (true single-frame step).", true)),
             T("editor_compile", "Script compilation: current state and the list of compiler errors with file and line. action=refresh re-imports assets and recompiles.",
                 P("action", "string", "status (default) | refresh.")),
+            T("eval", "Run C# inside the game (or the editor outside Play Mode): read and change fields, find objects, walk the hierarchy, call game code, start coroutines. "
+                + "The code is a method body returning a value (or ending in an expression), or a full 'public static class Agent { public static object Run() {...} }'; return an IEnumerator to run it as a coroutine. "
+                + "Files outside the game/project folder, other programs, launching processes and the computer's network are blocked unless the owner turned on computer access. Runs at your own risk.",
+                P("code", "string", "C# statements, e.g. var g = Object.FindObjectOfType<Game>(); g.score = 10; return g.score;"),
+                P("timeoutMs", "integer", "Time limit of the call (default 10000); coroutines and callbacks get 1000 ms per step."),
+                P("maxMemoryMB", "integer", "Memory the code may allocate (default 256)."),
+                P("stop", "string", "Stop an earlier eval's coroutines and callbacks: its id, or all.")),
             T("editor_tests", "Unity Test Framework. action=run starts EditMode or PlayMode tests (optionally filtered), status shows progress, results lists outcomes with messages and stack traces.",
                 P("action", "string", "run | status | results.", true), P("mode", "string", "EditMode (default) | PlayMode."),
                 P("names", "array", "Full test names to run."), P("groups", "array", "Regex groups (e.g. namespace or fixture names)."), P("categories", "array", "NUnit categories."), P("assemblies", "array", "Test assembly names."),
@@ -230,7 +267,7 @@ namespace UDriver
         public static readonly string[] EditModeTools =
         {
             "status", "scene_tree", "state_get", "state_set", "state_call", "types_find", "type_members",
-            "events_query", "events_config", "profiler_get", "profiler_list", "memory_top", "memory_summary", "memory_snapshot", "memory_refs", "render_scene", "probe_list", "probe_remove", "locate", "state_query", "state_export", "errors"
+            "events_query", "events_config", "profiler_get", "profiler_list", "memory_top", "memory_summary", "memory_snapshot", "memory_refs", "render_scene", "probe_list", "probe_remove", "locate", "state_query", "state_export", "errors", "eval"
         };
     }
 }

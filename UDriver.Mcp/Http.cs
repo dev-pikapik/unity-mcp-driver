@@ -80,10 +80,15 @@ internal static partial class HttpMode
             o.Limits.MaxConcurrentConnections = 200;
             o.AddServerHeader = false;
         });
-        AppDomain.CurrentDomain.ProcessExit += (_, _) => { KillTunnel(); Program.StopLaunched(); };
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => { KillTunnel(); Program.StopLaunched(); if (Program.IsHub) try { File.Delete(Program.HubFile); } catch { } };
         var app = builder.Build();
         // The launcher opens the panel only when the process on the port is the one named here.
-        if (_panel) app.Lifetime.ApplicationStarted.Register(() => Program.WritePrivate(PidFile, Environment.ProcessId.ToString()));
+        if (_panel) app.Lifetime.ApplicationStarted.Register(() =>
+        {
+            Program.WritePrivate(PidFile, Environment.ProcessId.ToString());
+            Program.WritePrivate(Program.HubFile, port.ToString());
+            Program.IsHub = true;
+        });
         app.Run(async ctx =>
         {
             try { await Handle(ctx, secretMode); }
@@ -96,6 +101,7 @@ internal static partial class HttpMode
                 + "\n\nKeep this window open. Closing it stops UDriver.");
         }
         else Console.Error.WriteLine($"UDriver MCP (HTTP) on http://127.0.0.1:{port}  auth: {(secretMode ? "secret URL" : "OAuth")}  public: {_public}");
+        if (secretMode) NewLinkCode();
         await app.RunAsync();
     }
 
@@ -236,7 +242,7 @@ internal static partial class HttpMode
             if (!Same(path, "/mcp/" + _urlSecret)) { await Write(ctx, 404, "text/plain", "not found"); return; }
             Program.Current.Value = Agent(Program.LinkClient, IsLocal(ctx));
             if (!File.Exists(LinkUsedFile)) Program.WritePrivate(LinkUsedFile, "");
-            await Mcp(ctx); return;
+            await Mcp(ctx, true); return;
         }
 
         if (path.StartsWith("/.well-known/oauth-protected-resource"))
@@ -297,7 +303,7 @@ internal static partial class HttpMode
         return s;
     }
 
-    static async Task Mcp(HttpContext ctx)
+    static async Task Mcp(HttpContext ctx, bool link = false)
     {
         if (ctx.Request.Method != "POST") { await Write(ctx, 405, "text/plain", "POST only", r => r.Headers["Allow"] = "POST"); return; }
         string body;
@@ -306,8 +312,29 @@ internal static partial class HttpMode
         try { msg = JsonNode.Parse(body); }
         catch { await Json(ctx, 400, new JsonObject { ["jsonrpc"] = "2.0", ["id"] = null, ["error"] = new JsonObject { ["code"] = -32700, ["message"] = "parse error" } }); return; }
 
+        bool unlocked = true;
+        if (link)
+        {
+            string sid = ctx.Request.Headers["Mcp-Session-Id"].ToString();
+            if ((string?)(msg as JsonObject)?["method"] == "initialize")
+            {
+                sid = Rand(24);
+                lock (Gate)
+                {
+                    if (LinkSessions.Count >= 256) foreach (var k in LinkSessions.Where(x => !x.Value).Select(x => x.Key).ToList()) LinkSessions.Remove(k);
+                    LinkSessions[sid] = false;
+                }
+                ctx.Response.Headers["Mcp-Session-Id"] = sid;
+                ShowLinkCode();
+            }
+            bool known;
+            lock (Gate) known = LinkSessions.TryGetValue(sid, out unlocked);
+            if (!known) { await Write(ctx, 404, "text/plain", "Unknown session: start a new one with initialize."); return; }
+        }
+
         async Task<JsonObject?> One(JsonNode? m)
         {
+            if (!unlocked && Unlock(ctx, m) is { } early) return early;
             var work = Program.HandleMessage(m);
             if (await Task.WhenAny(work, Task.Delay(TimeSpan.FromSeconds(90))) == work) return await work;
             return new JsonObject { ["jsonrpc"] = "2.0", ["id"] = m?["id"]?.DeepClone(), ["result"] = new JsonObject
@@ -324,7 +351,63 @@ internal static partial class HttpMode
             return;
         }
         var reply = await One(msg);
+        if (!unlocked && reply?["result"]?["tools"] is JsonArray listed) listed.Add(UnlockTool());
         if (reply == null) await Write(ctx, 202, "application/json", ""); else await Json(ctx, 200, reply);
+    }
+
+    // ---------------- secret link: the owner's code ----------------
+
+    static readonly Dictionary<string, bool> LinkSessions = new();
+    static string _linkCode = "";
+    static int _linkMisses;
+    static DateTime _linkShown;
+
+    /// <summary>Shown only where the server runs: the link alone is not enough.</summary>
+    static void NewLinkCode()
+    {
+        lock (Gate) { _linkCode = RandomNumberGenerator.GetInt32(100_000_000).ToString("D8"); _linkMisses = 0; _linkShown = default; }
+        ShowLinkCode();
+    }
+
+    static void ShowLinkCode()
+    {
+        lock (Gate)
+        {
+            if (DateTime.UtcNow - _linkShown < TimeSpan.FromSeconds(30)) return;
+            _linkShown = DateTime.UtcNow;
+        }
+        Console.Error.WriteLine($"Code for apps that open the secret link: {_linkCode}. Give it only to your own agent.");
+    }
+
+    static JsonObject UnlockTool() => new()
+    {
+        ["name"] = "unlock",
+        ["description"] = "This link also needs the owner's code. Ask the owner for the 8-digit code shown where UDriver runs, then call unlock with it once.",
+        ["inputSchema"] = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject { ["code"] = new JsonObject { ["type"] = "string" } }, ["required"] = new JsonArray("code") },
+    };
+
+    /// <summary>Until the code is given, the link answers only unlock; five wrong codes make a new one.</summary>
+    static JsonObject? Unlock(HttpContext ctx, JsonNode? m)
+    {
+        if ((string?)(m as JsonObject)?["method"] != "tools/call") return null;
+        JsonObject Text(string text, bool error) => new()
+        {
+            ["jsonrpc"] = "2.0", ["id"] = m?["id"]?.DeepClone(),
+            ["result"] = new JsonObject { ["content"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = text }), ["isError"] = error },
+        };
+        if ((string?)m?["params"]?["name"] != "unlock")
+            return Text("This link also needs the owner's code. Ask the owner for the 8-digit code shown where UDriver runs, then call unlock with it.", true);
+        string sid = ctx.Request.Headers["Mcp-Session-Id"].ToString(), code = m?["params"]?["arguments"]?["code"]?.ToString().Trim() ?? "";
+        bool ok, renew = false;
+        lock (Gate)
+        {
+            ok = Same(code, _linkCode);
+            if (ok) LinkSessions[sid] = true;
+            else if (++_linkMisses >= 5) renew = true;
+        }
+        if (renew) NewLinkCode();
+        return ok ? Text("Unlocked. All tools work in this session now.", false)
+            : Text(renew ? "Wrong code. After five wrong codes UDriver made a new one; ask the owner for it." : "Wrong code. Ask the owner for the code shown where UDriver runs.", true);
     }
 
     // ---------------- OAuth ----------------
@@ -352,6 +435,11 @@ internal static partial class HttpMode
 
     static async Task Register(HttpContext ctx)
     {
+        if (!CodeLive())
+        {
+            await OAuthError(ctx, 403, "access_denied", "a new agent can sign in only with a one-time code: on the computer that runs UDriver, open the panel and choose Add a remote agent");
+            return;
+        }
         JsonObject? req;
         using (var rd = new StreamReader(ctx.Request.Body, Encoding.UTF8))
             try { req = JsonNode.Parse(await rd.ReadToEndAsync()) as JsonObject; } catch { req = null; }
@@ -367,7 +455,7 @@ internal static partial class HttpMode
         string? evicted = null;
         lock (Gate)
         {
-            // Open registration: rate-limited; at the cap the oldest never-used app goes first.
+            // Rate-limited; at the cap the oldest never-used app goes first.
             while (Registrations.Count > 0 && Registrations.Peek().At < now.AddMinutes(-10)) Registrations.Dequeue();
             if (Registrations.Count >= 100 || Registrations.Count(x => x.Ip == ip) >= 10) id = "";
             else

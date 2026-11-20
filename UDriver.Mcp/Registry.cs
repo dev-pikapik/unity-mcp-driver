@@ -8,6 +8,7 @@ internal static class Registry
     internal sealed class Game
     {
         public string Id = "", Name = "", Kind = "", Path = "", Access = "";
+        public string Mark = "";   // the marker folder of a game an agent changed while Computer access was off
         public int Pid, SeenPid;
         public long PidStart, SeenStart;
     }
@@ -16,8 +17,10 @@ internal static class Registry
     {
         public string DefaultAccess = "play";
         public List<Game> Games = new();
-        public SortedSet<string> ToolsOff = new() { "state_call" };
+        public SortedSet<string> ToolsOff = new();
         public SortedDictionary<string, SortedSet<string>> ClientToolsOff = new();   // client id -> tools turned off for it
+        public SortedSet<int> Local = new() { 0, 1, 2 }, Remote = new() { 0, 1 };   // tool levels on for agents on this computer / remote agents
+        public bool Computer;   // level 3 for agents on this computer
     }
 
     internal static readonly string[] Levels = { "watch", "play", "full" };
@@ -58,9 +61,16 @@ internal static class Registry
                 {
                     Id = id, Name = (string?)o["name"] ?? id, Kind = (string?)o["kind"] == "project" ? "project" : "build", Path = (string?)o["path"] ?? "",
                     Access = (string?)o["access"] == "none" ? "none" : Valid((string?)o["access"]) ?? "watch", Pid = (int?)o["pid"] ?? 0, PidStart = (long?)o["pidStart"] ?? 0,
-                    SeenPid = (int?)o["seenPid"] ?? 0, SeenStart = (long?)o["seenStart"] ?? 0,
+                    SeenPid = (int?)o["seenPid"] ?? 0, SeenStart = (long?)o["seenStart"] ?? 0, Mark = (string?)o["mark"] ?? "",
                 });
         if (j["toolsOff"] is JsonArray off) d.ToolsOff = new(off.Select(x => (string?)x ?? "").Where(x => x.Length > 0));
+        if (j["levels"] is JsonObject lv)
+        {
+            static SortedSet<int> On(JsonNode? a) => new((a as JsonArray ?? new JsonArray()).Select(x => (int?)x ?? -1).Where(x => x is >= 0 and <= 2));
+            d.Local = On(lv["local"]); d.Remote = On(lv["remote"]);
+        }
+        else d.ToolsOff.Remove("state_call");
+        d.Computer = (bool?)j["computer"] ?? false;
         foreach (var (client, tools) in j["clientToolsOff"] as JsonObject ?? new JsonObject())
             if (tools is JsonArray a) d.ClientToolsOff[client] = new(a.Select(x => (string?)x ?? "").Where(x => x.Length > 0));
         return d;
@@ -71,6 +81,7 @@ internal static class Registry
         var o = new JsonObject { ["id"] = g.Id, ["name"] = g.Name, ["kind"] = g.Kind, ["path"] = g.Path, ["access"] = g.Access };
         if (g.Pid > 0) { o["pid"] = g.Pid; o["pidStart"] = g.PidStart; }
         if (g.SeenPid > 0) { o["seenPid"] = g.SeenPid; o["seenStart"] = g.SeenStart; }
+        if (g.Mark.Length > 0) o["mark"] = g.Mark;
         return o;
     }
 
@@ -99,6 +110,8 @@ internal static class Registry
         static JsonArray Names(IEnumerable<string> s) => new(s.Select(x => (JsonNode)x!).ToArray());
         var json = new JsonObject { ["defaultAccess"] = d.DefaultAccess, ["games"] = new JsonArray(d.Games.Select(g => (JsonNode)ToJson(g)).ToArray()) };
         json["toolsOff"] = Names(d.ToolsOff);
+        json["levels"] = new JsonObject { ["local"] = new JsonArray(d.Local.Select(x => (JsonNode)x).ToArray()), ["remote"] = new JsonArray(d.Remote.Select(x => (JsonNode)x).ToArray()) };
+        json["computer"] = d.Computer;
         if (d.ClientToolsOff.Count > 0) json["clientToolsOff"] = new JsonObject(d.ClientToolsOff.Select(x => KeyValuePair.Create(x.Key, (JsonNode?)Names(x.Value))));
         Program.WritePrivate(File_, json.ToJsonString(new() { WriteIndented = true }));
         lock (Sync) _stamp = (default, -2);
@@ -296,6 +309,35 @@ internal static class Registry
 
     internal static string? SetDefault(string access) =>
         Valid(access) == null ? "Access must be watch, play or full." : Change(d => { d.DefaultAccess = access; return (string?)null; });
+
+    // ---------------- tool levels and computer access ----------------
+
+    internal static bool LevelOn(int level, bool local)
+    {
+        var d = Load();
+        return level == 3 ? local && d.Computer : (local ? d.Local : d.Remote).Contains(level);
+    }
+
+    internal static void SetLevel(int level, bool local, bool on) => Change(d => { var s = local ? d.Local : d.Remote; if (on) s.Add(level); else s.Remove(level); return 0; });
+
+    internal static void SetComputer(bool on) { Change(d => d.Computer = on); if (on) ClearMark(null); }
+
+    internal static void SetMark(string id, string dir) => Change(d => { if (d.Games.FirstOrDefault(g => g.Id == id) is { } g && dir.Length > 0) g.Mark = dir; return 0; });
+
+    /// <summary>The owner's reset: removes the marker files and the record, for one game and the builds sharing its saves, or (null) all.</summary>
+    internal static bool ClearMark(string? id) => Change(d =>
+    {
+        bool any = false;
+        var dirs = d.Games.Where(g => id == null || g.Id == id).Select(g => g.Mark).ToHashSet();
+        foreach (var g in d.Games.Where(g => g.Mark.Length > 0 && dirs.Contains(g.Mark)))
+        {
+            foreach (var f in new[] { "changed", "0Harmony.dll" })
+                try { File.Delete(Path.Combine(g.Mark, f)); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            try { Directory.Delete(g.Mark); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            g.Mark = ""; any = true;
+        }
+        return any;
+    });
 
     // ---------------- tools turned off in the panel ----------------
 

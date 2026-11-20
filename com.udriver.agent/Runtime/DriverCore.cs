@@ -71,7 +71,7 @@ namespace UDriver
         public ToolHandler Handler;
         public string Tool;
         public JObject Args;
-        public string Client = "";
+        public string Client = "", Holder = "";
         public volatile bool Cancelled;
         public readonly ToolResponse Res = new ToolResponse();
         public readonly ManualResetEventSlim Done = new ManualResetEventSlim(false);
@@ -107,22 +107,38 @@ namespace UDriver
         /// <summary>True only if a human set UDRIVER_UNSAFE=1: state_set / state_call may then reach any type.</summary>
         public static bool AllowUnsafe { get; private set; }
 
-        static string _token;
-
         static string FileFor(int port, string ext)
         {
             return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".udriver", port + ext);
         }
 
-        public static string Publish(int port, string kind)
+        /// <summary>Only a hash of the key is kept, in this process's environment, so it survives editor reloads and is shared by the editor and game ports; children do not inherit it.</summary>
+        static readonly object PairLock = new object();
+        static string KeyVar => "UDRIVER_KEY_SHA256_" + System.Diagnostics.Process.GetCurrentProcess().Id;
+
+        static string Hash(string key)
+        {
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+                return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(key))).Replace("-", "");
+        }
+
+        /// <summary>The first key wins: from app_launch (UDRIVER_TOKEN), or the first /pair for a game started by hand.</summary>
+        public static bool Pair(string key)
+        {
+            if (string.IsNullOrEmpty(key) || key.Length < 32 || key.Length > 128) return false;
+            lock (PairLock)
+            {
+                string have = Environment.GetEnvironmentVariable(KeyVar);
+                if (string.IsNullOrEmpty(have)) { Environment.SetEnvironmentVariable(KeyVar, Hash(key)); return true; }
+                return SameText(have, Hash(key));
+            }
+        }
+
+        public static void Publish(int port, string kind)
         {
             string t = Environment.GetEnvironmentVariable("UDRIVER_TOKEN");
-            if (string.IsNullOrEmpty(t))
-            {
-                var b = new byte[24];
-                using (var rng = System.Security.Cryptography.RandomNumberGenerator.Create()) rng.GetBytes(b);
-                t = BitConverter.ToString(b).Replace("-", "").ToLowerInvariant();
-            }
+            Environment.SetEnvironmentVariable("UDRIVER_TOKEN", null);
+            if (!string.IsNullOrEmpty(t)) Pair(t);
             try
             {
                 var info = new JObject
@@ -131,14 +147,13 @@ namespace UDriver
                     ["project"] = Application.isEditor ? Path.GetDirectoryName(Application.dataPath) : GamePath(),
                     ["pid"] = System.Diagnostics.Process.GetCurrentProcess().Id, ["unity"] = Application.unityVersion, ["port"] = port,
                 };
-                WritePrivate(FileFor(port, ".token"), t);
+                File.Delete(FileFor(port, ".token"));
                 WritePrivate(FileFor(port, ".json"), info.ToString(Formatting.None));
             }
-            catch (Exception e) { Debug.LogWarning("[UDriver] could not write the token file (app_connect will not work, app_launch will): " + e.Message); }
-            return t;
+            catch (Exception e) { Debug.LogWarning("[UDriver] could not write the discovery file (app_connect will not find this game, app_launch will): " + e.Message); }
         }
 
-        static string GamePath()
+        internal static string GamePath()
         {
             string data = Application.dataPath, dir = Path.GetDirectoryName(data);
             if (Application.platform == RuntimePlatform.OSXPlayer) return dir;
@@ -151,11 +166,13 @@ namespace UDriver
 
         public static void Unpublish(int port)
         {
-            try { File.Delete(FileFor(port, ".token")); File.Delete(FileFor(port, ".json")); } catch { }
+            try { Sandbox.Own(() => { File.Delete(FileFor(port, ".token")); File.Delete(FileFor(port, ".json")); }); } catch { }
         }
 
         /// <summary>0700 folder and 0600 file before anything is written.</summary>
-        static void WritePrivate(string f, string text)
+        static void WritePrivate(string f, string text) { Sandbox.Own(() => WriteOwn(f, text)); }
+
+        static void WriteOwn(string f, string text)
         {
             string dir = Path.GetDirectoryName(f), tmp = f + "." + Guid.NewGuid().ToString("N") + ".tmp";
             Directory.CreateDirectory(dir);
@@ -196,15 +213,24 @@ namespace UDriver
         }
 
         /// <summary>Rejects other Host values (DNS rebinding), requests from web pages, and callers without the token.</summary>
-        public static bool Authorize(HttpListenerRequest req, int port, string token, bool needToken, out int status, out string error)
+        public static bool Authorize(HttpListenerRequest req, int port, bool needToken, out int status, out string error)
         {
             status = 403;
             string host = req.Headers["Host"] ?? "";
             if (host != "127.0.0.1:" + port && host != "localhost:" + port) { error = "unexpected Host header"; return false; }
             if (!string.IsNullOrEmpty(req.Headers["Origin"])) { error = "requests from web pages are not accepted"; return false; }
-            if (needToken && !SameText(req.Headers["X-UDriver-Token"], token)) { status = 401; error = "missing or wrong X-UDriver-Token"; return false; }
+            if (needToken && !(Environment.GetEnvironmentVariable(KeyVar) is string have && have.Length > 0 && req.Headers["X-UDriver-Token"] is string key && SameText(have, Hash(key))))
+            { status = 401; error = "missing or wrong X-UDriver-Token"; return false; }
             error = null;
             return true;
+        }
+
+        /// <summary>POST /pair with the key in X-UDriver-Token: accepted once per process, again only with the same key.</summary>
+        public static void PairReply(HttpListenerRequest req, out int status, out string body)
+        {
+            bool ok = Pair(req.Headers["X-UDriver-Token"]);
+            status = ok ? 200 : 409;
+            body = ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"already connected to another program\"}";
         }
 
         public static bool OnMainThread => Thread.CurrentThread.ManagedThreadId == MainThreadId;
@@ -219,15 +245,18 @@ namespace UDriver
             if (!(Application.isEditor || Debug.isDebugBuild || force)) return;
 
             int port = 0;
-            string startup = null;
+            int slot = 0;
             var argv = Environment.GetCommandLineArgs();
             for (int i = 0; i < argv.Length - 1; i++)
             {
                 if (argv[i] == "-udriver-port") int.TryParse(argv[i + 1], out port);
-                if (argv[i] == "-udriver-startup") startup = argv[i + 1];
+                if (argv[i] == "-udriver-slot") int.TryParse(argv[i + 1], out slot);
             }
+            if (slot > 0) Slots.Redirect(slot);
+            string startup = string.IsNullOrEmpty(Environment.GetEnvironmentVariable("UDRIVER_TOKEN")) ? null : Environment.GetEnvironmentVariable("UDRIVER_STARTUP");
+            Environment.SetEnvironmentVariable("UDRIVER_STARTUP", null);
             Start(port);
-            if (startup != null) RunStartupFile(startup);
+            if (!string.IsNullOrEmpty(startup) && Running) RunStartup(startup);
         }
 
         public static void Start(int port)
@@ -247,7 +276,7 @@ namespace UDriver
             _listener = Bind(port > 0 ? new[] { port } : ToolManifest.Ports(false), out int bound, out string error);
             if (_listener == null) { Debug.LogError("[UDriver] could not start HTTP listener on port " + (port > 0 ? port.ToString() : ToolManifest.GamePort + "-" + ToolManifest.GamePortLast) + ": " + error); return; }
             Port = bound;
-            _token = Publish(bound, "game");
+            Publish(bound, "game");
             new Thread(Listen) { IsBackground = true, Name = "UDriver.Http" }.Start();
             Running = true;
             Debug.Log("[UDriver] listening on http://127.0.0.1:" + bound + " (" + Handlers.Count + " tools)");
@@ -287,13 +316,15 @@ namespace UDriver
             ProbeTools.Register();
             MemoryTools.Register();
             RenderTools.Register();
+            RecordTools.Register();
+            Sandbox.Register();
         }
 
         /// <summary>Runs another tool from inside a tool (same arguments an agent would send).</summary>
         public static IEnumerator Invoke(string tool, JObject args, ToolResponse res)
         {
             ToolHandler h;
-            if (!Handlers.TryGetValue(tool, out h)) throw new ToolException(Unknown(tool));
+            if (tool == "eval" || !Handlers.TryGetValue(tool, out h)) throw new ToolException(Unknown(tool));
             return h(args ?? new JObject(), res);
         }
 
@@ -313,7 +344,7 @@ namespace UDriver
                 var s = new ToolResponse();
                 s.Text("--- [" + (first + i) + "] " + tool);
                 ToolHandler h;
-                if (tool == null || tool == "batch" || !Handlers.TryGetValue(tool, out h)) s.Error(Unknown(tool));
+                if (tool == null || tool == "batch" || tool == "eval" || !Handlers.TryGetValue(tool, out h)) s.Error(Unknown(tool));
                 else yield return Guard(() => h(calls[i]["args"] as JObject ?? new JObject(), s), s);
                 last = null;
                 if (s.IsError || (output == "all" && !((JObject)calls[i]).Bool("quiet"))) r.Append(s);
@@ -401,9 +432,10 @@ namespace UDriver
             {
                 string path = ctx.Request.Url.AbsolutePath, verb = ctx.Request.HttpMethod, deny;
                 if (busy) { status = 503; body = "{\"ok\":false,\"error\":\"too many requests at once\"}"; }
-                else if (!Authorize(ctx.Request, Port, _token, path != "/ping", out status, out deny))
+                else if (!Authorize(ctx.Request, Port, path != "/ping" && path != "/pair", out status, out deny))
                     body = new JObject { ["ok"] = false, ["error"] = deny }.ToString(Formatting.None);
                 else if (path == "/ping" && verb == "GET") { status = 200; body = "{\"ok\":true,\"pid\":" + _pid + "}"; }
+                else if (path == "/pair" && verb == "POST") PairReply(ctx.Request, out status, out body);
                 else if (path == "/tools" && verb == "GET") { status = 200; body = ToolsJson(); }
                 else if (path == "/cancel" && verb == "POST" && ctx.Request.ContentLength64 is >= 0 and <= 1024)
                 {
@@ -425,7 +457,7 @@ namespace UDriver
                     using (var r = new StreamReader(ctx.Request.InputStream, Encoding.UTF8)) reqBody = r.ReadToEnd();
                     var req = JObject.Parse(reqBody);
                     string client = ctx.Request.Headers["X-UDriver-Client"];
-                    body = Call((string)req["tool"], req["args"] as JObject ?? new JObject(), string.IsNullOrEmpty(client) ? "another agent" : Util.OneLine(client, 40), ctx.Request.Headers["X-UDriver-Call"]).ToString(Formatting.None);
+                    body = Call((string)req["tool"], req["args"] as JObject ?? new JObject(), string.IsNullOrEmpty(client) ? "another agent" : Util.OneLine(client, 40), ctx.Request.Headers["X-UDriver-Holder"], ctx.Request.Headers["X-UDriver-Call"]).ToString(Formatting.None);
                 }
                 else { status = 404; body = "{\"ok\":false,\"error\":\"not found\"}"; }
             }
@@ -447,12 +479,12 @@ namespace UDriver
             finally { Interlocked.Decrement(ref _active); }
         }
 
-        static JObject Call(string tool, JObject args, string client, string callId)
+        static JObject Call(string tool, JObject args, string client, string holder, string callId)
         {
             ToolHandler h;
             lock (Handlers) { if (tool == null || !Handlers.TryGetValue(tool, out h)) h = null; }
             if (h == null) return new JObject { ["ok"] = false, ["error"] = Unknown(tool) };
-            var job = new Job { Handler = h, Tool = tool, Args = args, Client = client };
+            var job = new Job { Handler = h, Tool = tool, Args = args, Client = client, Holder = string.IsNullOrEmpty(holder) ? client : holder };
             bool tracked = !string.IsNullOrEmpty(callId) && callId.Length <= 64 && Calls.TryAdd(callId, job);
             try
             {
@@ -571,21 +603,21 @@ namespace UDriver
             else res.Error(e.GetType().Name + ": " + e.Message + "\n" + Util.Cut(e.StackTrace, 900));
         }
 
-        static void RunStartupFile(string file)
+        static void RunStartup(string json)
         {
             try
             {
-                foreach (var item in JArray.Parse(File.ReadAllText(file)))
+                foreach (var item in JArray.Parse(json))
                 {
                     string tool = (string)item["tool"];
                     ToolHandler h;
-                    if (tool == "batch") { Debug.LogWarning("[UDriver] startup: batch is not run at startup"); continue; }
+                    if (tool == "batch" || tool == "eval") { Debug.LogWarning("[UDriver] startup: " + tool + " is not run at startup"); continue; }
                     if (tool == null || !Handlers.TryGetValue(tool, out h)) { Debug.LogWarning("[UDriver] startup: unknown tool " + tool); continue; }
-                    Jobs.Enqueue(new Job { Handler = h, Tool = tool, Args = item["args"] as JObject ?? new JObject(), Client = "startup" });
+                    Jobs.Enqueue(new Job { Handler = h, Tool = tool, Args = item["args"] as JObject ?? new JObject(), Client = "startup", Holder = "startup" });
                     EventStore.Emit("startup", "queued " + tool + " " + (item["args"] ?? "").ToString(Formatting.None));
                 }
             }
-            catch (Exception e) { Debug.LogError("[UDriver] startup file failed: " + e.Message); }
+            catch (Exception e) { Debug.LogError("[UDriver] startup calls failed: " + e.Message); }
         }
 
         // ---------------- status ----------------
@@ -597,6 +629,8 @@ namespace UDriver
             r.Text("app: " + Application.productName + " " + Application.version + " | unity " + Application.unityVersion + " | " + Application.platform
                    + (Application.isEditor ? " (editor play mode)" : Debug.isDebugBuild ? " (development build)" : " (release build)"));
             r.Text("scenes: " + string.Join(", ", scenes));
+            if (Slots.Slot > 0) r.Text("copy slot " + Slots.Slot + ": " + (Slots.Problem == null ? "saves and PlayerPrefs in " + Slots.Folder : "saves are shared with other copies (" + Slots.Problem + ")"));
+            r.Text("input: " + InputTools.Controls(Current));
             r.Text("screen: " + Screen.width + "x" + Screen.height + " | focused: " + Application.isFocused + " | frame: " + Time.frameCount
                    + " | fps: " + (Time.unscaledDeltaTime > 0 ? (1f / Time.unscaledDeltaTime).ToString("0", CultureInfo.InvariantCulture) : "?") + " | timeScale: " + Time.timeScale);
             r.Text("ui panels: " + UiTools.Roots().Count + " | input methods: event" + (InputTools.InjectAvailable ? ", input" : " (Input System not active: method=input unavailable)") + (InputTools.OsKeysAvailable ? ", os (real key events for Input.GetKey)" : ""));

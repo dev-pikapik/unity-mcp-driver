@@ -39,8 +39,22 @@ static class Cli
                 case ["tools", "on" or "off", var tool, ..] when args.Length == 3 || args is [_, _, _, "--for", _]:
                     return await Act("tools/set", ("tool", tool), args[1] == "on" ? "Turned on." : "Turned off.",
                         ("enabled", args[1] == "on" ? "true" : "false"), ("client", args.Length == 5 ? args[4] : ""));
+                case ["levels"]:
+                    if (await Ensure() is string off) return Say(off);
+                    Console.WriteLine("Level                    This computer  Remote");
+                    foreach (var l in (await Get("tools"))["levels"]!.AsArray())
+                        Console.WriteLine($"{l!["level"]} {l["name"],-22} {((bool?)l["local"] == true ? "On" : "Off"),-14} {((int?)l["level"] == 3 ? "Never" : (bool?)l["remote"] == true ? "On" : "Off")}\n  {l["text"]}");
+                    return 0;
+                case ["levels", "on" or "off", var level, ..] when args.Length == 3 || args is [_, _, _, "--remote"]:
+                    return await Act("levels/set", ("level", level), args[1] == "on" ? "Turned on." : "Turned off.",
+                        ("enabled", args[1] == "on" ? "true" : "false"), ("for", args.Length == 4 ? "remote" : "local"));
+                case ["clear-mark", var game]:
+                    return await Act("games/clear-mark", ("id", game), "The mark is cleared. The game's own code can reach the computer again from its next start.");
+                case ["computer", "on" or "off"]:
+                    return await Act("levels/set", ("level", "3"), args[1] == "on" ? "Computer access is on. At your own risk." : "Computer access is off.",
+                        ("enabled", args[1] == "on" ? "true" : "false"));
             }
-            return Say("Usage: udriver-mcp tui | status | approve <id> | deny <id> | code | tools on|off <tool> [--for <client>]");
+            return Say("Usage: udriver-mcp tui | status | approve <id> | deny <id> | code | tools on|off <tool> [--for <client>] | levels [on|off <0-2> [--remote]] | computer on|off | clear-mark <game>");
         }
         catch (HttpRequestException e) { return Say("UDriver does not answer: " + e.Message); }
         catch (TaskCanceledException) { return Say("UDriver did not answer in time."); }
@@ -67,7 +81,7 @@ static class Cli
         w.WriteLine($"UDriver is running on port {Port}.");
         w.WriteLine("Access from anywhere: " + (remote["on"]?.GetValue<bool>() == true ? "On  " + remote["address"] : "Off"));
         foreach (var g in games["games"]!.AsArray())
-            w.WriteLine($"game   {g!["name"],-24} {g["state"],-12} agents may: {AccessNames[Registry.Level((string?)g["access"] ?? "watch") + 1]}");
+            w.WriteLine($"game   {g!["name"],-24} {g["state"],-12} agents may: {AccessNames[Registry.Level((string?)g["access"] ?? "watch") + 1]}{((bool?)g["changed"] == true ? "  changed by an agent: run clear-mark to trust it again" : "")}{((string?)g["native"] is { Length: > 0 } why ? "  look and play only while Computer access is off: " + why : "")}");
         foreach (var a in agents["agents"]!.AsArray())
             w.WriteLine($"agent  {a!["label"],-24} {a["from"]}{((bool?)a["disconnected"] == true ? "  (disconnected)" : "")}");
         foreach (var r in pending["pending"]!.AsArray())

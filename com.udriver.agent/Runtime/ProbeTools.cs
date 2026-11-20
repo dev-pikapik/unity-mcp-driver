@@ -1,7 +1,9 @@
 using System;
+using System.Collections;
 using System.Globalization;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Reflection;
 using System.Text;
 using System.Threading;
@@ -55,6 +57,7 @@ namespace UDriver
             Driver.Register("probe_remove", Driver.Sync(RemoveTool));
             Driver.Register("profiler_get", Driver.Sync(ProfilerGet));
             Driver.Register("profiler_list", Driver.Sync(ProfilerList));
+            Driver.Register("profiler_capture", ProfilerCapture);
             InitProfiler();
         }
 
@@ -150,6 +153,7 @@ namespace UDriver
         /// <summary>Called from LateUpdate.</summary>
         internal static void Tick()
         {
+            FrameTimingManager.CaptureFrameTimings();
             if (_pauseRequested) { _pauseRequested = false; PauseGame(); }
             for (int i = 0; i < Watches.Count; i++)
             {
@@ -184,12 +188,9 @@ namespace UDriver
         static Type _hType, _hMethodType;
         static object _harmony;
         static MethodInfo _patch, _unpatch, _prefix, _postfix, _finalizer;
-        static bool _harmonySearched;
-
-        static Type FindHarmony()
+        internal static Type FindHarmony()
         {
-            if (_harmonySearched) return _hType;
-            _harmonySearched = true;
+            if (_hType != null) return _hType;
             foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
             {
                 var t = asm.GetType("HarmonyLib.Harmony", false);
@@ -222,7 +223,7 @@ namespace UDriver
             if (_patch == null || _unpatch == null) throw new ToolException("unsupported Harmony version (Patch/Unpatch not found)");
         }
 
-        static object HMethod(MethodInfo m)
+        internal static object HMethod(MethodInfo m)
         {
             return _hMethodType.GetConstructor(new[] { typeof(MethodInfo) }).Invoke(new object[] { m });
         }
@@ -452,6 +453,14 @@ namespace UDriver
             r.Text("fps (last frame): " + (Time.unscaledDeltaTime > 0 ? (1f / Time.unscaledDeltaTime).ToString("0.0", CultureInfo.InvariantCulture) : "?") + " | frame " + Time.frameCount
                    + " | managed heap: " + Val(GC.GetTotalMemory(false), "bytes") + " | GC gen0 collections: " + GC.CollectionCount(0)
                    + " | unity allocated: " + Val(Profiler.GetTotalAllocatedMemoryLong(), "bytes") + " | mono used: " + Val(Profiler.GetMonoUsedSizeLong(), "bytes"));
+            if (FrameTimingManager.GetLatestTimings((uint)Timings.Length, Timings) is var ft && ft > 0)
+            {
+                double cpu = 0, main = 0, render = 0, gpu = 0;
+                for (int i = 0; i < ft; i++) { cpu += Timings[i].cpuFrameTime; main += Timings[i].cpuMainThreadFrameTime; render += Timings[i].cpuRenderThreadFrameTime; gpu += Timings[i].gpuFrameTime; }
+                r.Text("frame timing (avg over " + ft + " frames): cpu " + (cpu / ft).ToString("0.00", CultureInfo.InvariantCulture) + " ms, main thread " + (main / ft).ToString("0.00", CultureInfo.InvariantCulture) + " ms, render thread "
+                       + (render / ft).ToString("0.00", CultureInfo.InvariantCulture) + " ms, gpu " + (gpu > 0 ? (gpu / ft).ToString("0.00", CultureInfo.InvariantCulture) + " ms" : "n/a"));
+            }
+            else r.Text(FrameTimingManager.IsFeatureEnabled() ? "frame timing: no data yet" : "frame timing: off in this build (Player Settings > Frame Timing Stats)");
             foreach (var c in Counters)
             {
                 if (!c.Rec.Valid) { r.Text("  " + c.Label + ": n/a in this build" + (Debug.isDebugBuild ? "" : " (many counters need a Development Build)")); continue; }
@@ -461,6 +470,36 @@ namespace UDriver
                 for (int i = 0; i < n; i++) { double v = c.Rec.GetSample(i).Value; sum += v; if (v > max) max = v; }
                 r.Text("  " + c.Label + ": last " + Val(c.Rec.LastValue, c.Unit) + ", avg " + Val(sum / n, c.Unit) + ", max " + Val(max, c.Unit) + " (over " + n + " frames)");
             }
+        }
+
+        static readonly FrameTiming[] Timings = new FrameTiming[30];
+
+        static IEnumerator ProfilerCapture(JObject a, ToolResponse r)
+        {
+            if (!Application.isEditor && !Debug.isDebugBuild) throw new ToolException("a profiler capture needs a Development Build or the editor; profiler_get works here");
+            if (!Profiler.supported) throw new ToolException("the profiler is not available in this build");
+            if (Profiler.enabled) throw new ToolException("the profiler is already recording; try again when that capture ends");
+            int frames = Math.Max(1, Math.Min(a.Int("frames", 120), 3600));
+            string dir = StateTools.ExportDir();
+            long limit = StateTools.ExportLimit();
+            StateTools.MakeRoom(dir, Math.Min(frames * 100000L, limit));
+            string file = Path.Combine(dir, "profile-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6));
+            Profiler.logFile = file;
+            Profiler.enableBinaryLog = true;
+            Profiler.enabled = true;
+            try { for (int i = 0; i < frames; i++) yield return null; }
+            finally { Profiler.enabled = false; Profiler.enableBinaryLog = false; Profiler.logFile = ""; }
+            file += ".raw";
+            if (!File.Exists(file)) throw new ToolException("Unity did not write the profiler capture on this platform");
+            Driver.OwnerOnly(file, false);
+            long size = new FileInfo(file).Length;
+            if (size > limit)
+            {
+                File.Delete(file);
+                throw new ToolException("the capture was " + size / 1048576 + " MB, over the " + limit / 1048576 + " MB limit of the exports folder (the owner sets it with UDRIVER_EXPORTS_MAX_MB), and was deleted");
+            }
+            StateTools.MakeRoom(dir, size, file);
+            MemoryTools.Out(r, new JObject { ["file"] = file, ["bytes"] = size, ["frames"] = frames, ["open"] = "Unity Profiler: Window > Analysis > Profiler, then Load the file" });
         }
 
         static void ProfilerList(JObject a, ToolResponse r)

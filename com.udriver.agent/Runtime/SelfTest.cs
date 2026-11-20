@@ -270,7 +270,7 @@ namespace UDriver
             var m = System.Text.RegularExpressions.Regex.Match(t.AllText(), @" to (.+?\.jsonl)");
             string file = m.Success ? m.Groups[1].Value : null;
             int lines = file != null && System.IO.File.Exists(file) ? System.IO.File.ReadAllLines(file).Length : -1;
-            if (lines >= 0) System.IO.File.Delete(file);
+            if (lines >= 0) Sandbox.Own(() => System.IO.File.Delete(file));
             Check("state_export writes JSONL into ~/.udriver/exports", lines == 50 && file.Contains(System.IO.Path.Combine(".udriver", "exports")), t.AllText());
 
             // ---------- memory: leak, snapshot diff, holders, destroyed but referenced ----------

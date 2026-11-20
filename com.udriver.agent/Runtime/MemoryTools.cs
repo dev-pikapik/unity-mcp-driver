@@ -26,6 +26,7 @@ namespace UDriver
             Driver.Register("memory_watch", Watch);
             Driver.Register("memory_refs", Refs);
             Driver.Register("memory_capture", Capture);
+            Driver.Register("leak_check", LeakCheck);
         }
 
         internal static void Out(ToolResponse r, JToken o) { r.Text(o.ToString(Formatting.None)); }
@@ -505,7 +506,7 @@ namespace UDriver
         {
             public object Target;
             public bool Holders, Destroyed, Collections;
-            public int MaxDepth, MaxNodes, PathLimit, Nodes, TargetHits;
+            public int MaxDepth, MaxNodes, PathLimit, Nodes, TargetHits, MinColl = 2;
             public bool Truncated;
             public readonly List<string> Paths = new List<string>();
             public readonly List<JObject> Dead = new List<JObject>();
@@ -542,7 +543,7 @@ namespace UDriver
 
             void Coll(Node n, int count, Type t)
             {
-                if (!Collections || count < 2) return;
+                if (!Collections || count < MinColl) return;
                 Colls.Add(new KeyValuePair<int, Node>(count, n));
                 CollType[n] = StateTools.TypeName(t);
             }
@@ -611,6 +612,41 @@ namespace UDriver
             }
         }
 
+        /// <summary>Walks from static fields of game code and scene components (or from one state path); st[0] counts roots, st[1] frames.</summary>
+        static IEnumerator WalkAll(Walk w, string from, int[] st)
+        {
+            var slice = Stopwatch.StartNew();
+            if (from != null) { w.Offer(StateTools.Resolve(from), null, from); st[0] = 1; }
+            else
+            {
+                foreach (var t in StateTools.GameTypes(false))
+                {
+                    if (slice.Elapsed.TotalMilliseconds > StateTools.FrameBudgetMs) { st[1]++; yield return null; slice.Reset(); slice.Start(); }
+                    if (t.ContainsGenericParameters || StateTools.Why(t, "") != null) continue;
+                    foreach (var f in t.GetFields(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+                    {
+                        if (f.IsLiteral || !MayHoldRefs(f.FieldType)) continue;
+                        object v;
+                        try { v = f.GetValue(null); } catch { continue; }
+                        if (v == null) continue;
+                        st[0]++;
+                        w.Offer(v, null, "@" + t.FullName + Label(f));
+                    }
+                }
+                foreach (var go in StateTools.RootObjects())
+                    foreach (var mb in go.GetComponentsInChildren<MonoBehaviour>(true))
+                        if (mb != null) { st[0]++; w.Offer(mb, null, StateTools.PathOf(mb.gameObject) + ":" + mb.GetType().Name); }
+            }
+            int k = 0;
+            while (w.Queue.Count > 0 && !w.Done)
+            {
+                var e = w.Queue.Dequeue();
+                foreach (var _ in w.Expand(e.Key, e.Value))
+                    if (slice.Elapsed.TotalMilliseconds > StateTools.FrameBudgetMs) { st[1]++; yield return null; slice.Reset(); slice.Start(); }
+                if ((++k & 63) == 0 && slice.Elapsed.TotalMilliseconds > StateTools.FrameBudgetMs) { st[1]++; yield return null; slice.Reset(); slice.Start(); }
+            }
+        }
+
         static IEnumerator Refs(JObject a, ToolResponse r)
         {
             string id = a.Str("id"), from = a.Str("from"), find = a.Str("find", id != null ? "holders" : "all");
@@ -624,37 +660,9 @@ namespace UDriver
             };
             if (id != null) w.Target = StateTools.ById(id.StartsWith("#", StringComparison.Ordinal) ? id : "#" + id);
             var sw = Stopwatch.StartNew();
-            var slice = Stopwatch.StartNew();
-            int roots = 0, frames = 0;
-            if (from != null) { w.Offer(StateTools.Resolve(from), null, from); roots = 1; }
-            else
-            {
-                foreach (var t in StateTools.GameTypes(false))
-                {
-                    if (slice.Elapsed.TotalMilliseconds > StateTools.FrameBudgetMs) { frames++; yield return null; slice.Reset(); slice.Start(); }
-                    if (t.ContainsGenericParameters || StateTools.Why(t, "") != null) continue;
-                    foreach (var f in t.GetFields(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
-                    {
-                        if (f.IsLiteral || !MayHoldRefs(f.FieldType)) continue;
-                        object v;
-                        try { v = f.GetValue(null); } catch { continue; }
-                        if (v == null) continue;
-                        roots++;
-                        w.Offer(v, null, "@" + t.FullName + Label(f));
-                    }
-                }
-                foreach (var go in StateTools.RootObjects())
-                    foreach (var mb in go.GetComponentsInChildren<MonoBehaviour>(true))
-                        if (mb != null) { roots++; w.Offer(mb, null, StateTools.PathOf(mb.gameObject) + ":" + mb.GetType().Name); }
-            }
-            int k = 0;
-            while (w.Queue.Count > 0 && !w.Done)
-            {
-                var e = w.Queue.Dequeue();
-                foreach (var _ in w.Expand(e.Key, e.Value))
-                    if (slice.Elapsed.TotalMilliseconds > StateTools.FrameBudgetMs) { frames++; yield return null; slice.Reset(); slice.Start(); }
-                if ((++k & 63) == 0 && slice.Elapsed.TotalMilliseconds > StateTools.FrameBudgetMs) { frames++; yield return null; slice.Reset(); slice.Start(); }
-            }
+            var st = new int[2];
+            yield return WalkAll(w, from, st);
+            int roots = st[0], frames = st[1];
             var res = new JObject();
             if (w.Target != null)
             {
@@ -703,7 +711,7 @@ namespace UDriver
             string done = null;
             bool ok = false;
             var sw = Stopwatch.StartNew();
-            MemoryProfiler.TakeSnapshot(file, (p, success) => { done = p ?? ""; ok = success; }, CaptureFlags.ManagedObjects | CaptureFlags.NativeObjects | CaptureFlags.NativeAllocations);
+            Sandbox.Own(() => MemoryProfiler.TakeSnapshot(file, (p, success) => { done = p ?? ""; ok = success; }, CaptureFlags.ManagedObjects | CaptureFlags.NativeObjects | CaptureFlags.NativeAllocations));
             while (done == null)
             {
                 if (sw.ElapsedMilliseconds > 110000) throw new ToolException("the snapshot did not finish within 110 s");
@@ -714,11 +722,80 @@ namespace UDriver
             long size = new FileInfo(file).Length;
             if (size > limit)
             {
-                File.Delete(file);
+                Sandbox.Own(() => File.Delete(file));
                 throw new ToolException("the snapshot was " + size / 1048576 + " MB, over the " + limit / 1048576 + " MB limit for one file in the exports folder (the owner sets it with UDRIVER_EXPORTS_MAX_MB), and was deleted");
             }
             StateTools.MakeRoom(dir, size, file);
             Out(r, new JObject { ["file"] = file, ["bytes"] = size, ["ms"] = sw.ElapsedMilliseconds, ["open"] = "Unity Memory Profiler package (com.unity.memoryprofiler): Window > Analysis > Memory Profiler, then import the file" });
+        }
+
+        // ---------------- leak check ----------------
+
+        static IEnumerator LeakCheck(JObject a, ToolResponse r)
+        {
+            var steps = a["action"] as JArray ?? (a["action"] is JObject ? new JArray(a["action"]) : null);
+            if (steps == null || steps.Count == 0)
+                throw new ToolException("action must be the steps that should leave memory as it was, as {tool, args} or an array of them, e.g. [{\"tool\":\"ui_click\",\"args\":{\"text\":\"Open\"}},{\"tool\":\"ui_click\",\"args\":{\"text\":\"Close\"}}]");
+            foreach (var step in steps)
+            {
+                string t = step is JObject ? (string)step["tool"] : null;
+                if (t == null || t == "batch" || t == "leak_check" || t == "eval" || t.StartsWith("rec_", StringComparison.Ordinal)) throw new ToolException("leak_check cannot repeat '" + t + "'");
+            }
+            int n = Mathf.Clamp(a.Int("repeats", 5), 2, 100);
+            var sw = Stopwatch.StartNew();
+            yield return Repeat(steps, 1, r);
+            var before = new Census();
+            var wb = new Walk { Collections = true, MaxDepth = 16, MaxNodes = 2000000, MinColl = 1 };
+            GC.Collect();
+            yield return Take(before, false);
+            yield return WalkAll(wb, null, new int[2]);
+            yield return Repeat(steps, n, r);
+            for (int i = 0; i < 5; i++) yield return null;
+            var after = new Census();
+            var wa = new Walk { Collections = true, MaxDepth = 16, MaxNodes = 2000000, MinColl = 1 };
+            GC.Collect();
+            yield return Take(after, false);
+            yield return WalkAll(wa, null, new int[2]);
+
+            var types = new JArray();
+            foreach (var kv in after.ByType)
+            {
+                long[] b;
+                long was = before.ByType.TryGetValue(kv.Key, out b) ? b[0] : 0;
+                if (kv.Value[0] - was >= n)
+                    types.Add(new JObject { ["type"] = kv.Key, ["before"] = was, ["after"] = kv.Value[0], ["perRepeat"] = Math.Round((kv.Value[0] - was) / (double)n, 1), ["bytes"] = kv.Value[1] - (b != null ? b[1] : 0) });
+            }
+            var counts = new Dictionary<string, int>();
+            foreach (var c in wb.Colls) counts[PathOf(c.Value)] = c.Key;
+            var colls = new JArray();
+            foreach (var c in wa.Colls)
+            {
+                string path = PathOf(c.Value);
+                int was;
+                counts.TryGetValue(path, out was);
+                if (c.Key - was >= n && !wa.CollType[c.Value].EndsWith("]", StringComparison.Ordinal))
+                    colls.Add(new JObject { ["path"] = path, ["type"] = wa.CollType[c.Value], ["before"] = was, ["after"] = c.Key, ["perRepeat"] = Math.Round((c.Key - was) / (double)n, 1) });
+            }
+            var res = new JObject
+            {
+                ["verdict"] = types.Count + colls.Count > 0 ? "leak suspected: these grew by at least one per repeat" : "no leak found: nothing grew with every repeat",
+                ["repeats"] = n, ["unityObjects"] = types, ["collections"] = colls,
+                ["managedHeapGrowth"] = after.Heap - before.Heap, ["ms"] = sw.ElapsedMilliseconds,
+                ["next"] = "memory_refs id=... or from=<collection path> shows what holds the objects",
+            };
+            if (!Application.isEditor && !Debug.isDebugBuild) res["note"] = NoSizes;
+            if (wa.Truncated) res["walkNote"] = "the managed walk stopped at 2000000 objects; collections deeper in the heap were not compared";
+            Out(r, res);
+        }
+
+        static IEnumerator Repeat(JArray steps, int times, ToolResponse r)
+        {
+            for (int i = 0; i < times; i++)
+            {
+                var s = new ToolResponse();
+                yield return Driver.Invoke("batch", new JObject { ["calls"] = steps.DeepClone(), ["output"] = "errors" }, s);
+                if (s.IsError) { r.Append(s); throw new ToolException("the action failed, so leak_check stopped"); }
+            }
         }
     }
 }

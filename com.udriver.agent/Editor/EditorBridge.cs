@@ -39,7 +39,7 @@ namespace UDriver.Editor
         static readonly Dictionary<string, Action<JObject, ToolResponse>> Tools = new Dictionary<string, Action<JObject, ToolResponse>>();
         static HttpListener _listener;
         static int _port, _pid;
-        static string _token;
+        const string MarkedText = "stays closed: an agent changed this game while Computer access was off, and its saved data is shared with Play Mode. The owner can clear the mark in the UDriver panel.";
 
         static EditorBridge()
         {
@@ -53,6 +53,12 @@ namespace UDriver.Editor
             Tools["editor_assets"] = Assets;
             Tools["editor_menu"] = Menu;
 
+            EditorApplication.playModeStateChanged += s =>
+            {
+                if (s != PlayModeStateChange.ExitingEditMode || !Sandbox.Marked()) return;
+                EditorApplication.isPlaying = false;
+                Debug.LogError("[UDriver] Play Mode " + MarkedText);
+            };
             EditorApplication.update += Pump;
             AssemblyReloadEvents.beforeAssemblyReload += BeforeReload;
             EditorApplication.quitting += () => { StopListener(); Driver.Unpublish(_port); };
@@ -72,7 +78,7 @@ namespace UDriver.Editor
             _listener = Driver.Bind(ports, out _port, out string error);
             if (_listener == null) { Debug.LogWarning("[UDriver] editor bridge found no free port (" + error + ")"); return; }
             SessionState.SetInt(KPort, _port);
-            _token = Driver.Publish(_port, "editor");
+            Driver.Publish(_port, "editor");
             var l = _listener;
             new Thread(() => Listen(l)) { IsBackground = true, Name = "UDriver.EditorHttp" }.Start();
         }
@@ -112,9 +118,10 @@ namespace UDriver.Editor
             try
             {
                 string path = ctx.Request.Url.AbsolutePath, verb = ctx.Request.HttpMethod, deny;
-                if (!Driver.Authorize(ctx.Request, _port, _token, path != "/ping", out status, out deny))
+                if (!Driver.Authorize(ctx.Request, _port, path != "/ping" && path != "/pair", out status, out deny))
                     body = new JObject { ["ok"] = false, ["error"] = deny }.ToString(Formatting.None);
                 else if (path == "/ping" && verb == "GET") { status = 200; body = "{\"ok\":true,\"editor\":true,\"pid\":" + _pid + "}"; }
+                else if (path == "/pair" && verb == "POST") Driver.PairReply(ctx.Request, out status, out body);
                 else if (path == "/call" && verb == "POST" && !(ctx.Request.ContentType ?? "").StartsWith("application/json", StringComparison.OrdinalIgnoreCase))
                 { status = 415; body = "{\"ok\":false,\"error\":\"Content-Type must be application/json\"}"; }
                 else if (path == "/call" && verb == "POST" && (ctx.Request.ContentLength64 < 0 || ctx.Request.ContentLength64 > 4 * 1024 * 1024))
@@ -165,7 +172,11 @@ namespace UDriver.Editor
                     Action<JObject, ToolResponse> h;
                     if (job.Tool != null && Tools.TryGetValue(job.Tool, out h)) h(job.Args, job.Res);
                     else if (EditorApplication.isPlaying) job.Res.Error("'" + job.Tool + "' is served by the game driver while in Play Mode (port " + Driver.Port + ") - call app_connect");
-                    else Driver.RunEditMode(job.Tool, job.Args, job.Res);
+                    else
+                    {
+                        Driver.RunEditMode(job.Tool, job.Args, job.Res);
+                        if (ToolManifest.Level(job.Tool) >= 2) EditorSceneManager.MarkAllScenesDirty();
+                    }
                 }
                 catch (Exception e)
                 {
@@ -198,6 +209,7 @@ namespace UDriver.Editor
             {
                 case "play":
                     if (EditorUtility.scriptCompilationFailed) throw new ToolException("cannot enter Play Mode: scripts have compile errors (editor_compile)");
+                    if (Sandbox.Marked()) throw new ToolException("cannot enter Play Mode: it " + MarkedText);
                     EditorApplication.isPlaying = true;
                     r.Text("entering Play Mode. Scripts reload now; wait a few seconds, then call app_connect.");
                     break;
