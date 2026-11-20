@@ -35,7 +35,13 @@ jobs:
           security create-keychain -p "$KP" "$KC"
           security set-keychain-settings -lut 21600 "$KC"
           security unlock-keychain -p "$KP" "$KC"
+          umask 077
           printf %s "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          # macOS reads only the older .p12 format, so a file exported by OpenSSL 3 is repacked first.
+          OSSL="$(brew --prefix openssl@3)/bin/openssl"; [ -x "$OSSL" ] || brew install -q openssl@3
+          "$OSSL" pkcs12 -legacy -in "$RUNNER_TEMP/cert.p12" -passin env:P12_PASSWORD -nodes -out "$RUNNER_TEMP/cert.pem"
+          "$OSSL" pkcs12 -export -legacy -in "$RUNNER_TEMP/cert.pem" -passout env:P12_PASSWORD -out "$RUNNER_TEMP/cert.p12"
+          rm -f "$RUNNER_TEMP/cert.pem"
           security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign >/dev/null
           rm -f "$RUNNER_TEMP/cert.p12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KP" "$KC" >/dev/null
@@ -73,7 +79,7 @@ jobs:
         if: always()
         run: |
           security delete-keychain "$RUNNER_TEMP/sign.keychain-db" 2>/dev/null || true
-          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/notary.p8"
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/cert.pem" "$RUNNER_TEMP/notary.p8"
       - uses: actions/upload-artifact@v4
         with: { name: mac, path: packaging/releases/* }
 
