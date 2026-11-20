@@ -42,6 +42,7 @@ works in your project. UDriver updates itself from the same page.
 | Logs and events | `events_query`, `events_config`, `errors`, `wait_for` |
 | Game data | `scene_tree`, `state_get`, `state_query`, `state_export`, `state_set`, `state_call`, `types_find`, `type_members` |
 | Probes and time | `watch_add`, `trace_add`, `trigger_add`, `probe_list`, `probe_remove`, `frames_record`, `frames_get`, `time_control` |
+| Understand apps | `app_map`, `query`, `chart_data`, `form_fill`, `net_capture`, `net_log`, `code_read` |
 | Performance | `profiler_get`, `profiler_list`, `render_stats`, `render_scene` |
 | Memory | `memory_summary`, `memory_top`, `memory_snapshot`, `memory_watch`, `memory_refs`, `memory_capture` |
 | Unity Editor | `editor_status`, `editor_play`, `editor_compile`, `editor_tests`, `editor_build`, `editor_scene`, `editor_assets`, `editor_menu` |

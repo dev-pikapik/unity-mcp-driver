@@ -133,6 +133,8 @@ namespace UDriver
         static bool EditorOnly(Assembly asm) { return false; }
 #endif
 
+        internal static bool IsGame(Assembly asm) { return !asm.IsDynamic && !IsEngine(asm) && !EditorOnly(asm); }
+
         internal static bool IsEngine(Assembly asm)
         {
             string n = asm.GetName().Name;
@@ -546,7 +548,7 @@ namespace UDriver
 
         // ---------------- formatting ----------------
 
-        static bool Simple(Type t)
+        internal static bool Simple(Type t)
         {
             return t.IsPrimitive || t.IsEnum || t == typeof(string) || t == typeof(decimal) || t == typeof(DateTime) || t == typeof(TimeSpan) || t == typeof(Guid)
                    || (t.IsValueType && t.Namespace != null && t.Namespace.StartsWith("UnityEngine", StringComparison.Ordinal) && !typeof(IEnumerable).IsAssignableFrom(t));
@@ -567,7 +569,7 @@ namespace UDriver
         }
 
         /// <summary>Short() plus the object id, for values the caller may want to open next.</summary>
-        static string Brief(object v)
+        internal static string Brief(object v)
         {
             string id = v == null || Simple(v.GetType()) ? null : IdOf(v);
             return id == null ? Short(v) : Short(v) + " " + id;
@@ -726,7 +728,7 @@ namespace UDriver
             try { return Convert.ToDouble(v, CultureInfo.InvariantCulture); } catch { return null; }
         }
 
-        static string Text(object v)
+        internal static string Text(object v)
         {
             if (v == null) return "null";
             if (v is string) return (string)v;
@@ -836,7 +838,7 @@ namespace UDriver
         }
 
         /// <summary>One-line view of an item: simple values as is, objects as their first members.</summary>
-        static string Line(object x, bool ids = true)
+        internal static string Line(object x, bool ids = true)
         {
             var sb = new StringBuilder();
             if (Header(sb, x, ids) || !(!(x is IEnumerable) || x is Transform)) return sb.ToString();
@@ -976,7 +978,7 @@ namespace UDriver
 
         const long ExportCap = 200L * 1024 * 1024;
 
-        static JToken Json(object v, int depth)
+        internal static JToken Json(object v, int depth)
         {
             if (v == null) return JValue.CreateNull();
             var t = v.GetType();
@@ -1230,7 +1232,7 @@ namespace UDriver
             }
         }
 
-        static string Signature(MethodBase m)
+        internal static string Signature(MethodBase m)
         {
             var ps = new List<string>();
             foreach (var p in m.GetParameters()) ps.Add(TypeName(p.ParameterType) + " " + p.Name);

@@ -169,7 +169,7 @@ namespace UDriver
             return PropStr(e, "value");
         }
 
-        static bool IsBaseField(Type t)
+        internal static bool IsBaseField(Type t)
         {
             bool r;
             if (FieldCache.TryGetValue(t, out r)) return r;
@@ -252,7 +252,7 @@ namespace UDriver
             return sb.ToString();
         }
 
-        static string PathOf(VisualElement e, int max)
+        internal static string PathOf(VisualElement e, int max)
         {
             var parts = new List<string>();
             for (var p = e.hierarchy.parent; p != null && parts.Count < max; p = p.hierarchy.parent) if (Named(p)) parts.Add(p.name);

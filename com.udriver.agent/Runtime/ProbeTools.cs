@@ -250,7 +250,9 @@ namespace UDriver
 
         internal static object HMethod(MethodInfo m)
         {
-            return _hMethodType.GetConstructor(new[] { typeof(MethodInfo) }).Invoke(new object[] { m });
+            object h = null;
+            Sandbox.Own(() => h = _hMethodType.GetConstructor(new[] { typeof(MethodInfo) }).Invoke(new object[] { m }));
+            return h;
         }
 
         // Harmony injects parameters by name: __originalMethod, __args, __instance, __result, __exception, __state.
@@ -336,7 +338,7 @@ namespace UDriver
         {
             string pattern = a.Str("pattern");
             if (pattern == null) throw new ToolException("pattern is required, e.g. Game.Orders.OrderService.*");
-            EnsureHarmony();
+            Sandbox.Own(EnsureHarmony);
             var match = Util.Matcher(pattern);
             bool wild = pattern.IndexOf('*') >= 0 || pattern.IndexOf('?') >= 0;
             var methods = new List<MethodBase>();
@@ -359,7 +361,7 @@ namespace UDriver
         /// <summary>Traces the given methods and returns the probe id; the self-test calls it directly because its methods are not game code.</summary>
         internal static int Patch(string pattern, List<MethodBase> methods, JObject a, ToolResponse r)
         {
-            EnsureHarmony();
+            Sandbox.Own(EnsureHarmony);
             bool result = a.Bool("result");
             var tp = new TraceProbe { Args = a.Bool("args", true), Stack = a.Bool("stack"), Pause = a.Bool("pause"), Max = Math.Max(1, a.Int("maxHits", a.Int("max", 2000))),
                                       Capture = a.Strs("capture"), When = a["when"] as JObject };
