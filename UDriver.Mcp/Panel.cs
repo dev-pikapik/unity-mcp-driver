@@ -574,13 +574,15 @@ internal static partial class HttpMode
         ["editor_build"] = "Build the game", ["editor_scene"] = "Open or save scenes", ["editor_assets"] = "Find project assets", ["editor_menu"] = "Run an editor menu command",
         ["list_instances"] = "List running copies", ["use_instance"] = "Switch to a copy", ["where_was_i"] = "Recall earlier work", ["take_controls"] = "Take the controls",
         ["team_post"] = "Post to the team", ["team_read"] = "Read team posts", ["claim"] = "Claim a task", ["release"] = "Give back a task", ["launch_game"] = "Start game copies",
+        ["perceive"] = "See around the player", ["rule_add"] = "Add a play rule", ["rule_list"] = "List play rules", ["rule_remove"] = "Remove play rules",
+        ["move"] = "Move the player",
     };
 
     static readonly string[][] ToolFeatures =
     {
         new[] { "Screenshots", "screenshot", "render_scene", "frames_record", "frames_get" },
-        new[] { "Scene and objects", "scene_tree", "state_get", "ui_tree", "state_query", "ui_find", "ui_inspect", "screen_pick", "locate" },
-        new[] { "Games and status", "targets", "status", "app_status", "app_connect", "input_actions", "batch", "list_instances", "where_was_i", "team_read" },
+        new[] { "Scene and objects", "scene_tree", "state_get", "ui_tree", "state_query", "ui_find", "ui_inspect", "screen_pick", "locate", "perceive" },
+        new[] { "Games and status", "targets", "status", "app_status", "app_connect", "input_actions", "batch", "list_instances", "where_was_i", "team_read", "rule_list" },
         new[] { "Errors, events and timing", "errors", "events_query", "wait_for", "time_control", "rec_steps" },
         new[] { "Performance", "profiler_get", "profiler_list", "profiler_capture", "render_stats" },
         new[] { "Memory", "memory_summary", "memory_top", "memory_snapshot", "memory_watch", "memory_refs", "leak_check" },
@@ -589,6 +591,7 @@ internal static partial class HttpMode
         new[] { "Press, tap and type", "ui_click", "key", "type_text", "ui_focus", "play", "take_controls" },
         new[] { "Switch game copies and share work with other agents", "use_instance", "team_post", "claim", "release" },
         new[] { "Drag, hover and scroll", "ui_drag", "ui_hover", "pointer", "ui_scroll", "ui_scroll_to" },
+        new[] { "Play by rules", "rule_add", "rule_remove", "move" },
         new[] { "Start and stop games", "app_launch", "launch_game", "app_kill", "editor_play" },
         new[] { "Watch values and react", "watch_add", "trigger_add", "probe_remove", "events_config" },
         new[] { "Record, replay and save captures", "rec_start", "rec_stop", "rec_replay", "state_export", "memory_capture", "self_test" },

@@ -97,7 +97,11 @@ internal static partial class Program
         if (name == "rec_replay") return (Recording((string?)args?["id"], out _, out _)?["actions"] as JsonArray ?? new JsonArray())
             .Select(x => x?["input"]?.GetValue<bool>() == true ? 1 : Need((string?)x?["tool"] ?? "", x?["args"] as JsonObject)).Append(1).Max();
         if (ObserveActions.TryGetValue(name, out var ok) && ok.Contains((string?)args?["action"] ?? "status")) return 0;
-        return ToolManifest.Level(name);
+        if ((string?)args?["drive"] is "auto" or "direct" || ((string?)args?["fire"])?.StartsWith("method:") == true) return 2;
+        int level = ToolManifest.Level(name);
+        if (name == "rule_add" && args?["do"] is JsonArray d)
+            foreach (var c in d) if ((string?)c?["tool"] is string t) level = Math.Max(level, Need(t, c?["args"] as JsonObject));
+        return level;
     }
 
     /// <summary>Agents on this computer: stdio and local keys, over loopback only. Everyone else is remote and never reaches level 3.</summary>
@@ -172,8 +176,14 @@ internal static partial class Program
     /// <summary>The same for agents on the UDRIVER_URL_SECRET link.</summary>
     internal const string LinkClient = "link";
 
-    static string? Blocked(string name, JsonObject? args) =>
-        Registry.ToolOff(name, Me.Client.Length > 0 ? Me.Client : StdioClient) ? $"'{name}' is turned off in the UDriver panel." : LevelOff(Need(name, args)) ?? Configured(name, args);
+    static string? Blocked(string name, JsonObject? args)
+    {
+        if (Registry.ToolOff(name, Me.Client.Length > 0 ? Me.Client : StdioClient)) return $"'{name}' is turned off in the UDriver panel.";
+        if (name == "rule_add" && args?["do"] is JsonArray d)
+            foreach (var c in d)
+                if ((string?)c?["tool"] is string t && Blocked(t, c?["args"] as JsonObject ?? new JsonObject()) is string r) return "rule refused: " + r;
+        return LevelOff(Need(name, args)) ?? Configured(name, args);
+    }
 
     /// <summary>Limits from the server's environment variables.</summary>
     static string? Configured(string name, JsonObject? args)

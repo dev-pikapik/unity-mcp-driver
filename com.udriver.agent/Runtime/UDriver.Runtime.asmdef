@@ -23,6 +23,16 @@
       "name": "com.unity.ugui",
       "expression": "1.0.0",
       "define": "UDRV_UGUI"
+    },
+    {
+      "name": "com.unity.modules.physics",
+      "expression": "1.0.0",
+      "define": "UDRV_PHYSICS"
+    },
+    {
+      "name": "com.unity.modules.ai",
+      "expression": "1.0.0",
+      "define": "UDRV_AI"
     }
   ],
   "noEngineReferences": false

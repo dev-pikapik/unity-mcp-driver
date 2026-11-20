@@ -37,13 +37,13 @@ namespace UDriver
             "app_status", "app_connect", "targets", "batch", "status", "ui_tree", "ui_find", "ui_inspect", "screenshot", "screen_pick", "locate", "scene_tree", "state_get",
             "state_query", "errors", "types_find", "type_members", "events_query", "wait_for", "input_actions", "frames_get", "probe_list",
             "profiler_get", "profiler_list", "profiler_capture", "leak_check", "rec_steps", "memory_top", "memory_summary", "memory_snapshot", "memory_watch", "memory_refs", "render_stats", "render_scene",
-            "editor_status", "editor_assets", "list_instances", "where_was_i", "team_read",
+            "editor_status", "editor_assets", "list_instances", "where_was_i", "team_read", "perceive", "rule_list",
         };
         static readonly HashSet<string> Play = new HashSet<string>
         {
             "app_launch", "app_kill", "ui_click", "ui_hover", "ui_drag", "pointer", "ui_scroll", "ui_scroll_to", "ui_focus", "type_text", "key", "play",
             "frames_record", "time_control", "events_config", "watch_add", "trigger_add", "probe_remove", "state_export", "memory_capture", "self_test", "rec_start", "rec_stop", "rec_replay",
-            "editor_play", "editor_compile", "editor_tests", "take_controls", "launch_game", "use_instance", "team_post", "claim", "release",
+            "editor_play", "editor_compile", "editor_tests", "take_controls", "launch_game", "use_instance", "team_post", "claim", "release", "rule_add", "rule_remove", "move",
         };
         static readonly HashSet<string> Beyond = new HashSet<string> { "state_call", "editor_menu" };
 
@@ -68,6 +68,10 @@ namespace UDriver
 
         static readonly ToolParam Method = P("method", "string", "'event' (default): synthesize UI Toolkit events, deterministic, UI only. 'input': inject through the Input System virtual mouse/keyboard (also reaches uGUI and gameplay code).");
         static readonly ToolParam Mods = P("modifiers", "array", "Held modifiers: any of shift, ctrl, alt, cmd.");
+
+        const string MatchDesc = "Names, tags or script types separated by '|', e.g. 'Zombie' or 'tag:Enemy|comp:Health|name:Boss'. A bare word matches part of a name, a tag or a script type.";
+        static readonly ToolParam PlayerP = P("player", "string", "The player object (path or #id). Default: the object tagged Player, else the main camera's root.");
+        static readonly ToolParam DriveP = P("drive", "string", "'input' (default): virtual keyboard and mouse. 'auto': the same, switching to direct control when the game ignores them (games on the old Input Manager). 'direct': turn and move the player object itself and call its Fire/Shoot/Jump methods. 'auto' and 'direct' change the game, so they need full access.");
 
         public static readonly ToolDef[] Tools =
         {
@@ -261,6 +265,49 @@ namespace UDriver
             T("editor_assets", "Search project assets (AssetDatabase.FindAssets syntax, e.g. 't:VisualTreeAsset order', 't:Scene', 't:Script Trade').",
                 P("filter", "string", "Search filter.", true), P("folder", "string", "Limit to a folder, e.g. Assets/UI."), P("limit", "integer", "Default 50.")),
             T("editor_menu", "Execute an editor menu item by path, e.g. 'Assets/Refresh' or a project's custom menu.", P("path", "string", "Menu path.", true)),
+            T("perceive", "Look around the player: its own state (position, facing, grounded, health and ammo fields) and nearby objects with name, tag, scripts, distance, bearing, speed, whether they approach, whether the camera sees them, and their health. Read-only.",
+                P("match", "string", "Only these objects. " + MatchDesc),
+                P("radius", "number", "Meters around the player (default 30)."),
+                P("limit", "integer", "Max objects, nearest first (default 25)."),
+                P("visibleOnly", "boolean", "Only objects the camera sees (default false)."),
+                P("scenery", "boolean", "Also list walls, crates and other objects without scripts (default false)."),
+                PlayerP),
+            T("rule_add", "Add a rule that runs inside the game every frame until removed. Any game: read values by state path, check a condition, and run tool calls or send an event when it becomes true, e.g. values={\"kills\": \"/GameStats:GameStats.zombiesKilled\"} when=\"rose(kills) && kills >= 10\" do=[{\"tool\": \"key\", \"args\": {\"key\": \"Space\"}}, {\"emit\": \"kills {kills}\"}] max=1. Shooter games: aim at and shoot the nearest matching object but never with an avoided object near the line of fire, keep a distance, walk up to targets, jump over low obstacles, report objects coming near. Results arrive as 'autoplay' events (events_query, wait_for) and in rule_list. A rule with an existing name replaces it.",
+                P("name", "string", "Rule name.", true),
+                P("values", "object", "Names for game values the condition uses: name -> state path (as in state_get), e.g. {\"hp\": \"/Player:Health.current\", \"n\": \"@Game.orders.Count\"}. Read at every check."),
+                P("when", "string", "Condition over the values: numbers, \"text\", true/false, + - * / %, < <= > >= == !=, && || !, parentheses. Functions: prev(x), delta(x), changed(x), rose(x), fell(x), abs(x), ma(x, n), min(x, n), max(x, n) over the last n checks (none until there are n), crosses_above(a, b), crosses_below(a, b); in 3D: dist(\"Zombie\") nearest distance, count(\"Zombie\", 10) within 10 m, seen(\"Zombie\", 10) visible within 10 m. With the shooter fields, the shooter acts only while it is true."),
+                P("do", "array", "What to run when the condition becomes true, in order: {\"tool\": \"key\", \"args\": {\"key\": \"Space\"}} for any tool, or {\"emit\": \"hp {hp}\"} for an 'autoplay' event with values filled in."),
+                P("cooldown", "number", "Seconds to wait between fires (default 0)."),
+                P("max", "integer", "Stop after this many fires; the rule stays listed as done (default: no limit)."),
+                P("every", "integer", "Check every this many frames (default 1)."),
+                P("edge", "boolean", "true (default): fire when the condition becomes true. false: fire at every check where it is true (with cooldown)."),
+                P("match", "string", "Targets. " + MatchDesc),
+                P("avoid", "string", "Never shoot these or through them; hits on them are counted. " + MatchDesc),
+                P("shoot", "boolean", "Aim at the nearest target in range that the camera can see past obstacles and fire when the crosshair is on it."),
+                P("keepAway", "number", "Back away from targets closer than this many meters."),
+                P("approach", "number", "Walk toward the nearest target while it is farther than this many meters."),
+                P("hunt", "boolean", "When nothing to shoot is in sight, walk toward the nearest hidden target (or circle it when it is close) and face it until it shows up."),
+                P("jump", "boolean", "Jump over low obstacles in the way."),
+                P("alert", "number", "Report targets entering and leaving this many meters."),
+                P("range", "number", "Max distance to engage (default 40)."),
+                P("fire", "string", "'mouse' (default, left button), 'key:<Key>' or 'method:Type.Method' (called on the player's object or children)."),
+                P("turnSpeed", "number", "Max turn speed in degrees per second (default 900)."),
+                P("speed", "number", "Walking speed for direct control, m/s (default 4)."),
+                DriveP, PlayerP),
+            T("rule_list", "Rules running in the game with live counts: checks, fires, last fire, current values, last error; for the shooter shots, hits, kills, misses, hits on avoided objects, reaction time from first sight to first shot."),
+            T("rule_remove", "Stop rules and release every key and button they held. Returns their final counts.",
+                P("name", "string", "Rule name, or 'all' (default).")),
+            T("move", "Move the player once and wait until done: walk to a point or object (along the NavMesh when the scene has one, else straight with sidesteps and jumps), turn to look at something, jump, run, or strafe for a while.",
+                P("to", "any", "Point [x,y,z], object #id or path, or a match for the nearest such object."),
+                P("look", "any", "Point [x,y,z] or object to turn the camera to."),
+                P("jump", "boolean", "Jump (also while walking)."),
+                P("run", "boolean", "Hold run (Left Shift)."),
+                P("strafe", "string", "'left' or 'right' for 'seconds'."),
+                P("seconds", "number", "How long to strafe (default 1)."),
+                P("stopAt", "number", "Arrived when this close, meters (default 1)."),
+                P("timeout", "number", "Give up after this many seconds (default 15)."),
+                P("speed", "number", "Walking speed for direct control, m/s (default 4)."),
+                DriveP, PlayerP),
         };
 
         /// <summary>Tools that also work in the editor outside Play Mode (pure reflection / scene inspection).</summary>

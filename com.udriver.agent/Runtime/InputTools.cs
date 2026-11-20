@@ -50,13 +50,17 @@ namespace UDriver
         static string _owner, _ownerName;
         static float _ownerLast;
 
+        static bool Free => _owner == null || Time.realtimeSinceStartup - _ownerLast >= OwnerIdle;
+
+        internal static void Touch(string holder) { if (holder == _owner) _ownerLast = Time.realtimeSinceStartup; }
+
         static string Owner(Job me)
         {
-            if (_owner == null || Time.realtimeSinceStartup - _ownerLast >= OwnerIdle) return null;
+            if (Free) return null;
             return me != null && me.Holder == _owner ? null : _ownerName;
         }
 
-        static void Own(Job me)
+        internal static void Own(Job me)
         {
             if (Owner(me) is string other)
                 throw new ToolException("This game is being controlled by " + other + " right now. You can still read it, take screenshots, inspect memory and profile it. " +
@@ -66,7 +70,7 @@ namespace UDriver
 
         internal static string Controls(Job me)
         {
-            if (_owner == null || Time.realtimeSinceStartup - _ownerLast >= OwnerIdle) return "controls free";
+            if (Free) return "controls free";
             return (me != null && me.Holder == _owner ? "controlled by you" : "controlled by " + _ownerName) + " (idle " + (int)(Time.realtimeSinceStartup - _ownerLast) + " s)";
         }
 
@@ -90,7 +94,11 @@ namespace UDriver
         static float _leaseEnd;
         const float LeaseWait = 10f;
 
-        static ToolHandler Leased(string name, ToolHandler h) { return (a, r) => WithLease(name, h, a, r); }
+        static readonly HashSet<string> Inputs = new HashSet<string>();
+
+        internal static bool IsInput(string tool) { return tool != null && Inputs.Contains(tool); }
+
+        internal static ToolHandler Leased(string name, ToolHandler h) { Inputs.Add(name); return (a, r) => WithLease(name, h, a, r); }
 
         internal static void EnsureDevices() { Inj.Ensure(); }
 
@@ -905,7 +913,7 @@ namespace UDriver
         // ---------------- Input System injection ----------------
 
 #if UDRV_INPUTSYSTEM && ENABLE_INPUT_SYSTEM
-        static class Inj
+        internal static class Inj
         {
             public static readonly bool Available = true;
             static Mouse _mouse;
@@ -1056,7 +1064,7 @@ namespace UDriver
             }
         }
 #else
-        static class Inj
+        internal static class Inj
         {
             public static readonly bool Available = false;
             public static readonly int Sent = 0;

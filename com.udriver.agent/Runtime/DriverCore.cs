@@ -314,6 +314,9 @@ namespace UDriver
             CaptureTools.Register();
             StateTools.Register();
             ProbeTools.Register();
+#if UDRV_PHYSICS
+            AutoplayTools.Register();
+#endif
             MemoryTools.Register();
             RenderTools.Register();
             RecordTools.Register();
@@ -327,6 +330,8 @@ namespace UDriver
             if (tool == "eval" || !Handlers.TryGetValue(tool, out h)) throw new ToolException(Unknown(tool));
             return h(args ?? new JObject(), res);
         }
+
+        internal static bool Knows(string tool) { return Handlers.ContainsKey(tool); }
 
         static IEnumerator Batch(JObject a, ToolResponse r)
         {
