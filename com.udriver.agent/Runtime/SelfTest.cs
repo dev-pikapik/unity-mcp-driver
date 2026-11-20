@@ -324,17 +324,23 @@ namespace UDriver
             UnityEngine.Object.Destroy(cube);
 
             string probeTag = "#" + Time.frameCount;
+            string given = null;
+            Application.LogCallback seen = (m, s, ty) => { if (m.EndsWith(probeTag)) given = s; };
+            Application.logMessageReceived += seen;
             for (int i = 0; i < 2; i++) Debug.LogError("[UDriver] self-test error probe (expected) " + probeTag);
+            Application.logMessageReceived -= seen;
             yield return null;
             t = new ToolResponse();
             yield return Tool("errors", new JObject { ["contains"] = "self-test error probe", ["full"] = true }, t);
-            var gm = System.Text.RegularExpressions.Regex.Match(t.AllText(), @"(\d+)x error at ");
+            bool stacks = !string.IsNullOrEmpty(given);
+            var gm = System.Text.RegularExpressions.Regex.Match(t.AllText(), stacks ? @"(\d+)x error at " : @"(\d+)x error ");
 #if ENABLE_IL2CPP
             const string frame = "<Run>d__";   // IL2CPP stacks carry file names only with Stacktrace Information = Method Name, File Name and Line Number
 #else
             const string frame = "SelfTest.cs";
 #endif
-            Check("errors groups repeats and keeps the full stack", gm.Success && int.Parse(gm.Groups[1].Value) >= 2 && t.AllText().Contains(probeTag) && t.AllText().Contains(frame), t.AllText());
+            Check("errors groups repeats and keeps the full stack", gm.Success && int.Parse(gm.Groups[1].Value) >= 2 && t.AllText().Contains(probeTag) && (!stacks || t.AllText().Contains(frame)),
+                  stacks ? t.AllText() : "this build logs errors without a stack (Player Settings > Stack Trace Logging), so only the grouping is checked");
             t = new ToolResponse();
             yield return Tool("events_config", new JObject { ["firstChance"] = true, ["firstChanceMax"] = 5 }, t);
             seq = EventStore.LastSeq;

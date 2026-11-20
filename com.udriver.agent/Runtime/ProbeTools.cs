@@ -209,7 +209,7 @@ namespace UDriver
             if (FindHarmony() == null || _hMethodType == null)
                 throw new ToolException("method tracing needs Harmony: put 0Harmony.dll (Lib.Harmony 2.4 or newer, net48 build; 2.3 cannot patch on Apple Silicon) into Assets/Plugins and rebuild. Works on Mono only, not IL2CPP. "
                                         + "Without it use watch_add (field polling), state_get, and log/ui events.");
-            _harmony = Activator.CreateInstance(_hType, "udriver.trace");
+            Sandbox.Own(() => _harmony = Activator.CreateInstance(_hType, "udriver.trace"));
             foreach (var m in _hType.GetMethods(BindingFlags.Public | BindingFlags.Instance))
             {
                 var ps = m.GetParameters();
@@ -351,10 +351,13 @@ namespace UDriver
                 try
                 {
                     var argv = new object[_patch.GetParameters().Length];
-                    argv[0] = m; argv[1] = HMethod(_prefix);
-                    if (result && ((MethodInfo)m).ReturnType != typeof(void)) argv[2] = HMethod(_postfix);
-                    if (argv.Length > 4) argv[4] = HMethod(_finalizer);
-                    _patch.Invoke(_harmony, argv);
+                    Sandbox.Own(() =>
+                    {
+                        argv[0] = m; argv[1] = HMethod(_prefix);
+                        if (result && ((MethodInfo)m).ReturnType != typeof(void)) argv[2] = HMethod(_postfix);
+                        if (argv.Length > 4) argv[4] = HMethod(_finalizer);
+                        _patch.Invoke(_harmony, argv);
+                    });
                     patched.Add(m);
                 }
                 catch (Exception e)
@@ -379,7 +382,7 @@ namespace UDriver
                     {
                         TraceInfo dummy; Traced.TryRemove(m, out dummy);
                         foreach (var patch in new[] { _prefix, _postfix, _finalizer })
-                            try { _unpatch.Invoke(_harmony, new object[] { m, patch }); } catch { }
+                            try { Sandbox.Own(() => _unpatch.Invoke(_harmony, new object[] { m, patch })); } catch { }
                     }
                 });
             p.Hits = tp.Log;

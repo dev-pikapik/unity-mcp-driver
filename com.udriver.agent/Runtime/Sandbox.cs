@@ -352,7 +352,8 @@ namespace UDriver
             string project = Path.GetDirectoryName(Application.dataPath);
             roots = new[] { project, Application.dataPath, Application.persistentDataPath, Application.temporaryCachePath }.Select(Real).ToArray();
             writeRoots = Application.isEditor ? new[] { Application.dataPath, Application.persistentDataPath, Application.temporaryCachePath }.Select(Real).ToArray() : roots;
-            if (!Application.isEditor && !string.IsNullOrEmpty(Application.consoleLogPath)) writeRoots = roots = roots.Append(Real(Path.GetDirectoryName(Application.consoleLogPath))).ToArray();
+            string logDir = Application.isEditor || string.IsNullOrEmpty(Application.consoleLogPath) ? null : Path.GetDirectoryName(Application.consoleLogPath);
+            if (!string.IsNullOrEmpty(logDir)) writeRoots = roots = roots.Append(Real(logDir)).ToArray();
             string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             markReal = Real(MarkDir);
             if (!Application.isEditor) install = Real(Application.platform == RuntimePlatform.OSXPlayer ? project : Application.dataPath);
@@ -685,6 +686,7 @@ namespace UDriver
         {
             for (; t != null; t = t.DeclaringType)
             {
+                if (t.IsGenericParameter) return false;
                 if (t.IsPointer) return true;
                 if (t.IsByRef || t.IsArray) return IsProtected(t.GetElementType());
                 string n = t.FullName ?? t.Name;
