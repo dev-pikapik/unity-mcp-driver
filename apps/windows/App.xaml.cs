@@ -343,6 +343,7 @@ sealed partial class Shell : Window
         "remote/install" => "Downloading the helper…",
         "remote/login" => "Signing in to Cloudflare…",
         "remote/on" => "Turning on Access from Anywhere…",
+        "remote/host" => "Changing address…",
         "remote/off" => "Turning off Access from Anywhere…",
         "remote/signout" => "Signing out of Cloudflare…",
         "local-clients" => "Creating the setup…",

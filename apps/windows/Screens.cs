@@ -520,15 +520,22 @@ sealed class AccessScreen : Screen
         AutomationProperties.SetName(sw, "Access from anywhere");
         sw.Toggled += async (_, _) => await Flip(sw.IsOn, r);
         var state = r.S("state");
-        var sub = r.S("error") is { Length: > 0 } e ? e : on && state != "online" && state != "" ? "Connecting…" : "Through a private, encrypted link. Turn off to close it at once.";
+        var sub = r.S("error") is { Length: > 0 } e ? e : state == "changing-address" ? "Changing address…" : on && state != "online" && state != "" ? "Connecting…" : "Through a private, encrypted link. Turn off to close it at once.";
         var top = Ui.CardOf(Ui.Row(Ui.HStack(12, Ui.Tile("", Blue), Ui.VStack(2, Ui.Txt("Agents on other devices can reach your games", "BodyStrongTextBlockStyle"), Ui.Txt(sub, "BodyTextBlockStyle", true))), sw));
-        if (!on) return Ui.Page([top, .. Setup(r), Local(), .. Cloudflare(r)]);
-
         var address = r.S("address");
         var addr = Ui.Txt(address);
         addr.FontFamily = Ui.Mono;
         addr.IsTextSelectionEnabled = true;
-        var addrCard = Ui.CardOf(Ui.Row(Ui.VStack(4, Ui.Txt("Address", "CaptionTextBlockStyle", true), addr), Ui.Btn("Copy", () => Ui.Clip(address))));
+        var copy = Ui.Btn("Copy", () => Ui.Clip(address));
+        var change = Ui.Btn("Change address…", async () =>
+        {
+            var box = new TextBox { PlaceholderText = "games.example.com", Text = r.S("host") };
+            if (await Shell.Main.Confirm("Choose an address", "Type the full address on your Cloudflare domain, for example games.example.com. The old address stops working.", "Change address", extra: box))
+                await Shell.Main.Act("remote/host", ("host", box.Text.Trim()));
+        });
+        change.IsEnabled = state != "changing-address";
+        UIElement[] addrCard = r.B("saved") ? [Ui.CardOf(Ui.Row(Ui.VStack(4, Ui.Txt("Address", "CaptionTextBlockStyle", true), addr), r.B("signedIn") ? Ui.HStack(8, change, copy) : copy))] : [];
+        if (!on) return Ui.Page([top, .. addrCard, .. Setup(r), Local(), .. Cloudflare(r)]);
 
         var qr = new Image { Width = 140, Height = 140 };
         AutomationProperties.SetName(qr, "QR code to open UDriver on your phone");
@@ -538,7 +545,7 @@ sealed class AccessScreen : Screen
         right.Children[1].SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center);
         var connectCard = Ui.CardOf(Ui.Row(Ui.VStack(4, Ui.Txt("Connect a new agent", "BodyStrongTextBlockStyle"),
             Ui.Txt("Paste the address into the agent. When it connects for the first time, this computer asks you to allow it. Press Allow if the agent's page shows the same check number.", "BodyTextBlockStyle", true)), right), 20);
-        return Ui.Page([top, addrCard, connectCard, Local(), .. Cloudflare(r)]);
+        return Ui.Page([top, .. addrCard, connectCard, Local(), .. Cloudflare(r)]);
     }
 
     static UIElement[] Cloudflare(JsonNode r)

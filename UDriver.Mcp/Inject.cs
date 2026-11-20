@@ -24,8 +24,23 @@ static class Inject
     {
         string real = Program.RealPath(path.TrimEnd('/', '\\'));
         if (real.EndsWith(".app", StringComparison.OrdinalIgnoreCase) && Directory.Exists(real))
-            return Directory.GetFiles(Path.Combine(real, "Contents", "MacOS")).FirstOrDefault() ?? real;
+            return MacExe(real) ?? real;
         return Directory.Exists(real) ? Program.GameFile(real) ?? real : real;
+    }
+
+    /// <summary>A text value from a .app's Info.plist, or "" when it has none.</summary>
+    internal static string PlistValue(string app, string key)
+    {
+        try { return Regex.Match(File.ReadAllText(Path.Combine(app, "Contents", "Info.plist")), $@"<key>{key}</key>\s*<string>([^<]+)</string>").Groups[1].Value.Trim(); }
+        catch (IOException) { return ""; }
+    }
+
+    /// <summary>The program the .app names in CFBundleExecutable: Steam games keep helpers such as Restarter next to it in Contents/MacOS.</summary>
+    static string? MacExe(string app)
+    {
+        string dir = Path.Combine(app, "Contents", "MacOS"), name = PlistValue(app, "CFBundleExecutable");
+        if (name.Length > 0 && Path.GetFileName(name) == name && File.Exists(Path.Combine(dir, name))) return Path.Combine(dir, name);
+        return Directory.Exists(dir) ? Directory.GetFiles(dir).FirstOrDefault() : null;
     }
 
     static string? AppDir(string exe)

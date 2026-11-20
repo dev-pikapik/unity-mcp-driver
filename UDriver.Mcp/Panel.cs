@@ -647,6 +647,18 @@ internal static partial class HttpMode
         return (type, data);
     }
 
+    /// <summary>Each tool's group and feature switch, as the Tools screen shows them.</summary>
+    internal static Dictionary<string, (string Group, string Feature)> ToolPlaces() =>
+        ToolsJson()["tools"]!.AsArray().ToDictionary(t => (string)t!["name"]!, t => ((string)t!["group"]!, (string)t!["feature"]!));
+
+    /// <summary>Where the owner turns a tool back on for this agent.</summary>
+    internal static string ToolSwitch(string tool, string client, Dictionary<string, (string Group, string Feature)>? places = null)
+    {
+        var (group, feature) = (places ?? ToolPlaces()).GetValueOrDefault(tool, ("Change", tool));
+        string who = Registry.ToolsOff().All.Contains(tool) ? "All agents" : (string?)ClientsJson().FirstOrDefault(c => (string?)c?["id"] == client)?["name"] ?? "this agent";
+        return $"Tools → {group} → {feature}, For: {who}";
+    }
+
     static JsonObject ToolsJson()
     {
         var (off, perClient) = Registry.ToolsOff();
@@ -1112,9 +1124,9 @@ internal static partial class HttpMode
         <div class="group">
         <div class="row"><div class="k"><label for="rm-switch" id="rm-label">Use from another device or a web agent</label><span class="st" id="rm-st"><i class="dot"></i><span id="rm-text">Checking…</span></span></div>
         <input type="checkbox" class="switch" role="switch" id="rm-switch" aria-describedby="rm-text"></div>
-        <div class="row" id="rm-addr" hidden><div class="k"><span class="sub">Address</span><span class="url" id="rm-url"></span></div><button type="button" class="pill" id="rm-copy">Copy</button></div>
+        <div class="row" id="rm-addr" hidden><div class="k"><span class="sub">Address</span><span class="url" id="rm-url"></span></div>{(local ? """<button type="button" class="pill" id="rm-move">Change address…</button>""" : "")}<button type="button" class="pill" id="rm-copy">Copy</button></div>
         {(local ? """<a class="act chev" id="rm-code" href="/panel?agent=1" hidden><span class="k"><span>Add a remote agent</span><span class="sub">Get the address to paste into the agent</span></span></a><a class="act chev" id="rm-device" href="/panel?device=1" hidden><span class="k"><span>Open on another device</span><span class="sub">Use this panel on a phone, a tablet or another computer</span></span></a>""" : $"""<div class="empty" id="rm-code" hidden>{ApproveHere}</div>""")}
-        {(local ? """<div class="row" id="rm-cf"><div class="k"><span>Cloudflare</span><span class="sub" id="rm-cf-text"></span></div></div><a class="act chev" href="/panel?remote=1" id="rm-change">Change address…</a><button type="button" class="act danger" id="rm-signout" hidden>Sign out of Cloudflare</button>""" : "")}
+        {(local ? """<div class="row" id="rm-cf"><div class="k"><span>Cloudflare</span><span class="sub" id="rm-cf-text"></span></div></div><a class="act chev" href="/panel?remote=1" id="rm-change">Set up…</a><button type="button" class="act danger" id="rm-signout" hidden>Sign out of Cloudflare</button>""" : "")}
         <div class="row" id="rm-tunnel" hidden><div class="k"><span>Tunnel</span><span class="sub">Restart it if a remote agent cannot connect.</span></div><button type="button" class="link" id="rm-restart">Restart</button></div>
         </div>
         <p class="foot">Turning this off closes the tunnel at once. Remote agents and devices lose access; agents on this computer keep working.</p></section>
@@ -1268,7 +1280,7 @@ internal static partial class HttpMode
           });
         }
         function since(s){ const h=Math.floor(s/3600), m=Math.floor(s%3600/60); return h?h+" h "+m+" min":m?m+" min":"less than a minute"; }
-        const BUSY={installing:"Installing cloudflared…","signing-in":"Waiting for the Cloudflare sign-in…","setting-up":"Setting up the tunnel…"};
+        const BUSY={installing:"Installing cloudflared…","signing-in":"Waiting for the Cloudflare sign-in…","setting-up":"Setting up the tunnel…","changing-address":"Changing address…"};
         function remoteLine(r){
           if(BUSY[r.state]) return ["wait",BUSY[r.state]];
           if(r.state==="online") return ["on","On. Tunnel online for "+since(r.onlineSec||0)+"."];
@@ -1349,10 +1361,10 @@ internal static partial class HttpMode
           }):[emptyRow("No other device is connected.")]));
           const [cls,text]=remoteLine(r); $("rm-st").className="st "+cls; $("rm-text").textContent=text;
           $("rm-switch").checked=!!r.on; $("rm-switch").disabled=!!BUSY[r.state]||(!local&&!r.on);
-          show("rm-addr",r.on); $("rm-url").textContent=r.address; show("rm-code",r.on); show("rm-device",r.on); show("rm-tunnel",r.on);
+          show("rm-addr",r.saved); if($("rm-move")){ show("rm-move",r.signedIn); $("rm-move").disabled=!!BUSY[r.state]; } $("rm-url").textContent=r.address; show("rm-code",r.on); show("rm-device",r.on); show("rm-tunnel",r.on);
           if($("rm-cf")){
             $("rm-cf-text").textContent=!r.cloudflared?"cloudflared is not installed":r.signedIn?"Signed in"+(r.domain?" · domain "+r.domain:""):"Not signed in";
-            $("rm-change").textContent=r.saved?"Change address…":"Set up…"; show("rm-signout",r.signedIn&&r.cloudflared);
+            show("rm-change",!r.saved); show("rm-signout",r.signedIn&&r.cloudflared);
           }
           $("alive").className="st on"; $("alive").lastChild.textContent="On";
         }
@@ -1383,11 +1395,12 @@ internal static partial class HttpMode
           $("r-login").textContent=r.signedIn?"Pick another domain…":"Sign in to Cloudflare"; $("r-login").disabled=!r.cloudflared||!!BUSY[r.state];
           show("r-wait",r.state==="signing-in"); show("r-wait-url",!!r.loginUrl); if(r.loginUrl) $("r-wait-url").href=r.loginUrl;
           if(remote.domain===undefined){ remote.domain=r.domain; if(r.host) $("rn").value=r.domain?r.host.slice(0,-r.domain.length-1):r.host; nameMode(); }
-          const doing=r.state==="setting-up"; $("r-on").disabled=!!BUSY[r.state]||!r.cloudflared;
-          $("r-on").textContent=doing?"Turning on…":r.on?"Save":"Turn on remote access";
-          const err=r.error&&(r.state==="error"||r.on&&r.state!=="online"&&r.state!=="starting")?r.error:"";
+          const doing=r.state==="setting-up"||r.state==="changing-address"; $("r-on").disabled=!!BUSY[r.state]||!r.cloudflared;
+          $("r-on").textContent=r.state==="changing-address"?"Changing address…":doing?"Turning on…":r.saved?"Change address":"Turn on remote access";
+          $("r-note").textContent=r.saved?"The old address stops working.":"Creates the tunnel. Takes about ten seconds.";
+          if(remote.waiting&&!doing){ remote.waiting=false; remote.failed=!!r.error; if(!r.error&&(r.on||r.saved)) location.href="/panel"; }
+          const err=r.error&&(remote.failed||r.state==="error"||r.on&&r.state!=="online"&&r.state!=="starting")?r.error:"";
           $("r-err").textContent=err; show("r-err",!!err);
-          if(remote.waiting&&!doing){ remote.waiting=false; if(r.on&&!err) location.href="/panel"; }
         }
         const NAME=/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/, DOMAIN=/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
         function host(){ const v=$("rn").value.trim().toLowerCase(); return remote.domain?v+"."+remote.domain:v; }
@@ -1414,6 +1427,7 @@ internal static partial class HttpMode
         if(M.page==="panel"){
           on("copycmd","onclick",()=>copy(M.cmd,$("copycmd")));
           on("rm-copy","onclick",()=>copy(R.address,$("rm-copy")));
+          on("rm-move","onclick",()=>location.href="/panel?remote=1");
           on("tools-for","onchange",e=>{ who=e.target.value; refresh(); });
           on("rm-restart","onclick",()=>act($("rm-restart"),()=>post("/panel/api/remote/restart"),"Restarting…"));
           on("rm-switch","onclick",async e=>{
@@ -1443,7 +1457,7 @@ internal static partial class HttpMode
           on("r-cancel","onclick",()=>act($("r-cancel"),()=>post("/panel/api/remote/cancel")));
           on("r-on","onclick",()=>act($("r-on"),async()=>{
             const h=host(), e=hostError(h); if(e) throw new Error(e);
-            await post("/panel/api/remote/on",{host:h}); remote.waiting=true;
+            await post(R.saved?"/panel/api/remote/host":"/panel/api/remote/on",{host:h}); remote.waiting=true; remote.failed=false;
           }));
         }
         if(M.page==="agent"){

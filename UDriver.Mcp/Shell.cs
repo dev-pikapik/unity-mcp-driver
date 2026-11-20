@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Text.RegularExpressions;
 using UDriver;
 
 /// <summary>
@@ -83,18 +82,18 @@ static class Shell
           (global-name "com.apple.security.cloudkeychainproxy3") (global-name "com.apple.security.octagon") (global-name "com.apple.keychainsharingmessagingd"))
         (deny file-write*)
         (allow file-write*
-          (subpath (param "GAME")) (subpath (param "SAVE")) (subpath (param "LOGS")) (subpath (param "TEMP")) (subpath (param "CACHE")) (subpath (param "CACHES"))
+          (subpath (param "GAME")) (subpath (param "SAVE")) (subpath (param "SAVEID")) (subpath (param "LOGS")) (subpath (param "TEMP")) (subpath (param "CACHE")) (subpath (param "CACHES"))
           (subpath (param "EXPORTS")) (literal (param "LOG")) (literal "/dev/null") (literal "/dev/dtracehelper") (regex #"^/dev/tty") (regex #"^/private/tmp/mm-exhelper\.dylib\."))
         (deny file-read*)
         (allow file-read*
-          (subpath (param "GAME")) (subpath (param "SAVE")) (subpath (param "LOGS")) (subpath (param "TEMP")) (subpath (param "CACHE")) (subpath (param "CACHES")) (subpath (param "SERVER"))
+          (subpath (param "GAME")) (subpath (param "SAVE")) (subpath (param "SAVEID")) (subpath (param "LOGS")) (subpath (param "TEMP")) (subpath (param "CACHE")) (subpath (param "CACHES")) (subpath (param "SERVER"))
           (subpath (param "EXPORTS")) (literal (param "TARGETS")) (literal (param "LOG")) (literal (param "HARMONY")) (regex #"^/private/tmp/mm-exhelper\.dylib\.") (literal "/") (subpath "/System") (subpath "/usr/lib") (subpath "/usr/share") (subpath "/Library/Fonts")
           (subpath "/Library/Apple/System") (subpath "/private/var/db/timezone") (subpath "/private/etc") (subpath "/dev")
           (subpath (param "METAL")) (subpath (string-append (param "HOME") "/Library/Fonts"))
           (subpath (string-append (param "HOME") "/Library/Keyboard Layouts")) (subpath (string-append (param "HOME") "/Library/Input Methods")))
         (allow file-read-metadata)
         (deny file-read-metadata (subpath (param "HOME")))
-        (allow file-read-metadata (literal (param "HOME")) (subpath (param "SERVER")) (subpath (param "EXPORTS")) (literal (param "TARGETS")) (subpath (param "SAVE")) (subpath (param "LOGS")) (literal (param "LOG")) (literal (param "SAVEUP")) (literal (param "LOGSUP"))
+        (allow file-read-metadata (literal (param "HOME")) (subpath (param "GAME")) (subpath (param "SERVER")) (subpath (param "EXPORTS")) (literal (param "TARGETS")) (subpath (param "SAVE")) (subpath (param "SAVEID")) (subpath (param "LOGS")) (literal (param "LOG")) (literal (param "SAVEUP")) (literal (param "LOGSUP"))
           (literal (string-append (param "HOME") "/Library")) (literal (string-append (param "HOME") "/Library/Application Support"))
           (literal (string-append (param "HOME") "/Library/Logs")) (literal (string-append (param "HOME") "/Library/Caches")) (subpath (param "CACHES")) (subpath (string-append (param "HOME") "/Library/Fonts")))
         """;
@@ -112,8 +111,8 @@ static class Shell
     {
         string app = Real(Path.Combine(exe, "..", "..", ".."));
         var (company, product) = Names(Path.Combine(app, "Contents", "Resources", "Data"));
-        var id = Regex.Match(File.ReadAllText(Path.Combine(app, "Contents", "Info.plist")), @"<key>CFBundleIdentifier</key>\s*<string>([^<]+)</string>").Groups[1].Value;
-        if (company.Length == 0 || id.Length == 0) return null;
+        string id = Inject.PlistValue(app, "CFBundleIdentifier");
+        if (company.Length == 0 || id.Length == 0 || Path.GetFileName(id) != id || id.StartsWith('.')) return null;
         // Unity takes the home folder from the user database, not from HOME.
         string home = Real(Marshal.PtrToStringUTF8(Marshal.ReadIntPtr(getpwuid(getuid()), 48))!);
         string temp = Real(Path.GetTempPath()), cache = Path.Combine(Path.GetDirectoryName(temp)!, "C");
@@ -124,6 +123,8 @@ static class Shell
             ["SERVER"] = Real(AppContext.BaseDirectory),
             ["SAVE"] = Path.Combine(home, "Library", "Application Support", company, product),
             ["LOGS"] = Path.Combine(home, "Library", "Logs", company, product),
+            // Unity games also keep files under their bundle id.
+            ["SAVEID"] = Path.Combine(home, "Library", "Application Support", id),
             ["SAVEUP"] = Path.Combine(home, "Library", "Application Support", company), ["LOGSUP"] = Path.Combine(home, "Library", "Logs", company),
             ["TEMP"] = Path.Combine(temp, company, product), ["CACHE"] = Path.Combine(cache, id), ["METAL"] = Path.Combine(cache, "com.apple.metal"),
             // Unity's asset bundle cache (Caching) and the system's URL cache.

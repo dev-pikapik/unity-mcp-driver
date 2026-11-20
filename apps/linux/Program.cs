@@ -297,6 +297,7 @@ sealed class Shell
         "remote/install" => "Downloading the helper…",
         "remote/login" => "Signing in to Cloudflare…",
         "remote/on" => "Turning on Access from Anywhere…",
+        "remote/host" => "Changing address…",
         "remote/off" => "Turning off Access from Anywhere…",
         "remote/signout" => "Signing out of Cloudflare…",
         "local-clients" => "Creating the setup…",
@@ -363,11 +364,12 @@ sealed class Shell
         d.Present(Window);
     }
 
-    public void Ask(string heading, string body, string placeholder, string action, Action<string> done, Action? no = null)
+    public void Ask(string heading, string body, string placeholder, string action, Action<string> done, Action? no = null, string text = "")
     {
         var d = Adw.AlertDialog.New(heading, body);
         var entry = Adw.EntryRow.New();
         entry.Title = placeholder;
+        entry.SetText(text);
         var list = Gtk.ListBox.New();
         list.AddCssClass("boxed-list");
         list.SelectionMode = Gtk.SelectionMode.None;

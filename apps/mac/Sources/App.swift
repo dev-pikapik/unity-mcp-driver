@@ -196,6 +196,7 @@ enum Section: Int, CaseIterable {
         case "remote/install": "Downloading the helper…"
         case "remote/login": "Signing in to Cloudflare…"
         case "remote/on": "Turning on Access from Anywhere…"
+        case "remote/host": "Changing address…"
         case "remote/off": "Turning off Access from Anywhere…"
         case "remote/signout": "Signing out of Cloudflare…"
         case "local-clients": "Creating the setup…"

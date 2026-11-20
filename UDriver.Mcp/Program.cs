@@ -25,7 +25,7 @@ internal static partial class Program
         "scene_tree / state_get / types_find also work in edit mode. Run self_test once in a new project to learn which capabilities work there. " +
         "Testing: qa_watch action=start -> play or qa_crawl -> qa_findings -> qa_isolate -> qa_report (one per distinct finding); editor_tests runs unit tests, qa_scenario saves and reruns repeatable checks, " +
         "qa_parallel runs several copies of a game at once with different seeds and timing; the prompt 'test' has the full playbook. " +
-        "If UDriver could not do something you needed (a tool failed, gave unusable output, or is missing), call report_problem before working around it or giving up.";
+        "Call permissions first: it shows which tools the owner has turned off for you and which switch turns each on. If UDriver could not do something you needed (a tool failed, gave unusable output, or is missing), call report_problem before working around it or giving up.";
 
     static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(30) };
     static readonly Stream Stdout = Console.OpenStandardOutput();
@@ -115,13 +115,19 @@ internal static partial class Program
 
     internal static readonly string[] LevelNames = { "Look", "Play", "Change the game", "Computer access" };
 
-    internal static string? LevelOff(int level)
+    const string ComputerSwitch = "Tools → Computer → Computer access in the UDriver app",
+        OnlyHere = "Only for agents on the computer that runs UDriver, never for remote agents",
+        AskOwner = " Ask the owner to turn it on in UDriver if you need it.";
+    static string LevelSwitch(int level) => $"What agents may do → {level} · {LevelNames[level]} in the UDriver panel";
+    static string GameSwitch(Registry.Game g, int need) => $"Games → {g.Name} → Agents may → {Cli.AccessNames[Math.Min(need, 2) + 1]} in the UDriver app";
+
+    internal static string? LevelOff(int level, string what = "This")
     {
         if (level < 3) return Registry.LevelOn(level, LocalOrigin) ? null
-            : $"This needs level {level} ({LevelNames[level]}), which the owner has turned off for {(LocalOrigin ? "agents on this computer" : "remote agents")} in the UDriver panel.";
-        if (!LocalOrigin) return "This reaches beyond the game (level 3), which is never available to remote agents.";
+            : $"{what} needs level {level} ({LevelNames[level]}), which is turned off for {(LocalOrigin ? "agents on this computer" : "remote agents")} ({LevelSwitch(level)}).{AskOwner}";
+        if (!LocalOrigin) return $"{what} reaches beyond the game, so it is only available to agents on the computer that runs UDriver, never to remote agents.";
         return Registry.LevelOn(3, true) ? null
-            : "This could reach files, programs or the network outside the game, and Computer access is off. Only the owner can turn it on, on the computer that runs UDriver.";
+            : $"{what} could reach files, programs or the network outside the game, and Computer access is off ({ComputerSwitch}).{AskOwner}";
     }
 
     /// <summary>The owner's access level for this game (UDriver panel); checked wherever a call reaches a game or editor.</summary>
@@ -132,9 +138,10 @@ internal static partial class Program
         if (Math.Min(Need(name, args), 2) <= (g == null ? Registry.Level(level) : GameLevel(g, t?.Shell == true))) return null;
         string game = g?.Name ?? t?.Name ?? "this game";
         if (Registry.Level(level) >= 2)
-            return $"Not done: \"{game}\" calls code on the computer directly ({Inject.Native(g!)}), so while Computer access is off agents can only look and play in it. The owner can turn Computer access on in the UDriver panel.";
-        return level == "none" ? $"\"{game}\" is not allowed: the owner has not given agents access to it. Ask the owner to set its access in the UDriver panel."
-            : $"\"{game}\" allows {level} only; ask the owner to raise access in the UDriver panel.";
+            return $"Not done: \"{game}\" calls code on the computer directly ({Inject.Native(g!)}), so while Computer access is off agents can only look and play in it ({ComputerSwitch}).{AskOwner}";
+        if (level == "none") return $"\"{game}\" is not allowed: the owner has not given agents access to it. Ask the owner to choose what agents may do in it (Games → {game} → Agents may in the UDriver app).";
+        int need = Need(name, args);
+        return $"{name} needs more access to \"{game}\", which allows {level} only ({(g == null ? "Games → Agents may in the UDriver app" : GameSwitch(g, need))}).{AskOwner}";
     }
 
     /// <summary>The game's access level, held at Play while Computer access is off when the game's own code could get past the in-process wall,
@@ -185,11 +192,66 @@ internal static partial class Program
 
     static string? Blocked(string name, JsonObject? args)
     {
-        if (Registry.ToolOff(name, Me.Client.Length > 0 ? Me.Client : StdioClient)) return $"'{name}' is turned off in the UDriver panel.";
+        if (name == "permissions") return null;
+        string client = Me.Client.Length > 0 ? Me.Client : StdioClient;
+        if (Registry.ToolOff(name, client)) return $"{name} is turned off in the UDriver app ({HttpMode.ToolSwitch(name, client)}).{AskOwner}";
         if (name == "rule_add" && args?["do"] is JsonArray d)
             foreach (var c in d)
                 if ((string?)c?["tool"] is string t && Blocked(t, c?["args"] as JsonObject ?? new JsonObject()) is string r) return "rule refused: " + r;
-        return LevelOff(Need(name, args)) ?? Configured(name, args);
+        return LevelOff(Need(name, args), name) ?? Configured(name, args);
+    }
+
+    /// <summary>The permissions tool: for each added game, the tools this agent may not call now, grouped by the switch that turns them on.</summary>
+    static JsonNode Permissions(JsonObject args)
+    {
+        string want = (string?)args["game"] ?? "";
+        var games = want.Length == 0 ? Registry.Games : Registry.Find(want) is { } one ? new List<Registry.Game> { one } : null;
+        if (games == null) return Result($"No game called \"{want}\" is added in UDriver. Added: {string.Join(", ", Registry.Games.Select(g => g.Name))}.", true);
+        string client = Me.Client.Length > 0 ? Me.Client : StdioClient;
+        var places = HttpMode.ToolPlaces();
+        var names = places.Keys.Where(n => n != "permissions").ToList();
+        string? Why(string n, Registry.Game? g)
+        {
+            if (Registry.ToolOff(n, client)) return HttpMode.ToolSwitch(n, client, places);
+            int need = Need(n, null);
+            if (need == 3 && !LocalOrigin) return OnlyHere;
+            if (LevelOff(need) != null) return need == 3 ? ComputerSwitch : LevelSwitch(need);
+            if (Configured(n, null) != null) return "Turned off on this computer (UDRIVER_DISABLE_TOOLS)";
+            if (g != null && Math.Min(need, 2) > GameLevel(g)) return Registry.Level(g.Access) >= 2 ? ComputerSwitch : GameSwitch(g, need);
+            return null;
+        }
+        JsonObject Off(IEnumerable<(string Tool, string Switch)> off)
+        {
+            var o = new JsonObject();
+            foreach (var x in off.GroupBy(x => x.Switch)) o[x.Key] = new JsonArray(x.Select(y => (JsonNode)y.Tool).ToArray());
+            return o;
+        }
+        var everywhere = names.Select(n => (Tool: n, Switch: Why(n, null))).Where(x => x.Switch != null).ToDictionary(x => x.Tool, x => x.Switch!);
+        var list = new JsonArray();
+        foreach (var g in games)
+        {
+            var row = new JsonObject { ["game"] = g.Name, ["agentsMay"] = Cli.AccessNames[Registry.Level(g.Access) + 1] };
+            if (g.Access == "none") { row["turnOn"] = $"Games → {g.Name} → Agents may in the UDriver app"; list.Add(row); continue; }
+            var off = names.Where(n => !everywhere.ContainsKey(n)).Select(n => (Tool: n, Switch: Why(n, g) ?? "")).Where(x => x.Switch.Length > 0).ToList();
+            var mayUse = new JsonObject();
+            foreach (var grp in names.GroupBy(n => places[n].Group))
+            {
+                var ok = grp.Where(n => !everywhere.ContainsKey(n) && off.All(x => x.Tool != n)).ToList();
+                mayUse[grp.Key] = ok.Count == grp.Count() ? "all" : ok.Count == 0 ? "none" : new JsonArray(ok.Select(n => (JsonNode)n).ToArray());
+            }
+            row["mayUse"] = mayUse;
+            if (off.Count > 0) row["offHere"] = Off(off);
+            list.Add(row);
+        }
+        var res = new JsonObject
+        {
+            ["you"] = LocalOrigin ? "an agent on this computer" : "a remote agent",
+            ["computerAccess"] = !LocalOrigin ? "never for remote agents" : Registry.LevelOn(3, true) ? "on" : "off",
+            ["offEverywhere"] = Off(everywhere.Select(x => (x.Key, x.Value))),
+            ["games"] = list,
+            ["note"] = games.Count == 0 ? "No games are added yet; the owner adds them in the UDriver app." : "Each key under off is the switch the owner changes to turn those tools on. Only the owner can change switches.",
+        };
+        return Result(res.ToJsonString());
     }
 
     /// <summary>Limits from the server's environment variables.</summary>
@@ -374,6 +436,9 @@ internal static partial class Program
 
     static readonly ToolDef[] LocalTools =
     {
+        new() { Name = "permissions", Desc = "Call this first. Shows what the owner allows you to do in each added game: which tools are off for you and the exact switch in UDriver that turns each on, " +
+            "whether you are a remote agent or one on this computer, and whether Computer access is on. A tool that is off only returns a refusal, so check here instead of trying it.",
+            Params = new[] { P("game", "string", "Only this game (its name from targets). Default: every added game.") } },
         new() { Name = "app_launch", Desc = "Start a Unity build (Development Build with the UDriver package) and wait until its driver answers. Several builds can run at once, each on its own port. Returns the app status. " +
             "For a Unity project the owner saved with access full, while Computer access is on, opens it in the Unity editor version from its ProjectVersion.txt (installed through Unity Hub), adds the UDriver package if missing and waits for the editor; then use editor_play.",
             Params = new[]
@@ -617,6 +682,8 @@ internal static partial class Program
                 try
                 {
                     res = await Run(name, args, want);
+                    if (name == "status" && res["isError"]?.GetValue<bool>() != true && res["content"] is JsonArray said)
+                        said.Add(new JsonObject { ["type"] = "text", ["text"] = "To see which tools you may use here and which are turned off, call permissions." });
                     if (unknown.Count > 0 && res["content"] is JsonArray content)
                         content.Add(new JsonObject { ["type"] = "text", ["text"] = $"warning: unknown argument {string.Join(", ", unknown.Select(k => $"'{k}'"))} was ignored (known: {string.Join(", ", def!.Params.Select(p => p.Name))})" });
                     return res;
@@ -661,6 +728,7 @@ internal static partial class Program
         "qa_scenario" => await QaScenario(args, want),
         "qa_parallel" => await QaParallel(args, want),
         "code_read" => await ReadCode(args, want),
+        "permissions" => Permissions(args),
         _ => await CallUnity(name, args, want),
     };
 
@@ -704,7 +772,7 @@ internal static partial class Program
             props[p.Name] = o;
             if (p.Required) req.Add(p.Name);
         }
-        if (d.Name is not ("app_launch" or "targets" or "list_instances" or "launch_game")) props["instance"] = TargetParam();
+        if (d.Name is not ("app_launch" or "targets" or "list_instances" or "launch_game" or "permissions")) props["instance"] = TargetParam();
         if (d.Name == "use_instance") req.Add("instance");
         return new JsonObject
         {
@@ -718,11 +786,12 @@ internal static partial class Program
         var tools = new JsonArray();
         var known = new HashSet<string>();
         var running = await Targets();
-        // Every tool the owner has not turned off, whatever games are added yet: remote agents read the list once, and each call still checks the game's access.
+        // Every tool, including those the owner turned off: agents read the list once, and each call checks the switches and the game's access.
+        // A game's own tools stay hidden while agents have no access to that game, so its tool names do not leak.
         foreach (var d in LocalTools.Concat(ToolManifest.Tools))
         {
             known.Add(d.Name);
-            if (Blocked(d.Name, null) == null) tools.Add(ToolJson(d));
+            tools.Add(ToolJson(d));
         }
         var live = _liveTools;
         if (live == null)
@@ -741,7 +810,7 @@ internal static partial class Program
         foreach (var t in live)
         {
             string n = (string?)t?["name"] ?? "";
-            if (t == null || Blocked(n, null) != null || Math.Min(Need(n, null), 2) > (Registry.Games.FirstOrDefault(g => g.Id == (string?)t["game"]) is { } lg ? GameLevel(lg, (bool?)t["shell"] == true) : -1) || !known.Add(n)) continue;
+            if (t == null || Registry.Games.FirstOrDefault(g => g.Id == (string?)t["game"]) is not { } lg || Registry.Level(lg.Access) < 0 || !known.Add(n)) continue;
             var copy = t.DeepClone();
             copy.AsObject().Remove("game");
             copy.AsObject().Remove("shell");
@@ -758,7 +827,7 @@ internal static partial class Program
         var seen = new HashSet<string>();
         var live = (_liveTools ?? new JsonArray()).Select(t => (Name: (string?)t?["name"] ?? "", Desc: (string?)t?["description"] ?? ""));
         foreach (var (n, desc) in LocalTools.Concat(ToolManifest.Tools).Select(d => (d.Name, d.Desc)).Concat(live))
-            if (n.Length > 0 && seen.Add(n))
+            if (n.Length > 0 && n != "permissions" && seen.Add(n))
                 list.Add(new JsonObject
                 {
                     ["name"] = n, ["description"] = desc,
@@ -1086,7 +1155,7 @@ internal static partial class Program
         {
             real = RealPath(g.Path);
             if (Directory.Exists(real))
-                real = RealPath(real.EndsWith(".app", StringComparison.OrdinalIgnoreCase) ? Directory.GetFiles(Path.Combine(real, "Contents", "MacOS")).FirstOrDefault() ?? real : GameFile(real) ?? real);
+                real = RealPath(Inject.GameExe(real));
             if (!File.Exists(real)) return Result($"The game file of '{g.Name}' was not found at {g.Path}. The owner can fix the path in the UDriver panel.", true);
         }
         else if (Registry.Classify(path, out string kind, out _, out _) == null && kind == "project")
@@ -1100,9 +1169,7 @@ internal static partial class Program
             if (!Approved(path, out real)) return Result(refused, true);
             if (Directory.Exists(real))
             {
-                path = real.EndsWith(".app", StringComparison.OrdinalIgnoreCase)
-                    ? Directory.GetFiles(Path.Combine(real, "Contents", "MacOS")).FirstOrDefault() ?? real
-                    : GameFile(real) ?? real;
+                path = Inject.GameExe(real);
                 if (!Approved(path, out real)) return Result(refused, true);
             }
             if (!File.Exists(real)) return Result(Directory.Exists(real) ? "no Unity game file (NAME.exe or NAME.x86_64 next to a NAME_Data folder) was found in " + path : "file not found: " + path, true);
@@ -1192,6 +1259,7 @@ internal static partial class Program
 
         // While Computer access is off the game starts inside the computer shell, if this computer can put it there.
         bool wanted = LevelOff(3) != null;
+        var launched = DateTime.UtcNow.AddSeconds(-2);
         var proc = wanted ? Shell.Start(psi, real, log, HomeDir) : null;
         bool shell = proc != null;
         proc ??= Process.Start(psi) ?? throw new InvalidOperationException("could not start the process");
@@ -1219,7 +1287,10 @@ internal static partial class Program
         var sw = Stopwatch.StartNew();
         while (sw.Elapsed.TotalSeconds < waitSec)
         {
-            if (proc.HasExited) return Result($"The game exited during startup with code {proc.ExitCode}. Check its log: {log}", true);
+            if (proc.HasExited)
+                return Result(File.Exists(log) && File.GetLastWriteTimeUtc(log) >= launched
+                    ? $"The game exited during startup with code {proc.ExitCode}. Check its log: {log}"
+                    : $"The game closed before Unity started (exit code {proc.ExitCode}), so it wrote no log.", true);
             int pid = await PingPid(lp);
             if (pid > 0 && pid != proc.Id)
             {
@@ -1321,8 +1392,8 @@ internal static partial class Program
         if (!byOwner)
         {
             if (Registry.Level(g.Access) < 2)
-                return Result(g.Access == "none" ? $"\"{g.Name}\" is not allowed: the owner has not given agents access to it. Ask the owner to set its access in the UDriver panel."
-                    : $"\"{g.Name}\" allows {g.Access} only. Opening a project runs its editor scripts, so it needs access full; ask the owner to raise access in the UDriver panel.", true);
+                return Result(g.Access == "none" ? $"\"{g.Name}\" is not allowed: the owner has not given agents access to it. Ask the owner to choose what agents may do in it (Games → {g.Name} → Agents may in the UDriver app)."
+                    : $"\"{g.Name}\" allows {g.Access} only. Opening a project runs its editor scripts, so it needs full access ({GameSwitch(g, 2)}).{AskOwner}", true);
         }
         string real;
         try { real = RealPath(g.Path); } catch { real = ""; }

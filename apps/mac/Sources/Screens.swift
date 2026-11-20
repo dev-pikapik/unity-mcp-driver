@@ -628,20 +628,17 @@ final class Toggle: NSSwitch {
             sw.setAccessibilityLabel("Access from anywhere")
             let state = r.s("state")
             var sub = "Through a private, encrypted link. Turn off to close it at once."
-            if let e = r.s("error").nilIfEmpty { sub = e } else if on && state != "online" && !state.isEmpty { sub = "Connecting…" }
+            if let e = r.s("error").nilIfEmpty { sub = e } else if state == "changing-address" { sub = "Changing address…" } else if on && state != "online" && !state.isEmpty { sub = "Connecting…" }
             let top = stack([tile("globe", .systemBlue, side: 44),
                              stack([label("Agents on other devices can reach your games", size: 14, weight: .semibold), wrapping(sub)], spacing: 3), spacer(), sw], .horizontal, spacing: 12)
             var views: [NSView] = [box(top)]
 
+            if r["saved"] as? Bool == true { views.append(addressBox(r)) }
             if !on {
                 views.append(contentsOf: setup(r))
                 return views + local() + cloudflare(r)
             }
             let address = r.s("address")
-            let addr = label(address, mono: true)
-            addr.isSelectable = true
-            addr.lineBreakMode = .byTruncatingMiddle
-            views.append(box(stack([stack([caption("Address"), addr], spacing: 4), spacer(), Button("Copy", symbol: "doc.on.doc") { clip(address) }], .horizontal, spacing: 10)))
 
             let qrImage = NSImageView(image: qr(r.s("panel").nilIfEmpty ?? address, side: 120) ?? NSImage())
             qrImage.setAccessibilityLabel("QR code to open UDriver on your phone")
@@ -650,6 +647,41 @@ final class Toggle: NSSwitch {
             let right = stack([box(fixed(qrImage, width: 120, height: 120), padding: 6), label("Open on your phone", size: 11, color: .secondaryLabelColor)], spacing: 6, align: .centerX)
             views.append(box(stack([left, spacer(), right], .horizontal, spacing: 20, align: .top)))
             return views + local() + cloudflare(r)
+        }
+    }
+
+    func addressBox(_ r: J) -> NSView {
+        let address = r.s("address")
+        let addr = label(address, mono: true)
+        addr.isSelectable = true
+        addr.lineBreakMode = .byTruncatingMiddle
+        var buttons: [NSView] = [Button("Copy", symbol: "doc.on.doc") { clip(address) }]
+        if r["signedIn"] as? Bool == true {
+            let change = Button("Change Address…") { [weak self] in
+                self?.askHost(r.s("host"), button: "Change Address", note: " The old address stops working.") { App.shared.act("/panel/api/remote/host", ["host": $0]) }
+            }
+            change.isEnabled = r.s("state") != "changing-address"
+            buttons.insert(change, at: 0)
+        }
+        return box(stack([stack([caption("Address"), addr], spacing: 4), spacer()] + buttons, .horizontal, spacing: 10))
+    }
+
+    /// Asks for the full address; cancelled runs when the owner closes the question.
+    func askHost(_ current: String, button: String, note: String = "", cancelled: @escaping () -> Void = {}, then: @escaping (String) -> Void) {
+        guard let w = view.window else { return }
+        let a = NSAlert()
+        a.messageText = "Choose an address"
+        a.informativeText = "Type the full address on your Cloudflare domain, for example games.example.com." + note
+        let f = NSTextField(frame: .init(x: 0, y: 0, width: 260, height: 24))
+        f.placeholderString = "games.example.com"
+        f.stringValue = current
+        a.accessoryView = f
+        a.addButton(withTitle: button)
+        a.addButton(withTitle: "Cancel")
+        a.window.initialFirstResponder = f
+        a.beginSheetModal(for: w) { res in
+            self.last = ""
+            if res == .alertFirstButtonReturn { then(f.stringValue) } else { cancelled() }
         }
     }
 
@@ -717,19 +749,7 @@ final class Toggle: NSSwitch {
         if v {
             if r["saved"] as? Bool == true { last = ""; App.shared.act("/panel/api/remote/on"); return }
             if r["signedIn"] as? Bool == true {
-                let a = NSAlert()
-                a.messageText = "Choose an address"
-                a.informativeText = "Type the full address on your Cloudflare domain, for example games.example.com."
-                let f = NSTextField(frame: .init(x: 0, y: 0, width: 260, height: 24))
-                f.placeholderString = "games.example.com"
-                a.accessoryView = f
-                a.addButton(withTitle: "Turn On")
-                a.addButton(withTitle: "Cancel")
-                a.window.initialFirstResponder = f
-                a.beginSheetModal(for: w) { res in
-                    self.last = ""
-                    if res == .alertFirstButtonReturn { App.shared.act("/panel/api/remote/on", ["host": f.stringValue]) } else { self.show(App.shared.model) }
-                }
+                askHost("", button: "Turn On", cancelled: { self.show(App.shared.model) }) { App.shared.act("/panel/api/remote/on", ["host": $0]) }
                 return
             }
             last = ""

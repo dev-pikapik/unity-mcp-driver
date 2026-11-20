@@ -214,6 +214,13 @@ internal static partial class HttpMode
         Notify("UDriver remote access is on: " + _public);
     }
 
+    /// <summary>Links this computer's tunnel to a new address. The old address keeps its DNS record but the tunnel answers it with 404.</summary>
+    static async Task ChangeHost(string host)
+    {
+        await Configure(host);
+        if (_public.Length > 0) await TurnOn(null);
+    }
+
     static void TurnOff(bool save)
     {
         _public = "";
@@ -221,13 +228,13 @@ internal static partial class HttpMode
         KillTunnel();
     }
 
-    /// <summary>Forgets UDriver's own sign-in and the tunnel key it saved; a sign-in made outside UDriver stays.</summary>
+    /// <summary>Forgets UDriver's own sign-in, the tunnel key it saved and the address, so the next sign-in can pick another account and address; a sign-in made outside UDriver stays.</summary>
     static string SignOut()
     {
         TurnOff(true);
         bool ours = File.Exists(OwnCert);
-        string cfg = File.Exists(TunnelYml) ? File.ReadAllText(TunnelYml) : "";
-        if (cfg.Contains("credentials-file: " + CfHome)) { File.Delete(TunnelYml); SetSetting("UDRIVER_PUBLIC_URL", null); }
+        File.Delete(TunnelYml);
+        SetSetting("UDRIVER_PUBLIC_URL", null);
         try { Directory.Delete(CfHome, true); } catch { }
         return ours || Cert == null ? "" : $"UDriver is using a Cloudflare sign-in made outside UDriver ({Path.Combine(SharedCfDir, "cert.pem")}). It was left in place.";
     }
@@ -354,6 +361,12 @@ internal static partial class HttpMode
                 if (error == null && CfExe() == null) error = "Install cloudflared first.";
                 if (error != null) break;
                 error = Busy("setting-up", () => TurnOn(host.Length > 0 ? host : null)) ? null : busy;
+                break;
+            case "/panel/api/remote/host" when local:
+                string to = form.GetValueOrDefault("host", "").Trim().ToLowerInvariant();
+                error = HostError(to) ?? (Cert == null ? "Sign in to Cloudflare first." : CfExe() == null ? "Install cloudflared first." : null);
+                if (error != null) break;
+                error = Busy("changing-address", () => ChangeHost(to)) ? null : busy;
                 break;
             default:
                 return false;

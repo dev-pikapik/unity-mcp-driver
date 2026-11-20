@@ -515,7 +515,7 @@ sealed class AccessScreen : ListScreen
 
         bool on = r.B("on");
         string state = r.S("state");
-        string sub = r.S("error") is { Length: > 0 } e ? e : on && state != "online" && state.Length > 0 ? "Connecting…" : "Through a private, encrypted link. Turn off to close it at once.";
+        string sub = r.S("error") is { Length: > 0 } e ? e : state == "changing-address" ? "Changing address…" : on && state != "online" && state.Length > 0 ? "Connecting…" : "Through a private, encrypted link. Turn off to close it at once.";
         var main = Group();
         var sw = Adw.SwitchRow.New();
         sw.Title = "Agents on other devices can reach your games";
@@ -526,22 +526,29 @@ sealed class AccessScreen : ListScreen
         main.Add(sw);
         var groups = new List<Adw.PreferencesGroup> { main };
 
-        if (!on)
+        string address = r.S("address");
+        if (r.B("saved"))
         {
-            if (Setup(r) is { } s) groups.Add(s);
-        }
-        else
-        {
-            string address = r.S("address");
             var where = Group();
             var addr = Row("Address", address);
             addr.SubtitleSelectable = true;
             addr.AddCssClass("property");
+            if (r.B("signedIn"))
+            {
+                var change = Button("Change Address…", () => Shell.Ask("Choose an address", "Type the full address on your Cloudflare domain, for example games.example.com. The old address stops working.", "Address", "Change Address",
+                    host => Shell.Act("/panel/api/remote/host", new() { ["host"] = host }), text: r.S("host")));
+                change.Sensitive = state != "changing-address";
+                addr.AddSuffix(change);
+            }
             addr.AddSuffix(Button("Copy", () => Shell.Copy(address)));
             where.Add(addr);
             groups.Add(where);
-            groups.Add(Connect(r.S("panel") is { Length: > 0 } p ? p : address));
         }
+        if (!on)
+        {
+            if (Setup(r) is { } s) groups.Add(s);
+        }
+        else groups.Add(Connect(r.S("panel") is { Length: > 0 } p ? p : address));
         groups.Add(Local());
         if (r.B("signedIn")) groups.Add(Cloudflare(r));
         Fill(groups);
