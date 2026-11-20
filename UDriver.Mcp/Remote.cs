@@ -203,20 +203,23 @@ internal static partial class HttpMode
         foreach (var line in r.Out.Split('\n'))
         {
             var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length >= 2 && parts[1] == "udriver" && Guid.TryParse(parts[0], out _)) return parts[0];
+            if (parts.Length >= 2 && parts[1] == TunnelName && Guid.TryParse(parts[0], out _)) return parts[0];
         }
         if (r.Code != 0) throw new Exception("Could not read your tunnels from Cloudflare: " + Brief(r.Out));
         return null;
     }
 
-    /// <summary>Creates or reuses the "udriver" tunnel and links host to it. Nothing is saved unless Cloudflare linked exactly this host.</summary>
+    /// Each computer has its own tunnel: two computers on one tunnel split every agent's sign-in between them.
+    static string TunnelName => "udriver-" + Regex.Replace(Environment.MachineName.ToLowerInvariant(), "[^a-z0-9]+", "-").Trim('-');
+
+    /// <summary>Creates or reuses this computer's tunnel and links host to it. Nothing is saved unless Cloudflare linked exactly this host.</summary>
     static async Task Configure(string host)
     {
         string cert = Cert ?? throw new Exception("Sign in to Cloudflare first.");
         string? id = await TunnelId(cert);
         if (id == null)
         {
-            var c = await Cf("tunnel", "--origincert", cert, "create", "udriver");
+            var c = await Cf("tunnel", "--origincert", cert, "create", TunnelName);
             id = CreatedRx.Match(c.Out) is { Success: true } m ? m.Groups[1].Value : throw new Exception("Could not create the tunnel: " + Brief(c.Out));
         }
         string cred = new[] { Path.GetDirectoryName(cert)!, Path.GetDirectoryName(OwnCert)!, SharedCfDir }.Select(d => Path.Combine(d, id + ".json")).FirstOrDefault(File.Exists) ?? "";
@@ -225,7 +228,7 @@ internal static partial class HttpMode
             cred = Path.Combine(Path.GetDirectoryName(OwnCert)!, id + ".json");
             Program.PrivateDir(CfHome); Program.PrivateDir(Path.GetDirectoryName(cred)!);
             var t = await Cf("tunnel", "--origincert", cert, "token", "--cred-file", cred, id);
-            if (!File.Exists(cred)) throw new Exception("Could not get the key of your udriver tunnel: " + Brief(t.Out));
+            if (!File.Exists(cred)) throw new Exception($"Could not get the key of your {TunnelName} tunnel: " + Brief(t.Out));
         }
         var route = await Cf("tunnel", "--origincert", cert, "route", "dns", id, host);
         var r = RoutedRx.Match(route.Out);
@@ -236,7 +239,7 @@ internal static partial class HttpMode
                 throw new Exception($"You are signed in to Cloudflare with the domain {linked[(host.Length + 1)..]}, so Cloudflare created {linked} instead of {host}. Nothing was changed in UDriver. "
                                     + $"Delete {linked} under DNS in the Cloudflare dashboard, then use an address ending in .{linked[(host.Length + 1)..]} or pick another domain.");
             throw new Exception(route.Out.Contains("already exists")
-                ? $"The address {host} is already used by another record in Cloudflare. Choose another name."
+                ? $"The address {host} is already used in Cloudflare, perhaps by UDriver on another computer. Choose another name for this computer, or delete {host} under DNS in the Cloudflare dashboard and try again."
                 : $"Could not link the address {host}: {Brief(route.Out)}");
         }
         Program.WritePrivate(TunnelYml, $"tunnel: {id}\ncredentials-file: {cred}\n");
@@ -277,12 +280,12 @@ internal static partial class HttpMode
         lock (Gate) { if (_cf is { HasExited: false }) return; CfConns.Clear(); _onlineSince = default; _cfStarted = DateTime.UtcNow; }
         try
         {
-            // Everything the tunnel carries goes to this server: an address or port saved by another version or computer never ends in a 404.
+            // The address always reaches this server, whatever port an earlier version saved; other addresses on the tunnel are not taken over.
             var keep = File.ReadAllLines(TunnelYml).TakeWhile(l => !l.StartsWith("ingress:", StringComparison.Ordinal));
-            Program.WritePrivate(TunnelYml, string.Join("\n", keep) + $"\ningress:\n  - service: http://127.0.0.1:{_port}\n");
+            Program.WritePrivate(TunnelYml, string.Join("\n", keep) + $"\ningress:\n  - hostname: {Host()}\n    service: http://127.0.0.1:{_port}\n  - service: http_status:404\n");
             StopStrayTunnels();
             var psi = new ProcessStartInfo(CfExe() ?? throw new Exception("cloudflared is not installed")) { UseShellExecute = false, RedirectStandardError = true, RedirectStandardOutput = true, RedirectStandardInput = true };
-            foreach (var a in new[] { "tunnel", "--no-autoupdate", "--config", TunnelYml, "run", "udriver" }) psi.ArgumentList.Add(a);
+            foreach (var a in new[] { "tunnel", "--no-autoupdate", "--config", TunnelYml, "run" }) psi.ArgumentList.Add(a);
             var p = Process.Start(psi)!;
             void Line(string? l)
             {
@@ -322,7 +325,7 @@ internal static partial class HttpMode
                 foreach (var a in new[] { "-NoProfile", "-NonInteractive", "-Command",
                     $"Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | Where-Object {{ $_.CommandLine -and $_.CommandLine.Contains('{TunnelYml.Replace("'", "''")}') }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}" })
                     psi.ArgumentList.Add(a);
-            else foreach (var a in new[] { "-f", "--", $"--config {TunnelYml} run" }) psi.ArgumentList.Add(a);
+            else foreach (var a in new[] { "-f", "--", $"--config {Regex.Escape(TunnelYml)} run" }) psi.ArgumentList.Add(a);
             using var p = Process.Start(psi)!;
             p.WaitForExit(15000);
         }
