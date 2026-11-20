@@ -739,8 +739,8 @@ final class Toggle: NSSwitch {
     }
 
     @objc func copyCommand() {
-        let j: J = ["mcpServers": ["udriver": ["command": dotnetPath(), "args": [API.shared.dll]]]]
-        clip(pretty(j))
+        guard let (file, args) = API.shared.command() else { return alert("UDriver is not installed on this Mac yet", "Run the UDriver installer once, then copy the setup again.", in: view.window) }
+        clip(pretty(["mcpServers": ["udriver": ["command": file, "args": args]]] as J))
         alert("Setup copied", "Paste it into the app's MCP settings. The app starts UDriver by itself when it needs it.", in: view.window)
     }
 
@@ -762,11 +762,6 @@ final class Toggle: NSSwitch {
                 alert("Setup copied", "Paste it into the app's MCP settings. It connects while UDriver is running.", in: w)
             }
         }
-    }
-
-    func dotnetPath() -> String {
-        let home = API.shared.home
-        return [home + "/.udriver/dotnet/dotnet", "/usr/local/share/dotnet/dotnet", "/opt/homebrew/bin/dotnet"].first(where: FileManager.default.isExecutableFile) ?? "dotnet"
     }
 }
 

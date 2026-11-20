@@ -77,24 +77,28 @@ struct ServerError: LocalizedError {
         return (try? await session.data(for: r)) != nil
     }
 
+    /// How to run the server: the one inside the app, else the installed one with .NET 10.
+    func command() -> (String, [String])? {
+        let fm = FileManager.default
+        let bundled = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/server/udriver-mcp").path
+        if env["UDRIVER_SERVER_DLL"] == nil, fm.isExecutableFile(atPath: bundled) { return (bundled, []) }
+        guard fm.fileExists(atPath: dll) else { return nil }
+        let candidates = [env["DOTNET_ROOT"].map { $0 + "/dotnet" }, home + "/.udriver/dotnet/dotnet", home + "/.dotnet/dotnet",
+                          "/usr/local/share/dotnet/dotnet", "/opt/homebrew/bin/dotnet", "/usr/local/bin/dotnet"]
+        return candidates.compactMap({ $0 }).first(where: fm.isExecutableFile).map { ($0, [dll]) }
+    }
+
     /// Starts the server when nothing answers on the port; returns an error to show, or nil once it answers.
     func ensureServer() async -> String? {
         if await running() { return nil }
         let fm = FileManager.default
-        let bundled = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/server/udriver-mcp").path
-        let p = Process()
-        if env["UDRIVER_SERVER_DLL"] == nil, fm.isExecutableFile(atPath: bundled) {
-            p.executableURL = URL(fileURLWithPath: bundled)
-        } else {
-            guard fm.fileExists(atPath: dll) else { return "UDriver is not installed on this Mac yet. Run the UDriver installer once, then open this app again." }
-            let candidates = [env["DOTNET_ROOT"].map { $0 + "/dotnet" }, home + "/.udriver/dotnet/dotnet", home + "/.dotnet/dotnet",
-                              "/usr/local/share/dotnet/dotnet", "/opt/homebrew/bin/dotnet", "/usr/local/bin/dotnet"]
-            guard let dotnet = candidates.compactMap({ $0 }).first(where: fm.isExecutableFile) else {
-                return "UDriver needs .NET 10. Run the UDriver installer once, then open this app again."
-            }
-            p.executableURL = URL(fileURLWithPath: dotnet)
-            p.arguments = [dll]
+        guard let (file, args) = command() else {
+            return fm.fileExists(atPath: dll) ? "UDriver needs .NET 10. Run the UDriver installer once, then open this app again."
+                : "UDriver is not installed on this Mac yet. Run the UDriver installer once, then open this app again."
         }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: file)
+        p.arguments = args
         var e = env
         e["UDRIVER_HTTP_PORT"] = String(port)
         e["UDRIVER_PANEL"] = "1"
