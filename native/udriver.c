@@ -60,7 +60,7 @@ static void L(const char *fmt, ...) {
 // ---------------- il2cpp exports ----------------
 
 #define APIS(X) \
-    X(P, domain_get, (void)) X(P, get_corlib, (void)) X(P, thread_attach, (P)) X(P *, domain_get_assemblies, (P, size_t *)) X(P, assembly_get_image, (P)) \
+    X(P, domain_get, (void)) X(P, get_corlib, (void)) X(P, thread_attach, (P)) X(void, thread_detach, (P)) X(P *, domain_get_assemblies, (P, size_t *)) X(P, assembly_get_image, (P)) \
     X(size_t, image_get_class_count, (P)) X(P, image_get_class, (P, size_t)) X(P, class_from_name, (P, const char *, const char *)) \
     X(P, class_get_method_from_name, (P, const char *, int)) X(P, class_get_methods, (P, P *)) X(P, class_get_fields, (P, P *)) \
     X(P, class_get_properties, (P, P *)) X(P, class_get_field_from_name, (P, const char *)) X(P, class_get_property_from_name, (P, const char *)) \
@@ -480,6 +480,10 @@ static atomic_llong lastTick;
 static long long now_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1000LL + t.tv_nsec / 1000000; }
 static void publish(void);
 static int pair(const char *key);
+// Unity calls Application.Internal_ApplicationQuit when the game starts to quit; after that the player loop must be left alone.
+static atomic_int quitting;
+static void (*realQuit)(P);
+static void quitHook(P mi) { quitting = 1; realQuit(mi); }
 static void main_init(void) {
     P k = CLS("System", "Int32"), m = mth(k, "ToString", 0), exc = NULL; int v = 42;
     P s = m ? il2cpp_runtime_invoke(m, box(k, &v), NULL, &exc) : NULL;
@@ -492,6 +496,8 @@ static void main_init(void) {
     hook_log();
     P rib = icall_opt("UnityEngine.Application::set_runInBackground");
     if (rib) ((void (*)(bool))rib)(true);
+    P q = mth(CLS("UnityEngine", "Application"), "Internal_ApplicationQuit", 0);
+    if (q) { realQuit = *(void **)q; *(void **)q = (void *)quitHook; }
     publish();
 }
 static void on_update(void) {
@@ -663,7 +669,7 @@ static void *conn(void *arg) {
     if (busy) { status = 503; out = strdup("{\"ok\":false,\"error\":\"too many requests at once\"}"); }
     else if (!H.host || (strcmp(H.host, hp1) && strcmp(H.host, hp2))) { status = 403; out = jerr("unexpected Host header"); }
     else if (H.origin && *H.origin) { status = 403; out = jerr("requests from web pages are not accepted"); }
-    else if (!strcmp(path, "/pair") && post) { if (!pair(H.tok)) { status = 409; out = jerr("already connected to another program"); } else out = strdup("{\"ok\":true}"); }
+    else if (!strcmp(path, "/pair") && post) { int r = pair(H.tok); if (r < 0) { status = 400; out = jerr("the key must be 32 to 127 characters"); } else if (!r) { status = 409; out = jerr("already connected to another program"); } else out = strdup("{\"ok\":true}"); }
     else if (strcmp(path, "/ping") && !(*token && sameText(H.tok, token))) { status = 401; out = jerr("missing or wrong X-UDriver-Token"); }
     else if (!strcmp(path, "/ping") && get) asprintf(&out, "{\"ok\":true,\"pid\":%d}", (int)getpid());
     else if (!strcmp(path, "/tools") && get) out = strdup(toolsJson[computer]);
@@ -820,7 +826,7 @@ static void publish(void) {
 static pthread_mutex_t pairLock = PTHREAD_MUTEX_INITIALIZER;
 static int pair(const char *key) {
     size_t n = key ? strlen(key) : 0;
-    if (n < 32 || n >= sizeof token) return 0;
+    if (n < 32 || n >= sizeof token) return -1;
     pthread_mutex_lock(&pairLock);
     int ok = *token ? sameText(key, token) : (snprintf(token, sizeof token, "%s", key), 1);
     pthread_mutex_unlock(&pairLock);
@@ -851,7 +857,7 @@ static void *boot(void *_) {
     if (!load_api()) return NULL;
     // Touching the domain before il2cpp_init finishes creates it on a thread the GC does not know.
     for (int corlib = 0; !il2cppReady && (initSeen || corlib < 50); usleep(20000)) if (il2cpp_get_corlib()) corlib++;
-    il2cpp_thread_attach(il2cpp_domain_get());
+    P self = il2cpp_thread_attach(il2cpp_domain_get());
     GetLoop = il2cpp_resolve_icall("UnityEngine.LowLevel.PlayerLoop::GetCurrentPlayerLoopInternal");
     SetLoop = il2cpp_resolve_icall("UnityEngine.LowLevel.PlayerLoop::SetPlayerLoopInternal");
     if (!GetLoop || !SetLoop) { L("player loop functions not found"); return NULL; }
@@ -868,9 +874,13 @@ static void *boot(void *_) {
     int (*sceneCount)(void) = il2cpp_resolve_icall("UnityEngine.SceneManagement.SceneManager::get_loadedSceneCount");
     while (!sceneCount || sceneCount() < 1) usleep(100000);
     loop_insert();
-    for (;;) {  // the game may replace the player loop; put the hooks back
+    il2cpp_thread_detach(self);  // il2cpp_shutdown hangs while a sleeping thread is still attached
+    while (!quitting) {  // the game may replace the player loop; put the hooks back
         sleep(1);
-        if (now_ms() - lastTick >= 500) loop_insert();
+        if (quitting || now_ms() - lastTick < 500) continue;
+        self = il2cpp_thread_attach(il2cpp_domain_get());
+        loop_insert();
+        il2cpp_thread_detach(self);
     }
     return NULL;
 }

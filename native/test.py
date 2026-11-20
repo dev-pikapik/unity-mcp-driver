@@ -66,7 +66,7 @@ def startup_loop():
         ok = info is not None and req(info["port"], "GET", "/ping")[0] == 200
         if ok and n % 2:
             ok = req(info["port"], "POST", "/call", {"tool": "status", "args": {}}, {"X-UDriver-Token": TOKEN})[0] == 401 \
-                and req(info["port"], "POST", "/pair", headers={"X-UDriver-Token": "short"})[0] == 409 \
+                and req(info["port"], "POST", "/pair", headers={"X-UDriver-Token": "short"})[0] == 400 \
                 and req(info["port"], "POST", "/pair", headers={"X-UDriver-Token": TOKEN})[0] == 200
         if ok:
             st, b = req(info["port"], "POST", "/call", {"tool": "status", "args": {}}, {"X-UDriver-Token": TOKEN})
