@@ -442,7 +442,8 @@ internal static partial class HttpMode
                     ["ok"] = true, ["id"] = lid, ["name"] = lname, ["url"] = lurl, ["token"] = ltoken,
                     ["mcpJson"] = new JsonObject { ["mcpServers"] = new JsonObject { ["udriver"] = new JsonObject
                     {
-                        ["type"] = "http", ["url"] = lurl, ["headers"] = new JsonObject { ["Authorization"] = "Bearer " + ltoken },
+                        // url+type: Claude, Cursor; httpUrl: Gemini CLI (its plain url means SSE); serverUrl: Antigravity.
+                        ["type"] = "http", ["url"] = lurl, ["httpUrl"] = lurl, ["serverUrl"] = lurl, ["headers"] = new JsonObject { ["Authorization"] = "Bearer " + ltoken },
                     } } },
                 });
                 return;
