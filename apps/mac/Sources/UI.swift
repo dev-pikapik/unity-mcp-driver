@@ -37,8 +37,9 @@ func symbol(_ name: String, _ label: String? = nil, size: CGFloat = 13) -> NSIma
     NSImage(systemSymbolName: name, accessibilityDescription: label)?.withSymbolConfiguration(.init(pointSize: size, weight: .regular))
 }
 
-/// A button that runs a closure.
+/// A button that runs a closure. While its click waits on the server, App.act shows it as busy.
 final class Button: NSButton {
+    static weak var pressed: Button?
     var run: () -> Void = {}
     convenience init(_ title: String, symbol name: String? = nil, primary: Bool = false, run: @escaping () -> Void) {
         self.init(title: title, target: nil, action: nil)
@@ -50,7 +51,12 @@ final class Button: NSButton {
         if let name { image = symbol(name); imagePosition = .imageLeading }
         if primary { bezelColor = .controlAccentColor }
     }
-    @objc private func fire() { run() }
+    /// A click that opens a confirmation sheet stays pressed until the sheet's answer runs the action.
+    @objc private func fire() {
+        Button.pressed = self
+        run()
+        if window?.attachedSheet == nil { Button.pressed = nil }
+    }
 }
 
 /// The rounded panel used for groups of rows.

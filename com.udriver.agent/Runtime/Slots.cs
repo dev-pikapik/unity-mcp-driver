@@ -1,15 +1,15 @@
-using System;
-using System.Collections.Generic;
-using System.Globalization;
-using System.IO;
-using System.Linq;
-using System.Reflection;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using UnityEngine;
-
 namespace UDriver
 {
+    using System;
+    using System.Collections.Generic;
+    using System.Globalization;
+    using System.IO;
+    using System.Linq;
+    using System.Reflection;
+    using System.Runtime.CompilerServices;
+    using System.Runtime.InteropServices;
+    using UnityEngine;
+
     /// <summary>A copy started with -udriver-slot N keeps persistentDataPath and PlayerPrefs in its own folder, so copies of one game do not share saves.
     /// Works by redirecting the engine's managed methods inside this process (Mono); IL2CPP builds keep the shared folder.</summary>
     public static class Slots

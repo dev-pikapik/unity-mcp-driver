@@ -111,7 +111,9 @@ static class Api
         foreach (int port in ports)
         {
             Port = port;
-            if (await ServerVersion() is not { } v || Version.TryParse(v, out var ver) && ver >= Own) continue;
+            // A port taken but not answering is a hung server: stop it only if it is udriver-mcp.
+            var v = await ServerVersion();
+            if (v == null ? Free(port) : Version.TryParse(v, out var ver) && ver >= Own) continue;
             string net;
             try
             {
@@ -121,7 +123,7 @@ static class Api
             catch { continue; }
             foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(net, "\\(\"([^\"]+)\",pid=(\\d+)"))
             {
-                if (m.Groups[1].Value != "udriver-mcp" && !(v.Length > 0 && m.Groups[1].Value == "dotnet")) continue;
+                if (m.Groups[1].Value != "udriver-mcp" && !(!string.IsNullOrEmpty(v) && m.Groups[1].Value == "dotnet")) continue;
                 try { using var p = Process.GetProcessById(int.Parse(m.Groups[2].Value)); p.Kill(true); p.WaitForExit(5000); } catch { }
             }
         }
@@ -141,7 +143,7 @@ static class Api
             if (await Ours()) return null;
             Port = first;
         }
-        if (started is not { HasExited: false } && await Running() && await NextPort()) return null;
+        if (started is not { HasExited: false } && (await Running() || !Free(Port)) && await NextPort()) return null;
         if (started is not { HasExited: false } && Start() is { } error) return error;
         for (int i = 0; i < 100; i++)
         {

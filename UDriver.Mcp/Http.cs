@@ -30,18 +30,11 @@ internal static partial class HttpMode
     static string _public = "", _urlSecret = "", _storeFile = "";
     static int _port;
 
-    // Wrong codes are counted per address and in total; over the limit the answer is 429 before any hashing.
-    static readonly Dictionary<string, (int Fails, DateTime Seen)> Failures = new();
-    static int _globalFails; static DateTime _globalWindowStart;
-    static readonly SemaphoreSlim Checking = new(1, 1);
-    const int IpLimit = 10, AllLimit = 50;
-    const string TooMany = "Too many wrong attempts. Wait 10 minutes, then try again.";
-    const string CheckBusy = "Another sign-in is being checked. Try again in a moment.";
-    const string Expired = "This request has expired. Start connecting again from the app.";
+    const string TooMany = "Too many sign-in requests are waiting. Answer them in the UDriver app or wait 10 minutes, then try again.";
     static readonly Dictionary<string, Program.Session> Agents = new();
     static readonly Dictionary<string, (DateTime Until, string Client, JsonObject Reply)> Rotated = new();   // sha256(old refresh token) -> its replacement
     static readonly Queue<(DateTime At, string Ip)> Registrations = new();
-    static readonly Dictionary<string, Pending> Waiting = new();   // sign-ins the owner can confirm in the panel instead of typing a code
+    static readonly Dictionary<string, Pending> Waiting = new();   // sign-ins of agents and devices waiting for Allow in the app or the panel on this computer
     static readonly HashSet<string> BadSchemes = new() { "javascript", "data", "file", "vbscript", "about", "blob", "ws", "wss", "ftp",
         "ms-msdt", "search-ms", "search", "ms-officecmd", "ms-word", "ms-excel", "ms-powerpoint", "ms-settings", "ms-appinstaller" };
 
@@ -65,7 +58,7 @@ internal static partial class HttpMode
         {
             Console.Error.WriteLine(secretMode
                 ? "UDRIVER_URL_SECRET must be at least 32 characters."
-                : "HTTP mode needs UDRIVER_PANEL=1 (agents sign in with one-time codes from the panel) or UDRIVER_AUTH=secret-url.");
+                : "HTTP mode needs UDRIVER_PANEL=1 (agents sign in once the owner allows them in the app or the panel) or UDRIVER_AUTH=secret-url.");
             Environment.Exit(2);
         }
         _storeFile = Path.Combine(Program.HomeDir, "oauth.json");
@@ -142,52 +135,6 @@ internal static partial class HttpMode
         string ip = ctx.Request.Headers["Cf-Connecting-Ip"].ToString();
         bool tunnel = Uri.TryCreate(_public, UriKind.Absolute, out var pu) && ctx.Request.Host.Value == pu.Authority;
         return tunnel && ip.Length is > 0 and <= 64 ? ip : ctx.Connection.RemoteIpAddress?.ToString() ?? "";
-    }
-
-    static int StatusOf(string? error) => error is TooMany or CheckBusy ? 429 : 200;
-
-    /// <summary>Runs one check at a time; refuses without running it once this address or everyone together failed too often.</summary>
-    static async Task<string?> Slow(HttpContext ctx, Func<bool> check, string error)
-    {
-        bool local = IsLocal(ctx);
-        string ip = ClientIp(ctx);
-        var window = TimeSpan.FromMinutes(10);
-        bool Over()
-        {
-            if (local) return false;
-            var now = DateTime.UtcNow;
-            lock (Gate)
-            {
-                if (now - _globalWindowStart > window) { _globalWindowStart = now; _globalFails = 0; }
-                var f = Failures.GetValueOrDefault(ip);
-                return _globalFails >= AllLimit || now - f.Seen <= window && f.Fails >= IpLimit;
-            }
-        }
-        if (Over()) return TooMany;
-        if (!await Checking.WaitAsync(TimeSpan.FromSeconds(10))) return CheckBusy;
-        try
-        {
-            if (Over()) return TooMany;
-            bool ok = check();
-            var now = DateTime.UtcNow;
-            lock (Gate)
-            {
-                if (ok) { Failures.Remove(ip); return null; }
-                if (!local)
-                {
-                    var f = Failures.GetValueOrDefault(ip);
-                    if (now - f.Seen > window) f.Fails = 0;
-                    f.Seen = now; f.Fails++;
-                    if (Failures.Count >= 1000 && !Failures.ContainsKey(ip))
-                        foreach (var k in Failures.Where(x => now - x.Value.Seen > window).Select(x => x.Key).ToList()) Failures.Remove(k);
-                    if (Failures.Count < 1000 || Failures.ContainsKey(ip)) Failures[ip] = f;
-                    _globalFails++;
-                }
-            }
-            await Task.Delay(700);
-            return error;
-        }
-        finally { Checking.Release(); }
     }
 
     static async Task<Dictionary<string, string>> Form(HttpContext ctx)
@@ -437,7 +384,7 @@ internal static partial class HttpMode
 
     static async Task Register(HttpContext ctx)
     {
-        // Registering grants nothing: sign-in still needs the owner's one-time code or approval.
+        // Registering grants nothing: sign-in still needs the owner to press Allow on this computer.
         JsonObject? req;
         using (var rd = new StreamReader(ctx.Request.Body, Encoding.UTF8))
             try { req = JsonNode.Parse(await rd.ReadToEndAsync()) as JsonObject; } catch { req = null; }
@@ -467,7 +414,7 @@ internal static partial class HttpMode
         }
         if (evicted != null) Registry.ForgetClient(evicted);
         if (id.Length == 0) { await OAuthError(ctx, 429, "too_many_requests", "too many app registrations, try again in a few minutes"); return; }
-        // A requested client secret is issued but never checked: PKCE and the one-time code protect sign-in.
+        // A requested client secret is issued but never checked: PKCE and the owner's Allow protect sign-in.
         string method = (string?)req?["token_endpoint_auth_method"] ?? "none";
         if (method != "client_secret_post" && method != "client_secret_basic") method = "none";
         var reply = new JsonObject
@@ -479,58 +426,68 @@ internal static partial class HttpMode
         await Json(ctx, 201, reply);
     }
 
-    const string CodeField = """<input class="otc" type="text" id="otc" name="otc" placeholder="XXXX-XXXX" aria-label="One-time code" autofocus inputmode="text" autocomplete="one-time-code" autocapitalize="characters" autocorrect="off" spellcheck="false" enterkeyhint="go" required>""";
-
     static string Page(Dictionary<string, string> p, string clientName, string redirect, string? error)
     {
         string H(string s) => WebUtility.HtmlEncode(s);
         var hidden = new StringBuilder();
         foreach (var k in new[] { "response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method", "state", "scope", "resource", "pending" })
             if (p.TryGetValue(k, out var v)) hidden.Append($"<input type=\"hidden\" name=\"{k}\" value=\"{H(v)}\">");
-        string pid = p.GetValueOrDefault("pending", "");
-        Pending? w;
-        lock (Gate) Waiting.TryGetValue(pid, out w);
         return Shell($"""
             <main>
-            <header class="hero">{Icon}<h1 class="title">Allow access?</h1><p class="subtitle">The app “{H(clientName)}” wants to use your Unity games on this computer.</p></header>
-            <ul class="group"><li class="row"><div class="k"><span class="sub">Access goes to</span><span class="title url">{H(Dest(redirect))}</span></div></li>
-            {(w != null ? $"<li class=\"row\"><div class=\"k\"><span class=\"sub\">Check number</span><span class=\"title\">{w.Check}</span></div></li>" : "")}</ul>
-            <form method="post" action="/authorize" class="stack">{hidden}<section>
-            <div class="group">{CodeField}</div>
-            {(error != null ? $"<p class=\"foot err\" role=\"alert\">{H(error)}</p>" : "")}
-            <p class="foot">Paste the one-time code from the UDriver panel{(w != null ? ", or allow this request in the panel if it shows the same check number" : "")}.</p>
-            {(w != null ? "<p class=\"foot\" id=\"wait\" role=\"status\">Waiting for the panel…</p>" : "")}
-            </section><button class="btn primary" type="submit">Allow</button></form>
-            <p class="foot center">After you allow, you'll be sent back to {H(Dest(redirect))}<br>If you didn't start this connection yourself, close this page.</p>
+            <header class="hero">{Icon}<h1 class="title" id="wait-t">Allow access?</h1><p class="subtitle">The app “{H(clientName)}” wants to use your Unity games on this computer.</p></header>
+            <form method="post" action="/authorize" class="stack">{hidden}
+            <ul class="group"><li class="row"><div class="k"><span class="sub">Access goes to</span><span class="title url">{H(Dest(redirect))}</span></div></li>{WaitRows(p.GetValueOrDefault("pending", ""), error)}
+            <noscript><button class="btn primary" type="submit">Continue</button></noscript></form>
+            <p class="foot center">After you allow, you'll be sent back to {H(Dest(redirect))}<br>If you didn't start this connection yourself, press Deny in the app.</p>
             </main>
-            {(w != null ? PollScript.Replace("{id}", pid) : "")}
+            {PollScript("document.querySelector('form').submit()")}
             """, "Allow access · UDriver");
     }
 
-    const string PollScript = """
-        <script>
-        const form=document.querySelector("form"), wait=document.getElementById("wait");
-        const timer=setInterval(async()=>{ let s; try{ s=(await (await fetch("/authorize/status?id={id}")).json()).state; }catch{ return; }
-          if(s==="approved"){ clearInterval(timer); form.submit(); }
-          else if(s!=="waiting"){ clearInterval(timer); wait.textContent=s==="denied"?"The request was declined in the UDriver panel.":"This request has expired. Start connecting again from the app."; } },2000);
-        </script>
-        """;
+    /// <summary>The check number and the live "press Allow" line of a waiting sign-in; the error instead when there is nothing to wait for.</summary>
+    static string WaitRows(string id, string? error)
+    {
+        Pending? w;
+        lock (Gate) Waiting.TryGetValue(id, out w);
+        if (error != null || w == null)
+            return $"</ul><p class=\"foot err\" role=\"alert\">{WebUtility.HtmlEncode(error ?? Expired)}</p>";
+        return $"""
+            <li class="row"><div class="k"><span class="sub">Check number</span><span class="title">{w.Check}</span></div></li>
+            <li class="row" id="wait" data-id="{id}"><span class="spin" aria-hidden="true"></span><div class="k"><span id="wait-m" role="status">Press Allow in the UDriver app on your computer</span><span class="sub" id="wait-s">Make sure it shows the same check number. This page continues by itself.</span></div></li></ul>
+            """;
+    }
 
-    /// <summary>Lists the sign-in in the panel for 5 minutes under a check number no other listed request has;
-    /// "" once 3 from this address or 20 in total are open, and the page then takes only a one-time code.</summary>
-    static string Wait(HttpContext ctx, string client, string app, string redirect, string challenge)
+    const string Expired = "This request has expired. Start connecting again.";
+
+    /// <summary>Polls the request every 2 seconds; runs <paramref name="go"/> once it is allowed.</summary>
+    static string PollScript(string go) => """
+        <script>
+        const wait=document.getElementById("wait");
+        if(wait){ const timer=setInterval(async()=>{ let s; try{ s=(await (await fetch("/authorize/status?id="+encodeURIComponent(wait.dataset.id))).json()).state; }catch{ return; }
+          if(s==="approved"){ clearInterval(timer); document.getElementById("wait-m").textContent="Allowed. Continuing…"; GO; }
+          else if(s!=="waiting"){ clearInterval(timer); wait.querySelector(".spin").remove(); const no=s==="denied";
+            document.getElementById("wait-t").textContent=no?"Access refused":"Request expired";
+            document.getElementById("wait-m").textContent=no?"Refused in the UDriver app.":"Nobody answered in time.";
+            document.getElementById("wait-s").textContent=no?"You can close this page.":"Start connecting again."; } },2000); }
+        </script>
+        """.Replace("GO", go);
+
+    /// <summary>Lists the sign-in in the app and the panel for 10 minutes under a check number no other listed request has;
+    /// "" once 3 from this address or 20 in total are waiting.</summary>
+    static string Wait(HttpContext ctx, string client, string app, string dest, string redirect = "", string challenge = "")
     {
         string id = Rand(16), ip = ClientIp(ctx);
         var now = DateTime.UtcNow;
         lock (Gate)
         {
             foreach (var k in Waiting.Where(x => x.Value.Expires < now).Select(x => x.Key).ToList()) Waiting.Remove(k);
-            if (Waiting.Count >= 20 || Waiting.Count(x => x.Value.Ip == ip && x.Value.Ok != false) >= 3) return "";
+            var open = Waiting.Values.Where(x => x.Ok != false).ToList();
+            if (open.Count >= 20 || open.Count(x => x.Ip == ip) >= 3) return "";
             int check;
             do check = RandomNumberGenerator.GetInt32(10, 100); while (Waiting.Values.Any(x => x.Check == check));
             Waiting[id] = new Pending
             {
-                Client = client, App = app, Dest = Dest(redirect), Ip = ip, Redirect = redirect, Challenge = challenge, Check = check, Expires = now.AddMinutes(5),
+                Client = client, App = app, Dest = dest, Ip = ip, Redirect = redirect, Challenge = challenge, Check = check, Expires = now.AddMinutes(10),
             };
         }
         return id;
@@ -580,24 +537,23 @@ internal static partial class HttpMode
 
         if (ctx.Request.Method == "GET")
         {
-            p["pending"] = Wait(ctx, p["client_id"], client.Name, redirect, p["code_challenge"]);
-            await Html(ctx, Page(p, client.Name, redirect, null));
+            p["pending"] = Wait(ctx, p["client_id"], client.Name, host, redirect, p["code_challenge"]);
+            await Html(ctx, Page(p, client.Name, redirect, p["pending"].Length == 0 ? TooMany : null), p["pending"].Length == 0 ? 429 : 200);
             return;
         }
 
-        string pid = p.GetValueOrDefault("pending", ""), otc = p.GetValueOrDefault("otc", "");
-        bool approved = false, expired;
-        var now = DateTime.UtcNow;
+        // Only a request the owner allowed on this computer, for this very app, address and PKCE challenge, and only once.
+        string pid = p.GetValueOrDefault("pending", "");
+        bool approved = false;
         lock (Gate)
+            if (Waiting.TryGetValue(pid, out var w) && w.Ok == true && w.Client == p["client_id"] && w.Redirect == redirect && w.Challenge == p["code_challenge"])
+            { approved = w.Expires > DateTime.UtcNow; Waiting.Remove(pid); }
+        if (!approved)
         {
-            bool found = Waiting.TryGetValue(pid, out var w);
-            if (found && w!.Ok == true && w.Client == p["client_id"] && w.Redirect == redirect && w.Challenge == p["code_challenge"])
-            { approved = w.Expires > now; Waiting.Remove(pid); }
-            // The page posts itself without a code once the panel approved; by then the request may have run out or been used.
-            expired = !approved && pid.Length > 0 && otc.Length == 0 && (!found || w!.Expires <= now);
+            string state = PendingState(pid);
+            await Html(ctx, Page(p, client.Name, redirect, state == "waiting" ? null : state == "denied" ? "Access was refused in the UDriver app." : Expired));
+            return;
         }
-        string? err = approved ? null : expired ? Expired : await Slow(ctx, () => TakeCode(otc), WrongCode);
-        if (err != null) { await Html(ctx, Page(p, client.Name, redirect, err), StatusOf(err)); return; }
 
         string code = Rand();
         lock (Gate)

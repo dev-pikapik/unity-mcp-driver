@@ -1,9 +1,9 @@
-using System;
-using System.Collections;
-using UnityEngine;
-
 namespace UDriver
 {
+    using System;
+    using System.Collections;
+    using UnityEngine;
+
     /// <summary>Lives on a hidden DontDestroyOnLoad object; runs tool calls and probes on the main thread.</summary>
     public sealed class DriverHost : MonoBehaviour
     {

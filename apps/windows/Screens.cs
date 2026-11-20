@@ -86,11 +86,19 @@ static class Ui
         },
     };
 
+    /// The button whose click is running; Shell.Act shows it as busy.
+    public static Button? Pressed;
+
     public static Button Btn(string text, Func<Task>? click = null, bool accent = false)
     {
         var b = new Button { Content = text };
         if (accent) b.Style = Res<Style>("AccentButtonStyle");
-        if (click != null) b.Click += async (_, _) => await click();
+        if (click != null) b.Click += async (_, _) =>
+        {
+            Pressed = b;
+            try { await click(); }
+            finally { if (Pressed == b) Pressed = null; }
+        };
         return b;
     }
 
@@ -493,18 +501,7 @@ sealed class ToolsScreen : Screen
 
 sealed class AccessScreen : Screen
 {
-    JsonObject? code;
-    DateTime until;
-    TextBlock? countdown;
-    readonly DispatcherQueueTimer timer;
-    static readonly Windows.UI.Color Blue = ColorHelper.FromArgb(255, 15, 108, 189), Violet = ColorHelper.FromArgb(255, 135, 100, 184);
-
-    public AccessScreen()
-    {
-        timer = DispatcherQueue.GetForCurrentThread().CreateTimer();
-        timer.Interval = TimeSpan.FromSeconds(1);
-        timer.Tick += (_, _) => Tick();
-    }
+    static readonly Windows.UI.Color Blue = ColorHelper.FromArgb(255, 15, 108, 189), Violet = ColorHelper.FromArgb(255, 135, 100, 184), Gray = ColorHelper.FromArgb(255, 112, 112, 112);
 
     public override string Title => "Access from anywhere";
 
@@ -512,20 +509,7 @@ sealed class AccessScreen : Screen
     {
         var r = m.Remote.DeepClone().AsObject();
         r.Remove("onlineSec");
-        return r.ToJsonString() + code?.ToJsonString();
-    }
-
-    void Tick()
-    {
-        var left = (int)(until - DateTime.Now).TotalSeconds;
-        if (left <= 0 && code != null)
-        {
-            code = null;
-            timer.Stop();
-            Shell.Main.Render();
-            return;
-        }
-        if (countdown != null) countdown.Text = $"Works once, expires in {left / 60}:{left % 60:00}. Paste it on the page the agent opens.";
+        return r.ToJsonString();
     }
 
     public override UIElement Build(Model m)
@@ -538,7 +522,7 @@ sealed class AccessScreen : Screen
         var state = r.S("state");
         var sub = r.S("error") is { Length: > 0 } e ? e : on && state != "online" && state != "" ? "Connecting…" : "Through a private, encrypted link. Turn off to close it at once.";
         var top = Ui.CardOf(Ui.Row(Ui.HStack(12, Ui.Tile("", Blue), Ui.VStack(2, Ui.Txt("Agents on other devices can reach your games", "BodyStrongTextBlockStyle"), Ui.Txt(sub, "BodyTextBlockStyle", true))), sw));
-        if (!on) return Ui.Page([top, .. Setup(r), Local()]);
+        if (!on) return Ui.Page([top, .. Setup(r), Local(), .. Cloudflare(r)]);
 
         var address = r.S("address");
         var addr = Ui.Txt(address);
@@ -546,32 +530,29 @@ sealed class AccessScreen : Screen
         addr.IsTextSelectionEnabled = true;
         var addrCard = Ui.CardOf(Ui.Row(Ui.VStack(4, Ui.Txt("Address", "CaptionTextBlockStyle", true), addr), Ui.Btn("Copy", () => Ui.Clip(address))));
 
-        UIElement codeCard;
-        if (code is { } c)
+        var qr = new Image { Width = 140, Height = 140 };
+        AutomationProperties.SetName(qr, "QR code to open UDriver on your phone");
+        _ = Qr(qr, r.S("panel") is { Length: > 0 } p ? p : address);
+        var right = Ui.VStack(6, new Border { Background = new SolidColorBrush(Colors.White), CornerRadius = new(6), Padding = new(6), Child = qr },
+            Ui.Txt("Open on your phone", "CaptionTextBlockStyle", true));
+        right.Children[1].SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+        var connectCard = Ui.CardOf(Ui.Row(Ui.VStack(4, Ui.Txt("Connect a new agent", "BodyStrongTextBlockStyle"),
+            Ui.Txt("Paste the address into the agent. When it connects for the first time, this computer asks you to allow it. Press Allow if the agent's page shows the same check number.", "BodyTextBlockStyle", true)), right), 20);
+        return Ui.Page([top, addrCard, connectCard, Local(), .. Cloudflare(r)]);
+    }
+
+    static UIElement[] Cloudflare(JsonNode r)
+    {
+        if (!r.B("signedIn")) return [];
+        var signOut = Ui.Btn("Turn off and sign out", async () =>
         {
-            var big = Ui.Txt(c.S("code"), "TitleLargeTextBlockStyle");
-            big.FontFamily = Ui.Mono;
-            big.IsTextSelectionEnabled = true;
-            AutomationProperties.SetName(big, "Code " + string.Join(" ", c.S("code").ToCharArray()));
-            countdown = Ui.Txt("", "BodyTextBlockStyle", true);
-            Tick();
-            var qr = new Image { Width = 140, Height = 140 };
-            AutomationProperties.SetName(qr, "QR code to open UDriver on your phone");
-            _ = Qr(qr, c.S("panel") is { Length: > 0 } p ? p : c.S("address"));
-            var left = Ui.VStack(10, Ui.Txt("Code for a new agent", "CaptionTextBlockStyle", true), big, countdown,
-                Ui.HStack(8, Ui.Btn("Copy", () => Ui.Clip(c.S("code"))), Ui.Btn("New code", NewCode)));
-            var right = Ui.VStack(6, new Border { Background = new SolidColorBrush(Colors.White), CornerRadius = new(6), Padding = new(6), Child = qr },
-                Ui.Txt("Open on your phone", "CaptionTextBlockStyle", true));
-            right.Children[1].SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-            codeCard = Ui.CardOf(Ui.Row(left, right), 20);
-        }
-        else
-        {
-            countdown = null;
-            codeCard = Ui.CardOf(Ui.Row(Ui.VStack(4, Ui.Txt("Code for a new agent", "BodyStrongTextBlockStyle"),
-                Ui.Txt("A new agent asks for a code the first time it connects from another device. Each code works once.", "BodyTextBlockStyle", true)), Ui.Btn("New code", NewCode, true)));
-        }
-        return Ui.Page(top, addrCard, codeCard, Local());
+            if (!await Shell.Main.Confirm("Turn off and sign out of Cloudflare?",
+                "Access from anywhere turns off and UDriver forgets its Cloudflare sign-in on this computer. Your tunnel stays in your Cloudflare account, so you can sign in and turn it on again later.",
+                "Turn off and sign out", safe: false)) return;
+            if (await Shell.Main.Act("remote/signout") is { } j && j.S("note") is { Length: > 0 } note) await Shell.Main.Say("Signed out of UDriver's Cloudflare sign-in", note);
+        });
+        return [Ui.CardOf(Ui.Row(Ui.HStack(12, Ui.Tile("\uE753", Gray), Ui.VStack(2, Ui.Txt("Cloudflare", "BodyStrongTextBlockStyle"),
+            Ui.Txt(r.S("domain") is { Length: > 0 } d ? "Signed in · domain " + d : "Signed in", "BodyTextBlockStyle", true))), signOut))];
     }
 
     static async Task Qr(Image target, string text)
@@ -629,15 +610,6 @@ sealed class AccessScreen : Screen
         if (box.Text.Trim() is not { Length: > 0 } name || await Shell.Main.Act("local-clients", ("name", name)) is not { } r) return;
         Ui.Clip(r.S("mcpJson") is { Length: > 0 } j ? j : r["mcpJson"]?.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) ?? "");
         await Shell.Main.Say("Setup copied", "Paste it into the app's MCP settings. It connects while UDriver is running.");
-    }
-
-    async Task NewCode()
-    {
-        if (await Shell.Main.Act("remote/code") is not { } j) return;
-        code = j;
-        until = DateTime.Now.AddSeconds(j.I("expiresSec") is > 0 and var s ? s : 600);
-        timer.Start();
-        Shell.Main.Render();
     }
 
     async Task Flip(bool v, JsonNode r)

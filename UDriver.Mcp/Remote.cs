@@ -2,13 +2,12 @@ using System.Diagnostics;
 using System.Formats.Tar;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http;
 
-/// <summary>Remote access: the Cloudflare tunnel run by this server, and one-time codes for remote agents and devices. Changed only from the panel.</summary>
+/// <summary>Remote access: the Cloudflare tunnel run by this server. Changed only from the panel.</summary>
 internal static partial class HttpMode
 {
     // Our own Cloudflare sign-in lives in ~/.udriver/cloudflare (cloudflared runs with HOME there); a sign-in made outside UDriver is used but never removed.
@@ -21,55 +20,13 @@ internal static partial class HttpMode
     static readonly Regex NameRx = new("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", RegexOptions.Compiled);
     static readonly Regex DomainRx = new(@"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$", RegexOptions.Compiled);
     static readonly Regex RoutedRx = new(@"Added CNAME (\S+) which will route|(\S+) is already configured to route", RegexOptions.Compiled);
-    static readonly Regex CreatedRx = new(@"Created tunnel udriver with id ([0-9a-fA-F-]{36})", RegexOptions.Compiled);
+    static readonly Regex CreatedRx = new(@"Created tunnel \S+ with id ([0-9a-fA-F-]{36})", RegexOptions.Compiled);
     static readonly Regex LoginUrlRx = new(@"https://dash\.cloudflare\.com/\S+", RegexOptions.Compiled);
 
     static string _busyState = "", _remoteError = "", _loginUrl = "";
     static bool _cancelled;
     static Process? _busyProc;
     static DateTime _onlineSince, _cfStarted;
-
-    const string CodeAbc = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
-    static readonly List<(string Hash, DateTime Exp)> OneTime = new();
-
-    // ---------------- one-time codes ----------------
-
-    static string CodeKey(string code) => Hash(new string(code.ToUpperInvariant().Where(char.IsAsciiLetterOrDigit).ToArray()));
-
-    static string NewCode()
-    {
-        var c = new char[8];
-        for (int i = 0; i < c.Length; i++) c[i] = CodeAbc[RandomNumberGenerator.GetInt32(CodeAbc.Length)];
-        string code = new string(c, 0, 4) + "-" + new string(c, 4, 4);
-        lock (Gate)
-        {
-            OneTime.RemoveAll(x => x.Exp < DateTime.UtcNow);
-            if (OneTime.Count >= 20) OneTime.RemoveAt(0);
-            OneTime.Add((CodeKey(code), DateTime.UtcNow.AddMinutes(10)));
-        }
-        return code;
-    }
-
-    /// <summary>New agents may register only while a code issued on this computer is waiting to be used.</summary>
-    static bool CodeLive()
-    {
-        lock (Gate) { OneTime.RemoveAll(x => x.Exp < DateTime.UtcNow); return OneTime.Count > 0; }
-    }
-
-    /// <summary>True once per issued code; every live code is compared, each in constant time.</summary>
-    static bool TakeCode(string given)
-    {
-        byte[] key = Encoding.ASCII.GetBytes(CodeKey(given));
-        int hit = -1;
-        lock (Gate)
-        {
-            OneTime.RemoveAll(x => x.Exp < DateTime.UtcNow);
-            for (int i = 0; i < OneTime.Count; i++)
-                if (CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(OneTime[i].Hash), key)) hit = i;
-            if (hit >= 0) OneTime.RemoveAt(hit);
-        }
-        return hit >= 0;
-    }
 
     // ---------------- cloudflared ----------------
 
@@ -355,7 +312,7 @@ internal static partial class HttpMode
             ["state"] = state, ["on"] = on, ["error"] = _remoteError.Length > 0 ? _remoteError : on && !(alive && conns > 0) ? _cfNote : "",
             ["cloudflared"] = installed, ["installer"] = installed ? null : Winget() != null ? "winget" : "download",
             ["signedIn"] = Cert != null, ["ownSignIn"] = File.Exists(OwnCert), ["saved"] = saved,
-            ["host"] = host, ["domain"] = host.Contains('.') ? host[(host.IndexOf('.') + 1)..] : "", ["address"] = host.Length > 0 ? "https://" + host + "/mcp" : "",
+            ["host"] = host, ["domain"] = host.Contains('.') ? host[(host.IndexOf('.') + 1)..] : "", ["address"] = host.Length > 0 ? "https://" + host + "/mcp" : "", ["panel"] = host.Length > 0 ? "https://" + host + "/panel" : "",
             ["onlineSec"] = since == default ? null : (int)(DateTime.UtcNow - since).TotalSeconds,
             ["loginUrl"] = _loginUrl,
         };
@@ -370,11 +327,6 @@ internal static partial class HttpMode
         const string busy = "UDriver is still busy with Cloudflare. Wait a moment and try again.";
         switch (path)
         {
-            case "/panel/api/remote/code":
-                if (!local) { await Json(ctx, 403, Fail(LocalOnly)); return true; }
-                if (_public.Length == 0) error = "Turn on remote access first.";
-                else reply = new JsonObject { ["ok"] = true, ["code"] = NewCode(), ["address"] = _public + "/mcp", ["panel"] = _public + "/panel", ["expiresSec"] = 600 };
-                break;
             case "/panel/api/remote/off":
                 TurnOff(true); reply = ok;
                 break;

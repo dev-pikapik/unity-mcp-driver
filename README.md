@@ -86,20 +86,20 @@ To use UDriver from another device or from a web agent, turn on **Remote access*
 through two steps: it installs `cloudflared`, signs you in to Cloudflare and lets you pick an address on your domain.
 You need a domain in a Cloudflare account.
 
-Agents and devices get in with a **one-time code**. A code lets in one agent or one device, once, and expires in 10
-minutes. You get it in the panel on this computer only. While no code is waiting, new agents cannot even register.
+Agents and devices get in only after you press **Allow** on this computer, in the UDriver app or the panel. Their
+sign-in page shows a check number; allow only if the app shows the same one. A request waits 10 minutes, then expires.
 
-- **Adding an agent.** Under Remote access, choose **Add a remote agent**. Paste the address into your agent and enter
-  the code on the sign-in page.
-- **Opening the panel on a phone, tablet or another computer.** Under Remote access, choose **Open on another
-  device**. Open the address on that device and enter the code. The device stays signed in for 30 days and is listed
-  under Connected devices, where you can disconnect it at any time.
-- After 10 wrong codes from one address, or 50 from everyone together, sign-in pauses for 10 minutes.
-- **From another device** the panel can show your games and agents, stop games, lower access, disconnect agents and devices, give
-  one-time codes and restart or turn off the tunnel. Adding games, changing their folders, launching games and raising
+- **Adding an agent.** Paste the address from Access from Anywhere into your agent. When it connects, press Allow.
+- **Opening the panel on a phone, tablet or another computer.** Open the address (or scan the QR code) on that device,
+  then press Allow on this computer. The device stays signed in for 30 days and is listed under Connected devices,
+  where you can disconnect it at any time.
+- At most 3 requests from one address and 20 in total wait at a time.
+- **From another device** the panel can show your games and agents, stop games, lower access, disconnect agents and devices, and
+  restart or turn off the tunnel. Adding games, changing their folders, launching games and raising
   access work only on the computer that runs UDriver.
 - **Turning it off** closes the tunnel at once. Remote agents and devices lose access; agents on this computer keep
-  working.
+  working. **Turn Off and Sign Out** also makes UDriver forget its Cloudflare sign-in; the tunnel stays in your
+  Cloudflare account.
 
 Calls through remote access are limited to about 60 to 90 seconds, because the proxy drops longer requests.
 
@@ -120,8 +120,8 @@ The agent works only inside the games you add. UDriver doesn't give it your file
   its oldest files first. To change the limit, set the environment variable `UDRIVER_EXPORTS_MAX_MB` (in megabytes)
   before starting the launcher or the Unity editor.
 - Settings and keys are stored in `~/.udriver` (on Windows `%USERPROFILE%\.udriver`), readable only by you.
-- Remote access goes only through a Cloudflare tunnel over HTTPS. Each agent and each device signs in with its own
-  one-time code.
+- Remote access goes only through a Cloudflare tunnel over HTTPS. Each agent and each device signs in only after you
+  press Allow on this computer.
 
 What UDriver can't protect against:
 
@@ -150,14 +150,12 @@ Found a vulnerability? Please report it privately, see [SECURITY.md](SECURITY.md
 
 `udriver` (in the `packaging` folder, or next to the server in an installed copy; `udriver.cmd` on Windows) opens a
 full-screen terminal view with four tabs: Games, Agents, Tools and Access. It starts UDriver if it isn't running.
-When an app asks for access, the view shows its check number; press **A** to allow or **D** to deny. **N** shows a
-one-time code for a new agent, **Q** quits. The same things as single commands:
+When an app asks for access, the view shows its check number; press **A** to allow or **D** to deny, **Q** quits. The same things as single commands:
 
 ```bash
 udriver status
 udriver approve <id>
 udriver deny <id>
-udriver code
 udriver tools off <tool> --for <app>
 ```
 

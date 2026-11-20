@@ -104,11 +104,13 @@ static class Api
         int keep = Port;
         var ports = Enumerable.Range(keep, 21).ToList();
         if (int.TryParse(File.Exists(Path.Combine(Home, "panel.port")) ? File.ReadAllText(Path.Combine(Home, "panel.port")).Trim() : "", out int saved) && !ports.Contains(saved)) ports.Add(saved);
-        var old = new Dictionary<int, string>();
+        var old = new Dictionary<int, string?>();
         foreach (int port in ports)
         {
             Port = port;
-            if (await ServerVersion() is { } v && !(Version.TryParse(v, out var ver) && ver >= Own)) old[port] = v;
+            // A port taken but not answering is a hung server: stop it only if it is udriver-mcp.
+            var v = await ServerVersion();
+            if (v == null ? !Free(port) : !(Version.TryParse(v, out var ver) && ver >= Own)) old[port] = v;
         }
         Port = keep;
         if (old.Count == 0) return;
@@ -127,7 +129,7 @@ static class Api
             try
             {
                 using var p = Process.GetProcessById(pid);
-                if (p.ProcessName.Equals("udriver-mcp", StringComparison.OrdinalIgnoreCase) || v.Length > 0 && p.ProcessName.Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+                if (p.ProcessName.Equals("udriver-mcp", StringComparison.OrdinalIgnoreCase) || !string.IsNullOrEmpty(v) && p.ProcessName.Equals("dotnet", StringComparison.OrdinalIgnoreCase))
                 {
                     p.Kill(true);
                     p.WaitForExit(5000);
@@ -153,7 +155,7 @@ static class Api
             if (await Ours()) return null;
             Port = first;
         }
-        if (await Running() && await NextPort()) return null;
+        if ((await Running() || !Free(Port)) && await NextPort()) return null;
         if (Server() is not { } s) return "UDriver is not fully installed on this computer. Run the UDriver installer once, then open this app again.";
         Directory.CreateDirectory(Path.GetDirectoryName(Log)!);
         var psi = new ProcessStartInfo(s.File) { CreateNoWindow = true, UseShellExecute = false };

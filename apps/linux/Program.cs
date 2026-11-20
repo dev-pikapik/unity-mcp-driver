@@ -58,6 +58,12 @@ sealed class Shell
     readonly Gtk.Label[] counts = new Gtk.Label[5];
     readonly Gtk.Label status = Gtk.Label.New("Starting UDriver…");
     readonly Gtk.Box dot = Gtk.Box.New(Gtk.Orientation.Horizontal, 0);
+    readonly Gtk.Spinner spin = Gtk.Spinner.New();
+    readonly Adw.StatusPage loading = Adw.StatusPage.New();
+    readonly List<string> working = [];
+    /// The button whose click is running; Act shows it as busy. Confirm and Ask carry it over their dialog.
+    public static Gtk.Button? Pressed;
+    bool loaded;
     readonly Screen[] screens;
     Section section;
     Gtk.Widget? welcome;
@@ -73,6 +79,15 @@ sealed class Shell
         Style();
         screens = [new GamesScreen(this), new AgentsScreen(this), new ToolsScreen(this), new AccessScreen(this), new ProblemsScreen(this)];
         foreach (var s in screens) stack.AddNamed(s.Root, s.Title);
+        var wait = Gtk.Spinner.New();
+        wait.Spinning = true;
+        wait.SetSizeRequest(32, 32);
+        loading.Title = "Starting UDriver…";
+        loading.Child = wait;
+        var waitView = Adw.ToolbarView.New();
+        waitView.AddTopBar(Adw.HeaderBar.New());
+        waitView.Content = loading;
+        stack.AddNamed(waitView, "loading");
 
         Window = Adw.ApplicationWindow.New(app);
         Window.Title = "UDriver";
@@ -146,6 +161,7 @@ sealed class Shell
         var foot = Gtk.Box.New(Gtk.Orientation.Horizontal, 8);
         foot.AddCssClass("status");
         foot.Append(dot);
+        foot.Append(spin);
         foot.Append(status);
 
         var scroll = Gtk.ScrolledWindow.New();
@@ -181,7 +197,7 @@ sealed class Shell
     {
         section = s;
         var screen = screens[(int)s];
-        stack.VisibleChildName = screen.Title;
+        stack.VisibleChildName = loaded ? screen.Title : "loading";
         contentPage.Title = screen.Title;
         nav.SelectRow(nav.GetRowAtIndex((int)s));
         screen.Show(Model);
@@ -251,12 +267,42 @@ sealed class Shell
         counts[1].Label_ = live > 0 ? live.ToString() : "";
         counts[3].Label_ = Model.Remote.B("on") ? "On" : "Off";
         counts[4].Label_ = Model.Problems.Count > 0 ? Model.Problems.Count.ToString() : "";
-        status.Label_ = Model.Problem ?? (Model.Up ? "Ready on this computer" : "Starting UDriver…");
-        foreach (string c in new[] { "ok", "warn", "bad" }) dot.RemoveCssClass(c);
-        dot.AddCssClass(!Model.Up ? "bad" : Model.Problem != null ? "warn" : "ok");
+        Footer();
+        if (!loaded && Model.Up) { loaded = true; stack.VisibleChildName = screens[(int)section].Title; }
+        else if (!loaded && Model.Problem != null) { loading.Title = "UDriver could not start"; loading.Description = GLib.Markup.EscapeText(Model.Problem); loading.Child = null; }
         screens[(int)section].Show(Model);
         WelcomeIfNeeded();
     }
+
+    void Footer()
+    {
+        string? work = working.LastOrDefault() ?? (!Model.Up && Model.Problem == null ? "Starting UDriver…" : null);
+        status.Label_ = work ?? Model.Problem ?? "Ready on this computer";
+        foreach (string c in new[] { "ok", "warn", "bad" }) dot.RemoveCssClass(c);
+        dot.AddCssClass(!Model.Up ? "bad" : Model.Problem != null ? "warn" : "ok");
+        dot.Visible = work == null;
+        spin.Visible = spin.Spinning = work != null;
+    }
+
+    static string Working(string path) => path.Replace("/panel/api/", "") switch
+    {
+        "games/add" => "Adding the game…",
+        "games/start" => "Launching the game…",
+        "games/stop" => "Stopping the game…",
+        "games/remove" => "Removing the game…",
+        "agents/disconnect" => "Disconnecting the agent…",
+        "clients/revoke" => "Removing the agent…",
+        "pending/approve" => "Allowing the agent…",
+        "pending/deny" => "Denying the agent…",
+        "remote/install" => "Downloading the helper…",
+        "remote/login" => "Signing in to Cloudflare…",
+        "remote/on" => "Turning on Access from Anywhere…",
+        "remote/off" => "Turning off Access from Anywhere…",
+        "remote/signout" => "Signing out of Cloudflare…",
+        "local-clients" => "Creating the setup…",
+        "problems/dismiss" => "Dismissing…",
+        _ => "Saving…",
+    };
 
     static string Message(Exception e) => e switch
     {
@@ -266,12 +312,32 @@ sealed class Shell
         _ => e.Message,
     };
 
-    /// Runs a server action, shows its error if any, then refreshes.
+    /// Runs a server action, shows its error if any, then refreshes. Meanwhile the clicked button is disabled
+    /// and says what is happening, and the sidebar shows a spinner with the same words.
     public async void Act(string path, Dictionary<string, string>? form = null, Action<JsonNode>? then = null, int timeout = 20)
     {
+        string text = Working(path);
+        var b = Pressed;
+        Pressed = null;
+        string? label = b?.Label;
+        if (b != null)
+        {
+            var s = Gtk.Spinner.New();
+            s.Spinning = true;
+            var busy = Gtk.Box.New(Gtk.Orientation.Horizontal, 8);
+            busy.Append(s);
+            busy.Append(Gtk.Label.New(text));
+            b.Sensitive = false;
+            b.Child = busy;
+        }
+        working.Add(text);
+        Footer();
         try { var j = await Api.Json(path, form ?? [], timeout); then?.Invoke(j); }
         catch (Exception e) { Alert(Message(e)); }
         await Refresh();
+        working.Remove(text);
+        Footer();
+        if (b != null) { b.Label = label; b.Sensitive = true; }
     }
 
     // MARK: dialogs
@@ -292,7 +358,8 @@ sealed class Shell
         d.AddResponse("go", action);
         d.SetResponseAppearance("go", destructive ? Adw.ResponseAppearance.Destructive : Adw.ResponseAppearance.Suggested);
         d.SetCloseResponse("cancel");
-        d.OnResponse += (_, e) => { if (e.Response == "go") yes(); else no?.Invoke(); };
+        var p = Pressed;
+        d.OnResponse += (_, e) => { Pressed = p; if (e.Response == "go") yes(); else no?.Invoke(); Pressed = null; };
         d.Present(Window);
     }
 
@@ -312,8 +379,9 @@ sealed class Shell
         d.SetDefaultResponse("go");
         d.SetCloseResponse("cancel");
         bool went = false;
-        entry.OnEntryActivated += (_, _) => { went = true; d.ForceClose(); done(entry.GetText()); };
-        d.OnResponse += (_, e) => { if (went) return; if (e.Response == "go") done(entry.GetText()); else no?.Invoke(); };
+        var p = Pressed;
+        entry.OnEntryActivated += (_, _) => { went = true; d.ForceClose(); Pressed = p; done(entry.GetText()); Pressed = null; };
+        d.OnResponse += (_, e) => { if (went) return; Pressed = p; if (e.Response == "go") done(entry.GetText()); else no?.Invoke(); Pressed = null; };
         d.Present(Window);
         entry.GrabFocus();
     }
@@ -351,7 +419,7 @@ sealed class Shell
         var d = Adw.AlertDialog.New(who + " wants to use your games", null);
         var number = Gtk.Label.New(p.S("check"));
         number.AddCssClass("bignum");
-        var hint = Gtk.Label.New("Allow only if the agent shows the same number.");
+        var hint = Gtk.Label.New("Allow only if the sign-in page shows the same number.");
         hint.Wrap = true;
         hint.Justify = Gtk.Justification.Center;
         var to = Gtk.Label.New("Access goes to " + (p.S("to") is { Length: > 0 } t ? t : "this computer"));
@@ -516,8 +584,11 @@ sealed class Shell
     async void CheckUpdates()
     {
         JsonNode u;
+        working.Add("Checking for updates…");
+        Footer();
         try { u = await Api.Json("/panel/api/update"); }
         catch (Exception e) { Alert("Could not check for updates.", Message(e)); return; }
+        finally { working.Remove("Checking for updates…"); Footer(); }
         if (!u.B("installed")) { Alert("Updates are not available for this copy.", "Only a copy installed from a UDriver download can update itself."); return; }
         if (u.S("error") is { Length: > 0 } err) { Alert("Could not check for updates.", err); return; }
         if (!u.B("available") || u.S("version") is not { Length: > 0 } next) { Alert("UDriver is up to date.", $"You have version {u.S("current")}."); return; }
@@ -562,7 +633,6 @@ sealed class Shell
             .intro { padding: 16px; }
             .welcome .title { font-size: 26pt; }
             .bignum { font-size: 40pt; font-weight: 800; font-feature-settings: "tnum"; letter-spacing: 4px; }
-            .code { font-family: monospace; font-size: 28pt; font-weight: 800; letter-spacing: 3px; }
             .mono { font-family: monospace; }
             .chip { padding: 2px 10px; border-radius: 99px; background: alpha(currentColor, .1); font-size: 9pt; font-weight: 600; }
             .chip.accent { background: alpha(@accent_bg_color, .18); color: @accent_color; }

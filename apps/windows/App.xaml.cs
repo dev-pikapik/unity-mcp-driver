@@ -77,6 +77,8 @@ sealed partial class Shell : Window
     readonly Border body = new();
     readonly Ellipse dot = new() { Width = 8, Height = 8 };
     readonly TextBlock status = Ui.Txt("Starting UDriver…", "CaptionTextBlockStyle", true);
+    readonly ProgressRing spin = new() { Width = 12, Height = 12, MinWidth = 12, MinHeight = 12 };
+    readonly List<string> working = [];
     readonly DispatcherQueueTimer timer;
     static readonly string Welcomed = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "UDriver", "welcomed");
     string page = "games", lastKey = "", approvalId = "";
@@ -119,7 +121,7 @@ sealed partial class Shell : Window
             nav.MenuItems.Add(item);
         }
         nav.FooterMenuItems.Add(new NavigationViewItem { Content = "Check for updates", Icon = new FontIcon { Glyph = "" }, SelectsOnInvoked = false, Tag = "update" });
-        var foot = Ui.HStack(8, dot, status);
+        var foot = Ui.HStack(8, dot, spin, status);
         foot.Margin = new(18, 4, 16, 12);
         nav.PaneFooter = foot;
         nav.SelectionChanged += (_, e) => { if (e.SelectedItem is NavigationViewItem { Tag: string t }) Go(t); };
@@ -201,8 +203,7 @@ sealed partial class Shell : Window
         counts["agents"].Text = ready ? M.Live.Count().ToString() : "";
         counts["access"].Text = ready ? M.Remote.B("on") ? "On" : "Off" : "";
         counts["problems"].Text = ready && M.Problems.Length > 0 ? M.Problems.Length.ToString() : "";
-        dot.Fill = new SolidColorBrush(problem != null ? Colors.IndianRed : ready ? Colors.MediumSeaGreen : Colors.Gray);
-        status.Text = problem ?? (ready ? "Ready on this computer" : "Starting UDriver…");
+        Footer();
         if (welcome && M.Games.Length > 0) MarkWelcomed();
         var s = screens[page];
         var key = welcome ? "welcome" : !ready ? $"down{problem}{stuck}" : page + "\n" + s.Key(M);
@@ -217,9 +218,26 @@ sealed partial class Shell : Window
         if (ready && !welcome) s.Update(M);
     }
 
+    void Footer()
+    {
+        var ready = up && polled;
+        var work = working.LastOrDefault() ?? (problem == null && !ready ? "Starting UDriver…" : null);
+        dot.Fill = new SolidColorBrush(problem != null ? Colors.IndianRed : Colors.MediumSeaGreen);
+        dot.Visibility = work == null ? Visibility.Visible : Visibility.Collapsed;
+        spin.IsActive = work != null;
+        spin.Visibility = work != null ? Visibility.Visible : Visibility.Collapsed;
+        status.Text = work ?? problem ?? "Ready on this computer";
+    }
+
     UIElement DownView()
     {
-        if (problem == null || !stuck) return new ProgressRing { IsActive = true, Width = 40, Height = 40 };
+        if (problem == null || !stuck)
+        {
+            var wait = Ui.VStack(12, new ProgressRing { IsActive = true, Width = 40, Height = 40 }, Ui.Txt("Starting UDriver…", "BodyTextBlockStyle"));
+            wait.HorizontalAlignment = HorizontalAlignment.Center;
+            wait.VerticalAlignment = VerticalAlignment.Center;
+            return wait;
+        }
         var retry = Ui.Btn("Try again", () => { stuck = false; problem = null; Render(); Refresh(); }, true);
         var v = Ui.VStack(16, Ui.Txt("UDriver could not start", "SubtitleTextBlockStyle"), Ui.Txt(problem, "BodyTextBlockStyle", true), retry);
         v.MaxWidth = 460;
@@ -286,12 +304,51 @@ sealed partial class Shell : Window
             DefaultButton = safe ? ContentDialogButton.Primary : ContentDialogButton.Close,
         }) == ContentDialogResult.Primary;
 
+    /// Runs a server action, shows its error if any, then refreshes. Meanwhile the clicked button is disabled
+    /// and says what is happening, and the sidebar shows a spinner with the same words.
     public async Task<JsonObject?> Act(string path, params (string, string)[] form)
     {
+        var text = Working(path);
+        var b = Ui.Pressed;
+        Ui.Pressed = null;
+        var content = b?.Content;
+        if (b != null)
+        {
+            b.IsEnabled = false;
+            b.Content = Ui.HStack(8, new ProgressRing { IsActive = true, Width = 16, Height = 16, MinWidth = 16, MinHeight = 16 }, Ui.Txt(text));
+        }
+        working.Add(text);
+        Footer();
         try { return await Api.Post(path, form); }
         catch (Exception e) { await Say("That did not work", e.Message); return null; }
-        finally { Refresh(); }
+        finally
+        {
+            await Poll();
+            working.Remove(text);
+            Footer();
+            if (b != null) { b.Content = content; b.IsEnabled = true; }
+        }
     }
+
+    static string Working(string path) => path switch
+    {
+        "games/add" => "Adding the game…",
+        "games/start" => "Launching the game…",
+        "games/stop" => "Stopping the game…",
+        "games/remove" => "Removing the game…",
+        "agents/disconnect" => "Disconnecting the agent…",
+        "clients/revoke" => "Removing the agent…",
+        "pending/approve" => "Allowing the agent…",
+        "pending/deny" => "Denying the agent…",
+        "remote/install" => "Downloading the helper…",
+        "remote/login" => "Signing in to Cloudflare…",
+        "remote/on" => "Turning on Access from Anywhere…",
+        "remote/off" => "Turning off Access from Anywhere…",
+        "remote/signout" => "Signing out of Cloudflare…",
+        "local-clients" => "Creating the setup…",
+        "problems/dismiss" => "Dismissing…",
+        _ => "Saving…",
+    };
 
     void Approvals()
     {
@@ -316,7 +373,7 @@ sealed partial class Shell : Window
         var d = new ContentDialog
         {
             Title = $"Allow {app}?",
-            Content = Ui.VStack(16, Ui.Txt("It wants to use your games. Allow only if the agent shows the same number."), box),
+            Content = Ui.VStack(16, Ui.Txt("It wants to use your games. Allow only if the sign-in page shows the same number."), box),
             PrimaryButtonText = "Allow", SecondaryButtonText = "Deny", PrimaryButtonStyle = Ui.Res<Style>("AccentButtonStyle"),
         };
         approval = d;
@@ -331,15 +388,19 @@ sealed partial class Shell : Window
     async Task CheckUpdates()
     {
         JsonObject u;
+        working.Add("Checking for updates…");
+        Footer();
         try { u = await Api.Get("update"); }
         catch (Exception e) { await Say("Could not check for updates.", e.Message); return; }
+        finally { working.Remove("Checking for updates…"); Footer(); }
         var current = u.S("current");
         if (!u.B("installed")) await Say("Updates are not available for this copy.", "Only a copy installed from a UDriver download can update itself.");
         else if (u.S("error") is { Length: > 0 } err) await Say("Could not check for updates.", err);
         else if (!u.B("available")) await Say("UDriver is up to date.", $"You have version {current}.");
         else if (await Confirm($"UDriver {u.S("version")} is available.", $"You have version {current}. UDriver will download the update, close, and open again.", "Update now", "Later"))
         {
-            status.Text = "Downloading the update…";
+            working.Add("Downloading the update…");
+            Footer();
             try { await Api.Json("update/apply", new() { ["restart"] = "true" }, 600); Application.Current.Exit(); }
             catch (Exception e) { await Say("The update did not finish.", e.Message); }
         }

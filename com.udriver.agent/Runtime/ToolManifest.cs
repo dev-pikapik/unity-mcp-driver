@@ -1,8 +1,9 @@
 // Shared with the MCP server: no Unity or JSON dependencies.
-using System.Collections.Generic;
 
 namespace UDriver
 {
+    using System.Collections.Generic;
+
     public sealed class ToolParam
     {
         public string Name, Type, Desc;   // Type: string | integer | number | boolean | array | object | any
@@ -17,7 +18,7 @@ namespace UDriver
 
     public static class ToolManifest
     {
-        public const string Version = "2.0.9";
+        public const string Version = "2.0.10";
 
         /// <summary>Game drivers take 17890, then 17911-17930; editor bridges 17891-17910.</summary>
         public const int GamePort = 17890, EditorPort = 17891, EditorPortLast = 17910, GamePortLast = 17930;

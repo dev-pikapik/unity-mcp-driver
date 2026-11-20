@@ -1,17 +1,17 @@
-using System;
-using System.Collections;
-using System.Collections.Generic;
-using System.Reflection;
-using System.Runtime.CompilerServices;
-using Newtonsoft.Json.Linq;
-using UnityEngine;
-using UnityEngine.UIElements;
-#if UDRV_INPUTSYSTEM && ENABLE_INPUT_SYSTEM
-using UnityEngine.InputSystem;
-#endif
-
 namespace UDriver
 {
+    using System;
+    using System.Collections;
+    using System.Collections.Generic;
+    using System.Reflection;
+    using System.Runtime.CompilerServices;
+    using Newtonsoft.Json.Linq;
+    using UnityEngine;
+    using UnityEngine.UIElements;
+    #if UDRV_INPUTSYSTEM && ENABLE_INPUT_SYSTEM
+    using UnityEngine.InputSystem;
+    #endif
+
     /// <summary>Drives a temporary UI through the same tools to show which capabilities work here.</summary>
     public static class SelfTest
     {

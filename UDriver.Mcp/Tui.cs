@@ -30,12 +30,6 @@ static class Cli
                     return 0;
                 case ["approve" or "deny", var id]:
                     return await Act($"pending/{args[0]}", ("id", id), args[0] == "approve" ? "Allowed." : "Denied.");
-                case ["code"]:
-                    if (await Ensure() is string down) return Say(down);
-                    var c = await Post("remote/code");
-                    if (c["ok"]?.GetValue<bool>() != true) return Say((string?)c["error"] ?? "No code.");
-                    Console.WriteLine($"{c["code"]}  (works once, expires in 10 minutes)\n{c["address"]}");
-                    return 0;
                 case ["tools", "on" or "off", var tool, ..] when args.Length == 3 || args is [_, _, _, "--for", _]:
                     return await Act("tools/set", ("tool", tool), args[1] == "on" ? "Turned on." : "Turned off.",
                         ("enabled", args[1] == "on" ? "true" : "false"), ("client", args.Length == 5 ? args[4] : ""));
@@ -54,7 +48,7 @@ static class Cli
                     return await Act("levels/set", ("level", "3"), args[1] == "on" ? "Computer access is on. At your own risk." : "Computer access is off.",
                         ("enabled", args[1] == "on" ? "true" : "false"));
             }
-            return Say("Usage: udriver-mcp tui | status | approve <id> | deny <id> | code | tools on|off <tool> [--for <client>] | levels [on|off <0-2> [--remote]] | computer on|off | clear-mark <game>");
+            return Say("Usage: udriver-mcp tui | status | approve <id> | deny <id> | tools on|off <tool> [--for <client>] | levels [on|off <0-2> [--remote]] | computer on|off | clear-mark <game>");
         }
         catch (HttpRequestException e) { return Say("UDriver does not answer: " + e.Message); }
         catch (TaskCanceledException) { return Say("UDriver did not answer in time."); }
@@ -142,15 +136,14 @@ static class Cli
     }
 }
 
-// The full-screen view from the approved mockup: tabs, one table per tab, the approval prompt and the one-time code.
+// The full-screen view from the approved mockup: tabs, one table per tab, and the approval prompt.
 sealed class Screen : Terminal.Gui.Views.Runnable
 {
     static readonly string[] Tabs = { "Games", "Agents", "Tools", "Access" };
     int _tab, _row;
     string _for = "";
     JsonObject _games = new(), _agents = new(), _pending = new(), _remote = new(), _tools = new(), _clients = new();
-    string _note = "", _code = "";
-    DateTime _codeUntil;
+    string _note = "";
     bool _down;
 
     internal static void Show()
@@ -301,28 +294,21 @@ sealed class Screen : Terminal.Gui.Views.Runnable
             Put(4, y++, $"Access goes to {a["to"]}", Fg);
             Put(4, y, "Check number", Fg);
             Put(18, y, $"{a["check"]}", Fg, style: TextStyle.Bold);
-            Put(24, y++, "Allow only if the agent shows the same number.", Dim_);
+            Put(24, y++, "Allow only if the sign-in page shows the same number.", Dim_);
             y++;
             Put(4, y, " A ", Bg, Fg); Put(8, y, "Allow", Fg);
             Put(18, y, " D ", Bg, Fg); Put(22, y++, "Deny", Fg);
         }
         else y += 5;
         y++;
-        int left = (int)Math.Ceiling((_codeUntil - DateTime.UtcNow).TotalMinutes);
-        if (_code.Length > 0 && left > 0)
-        {
-            Put(2, y, "Code for a new agent:", Dim_);
-            Put(25, y, _code, Fg, style: TextStyle.Bold);
-            Put(27 + _code.Length, y, $"once, {left} min", Dim_);
-        }
-        else if (_note.Length > 0) Put(2, y, Cut(_note, w - 4), Yellow);
+        if (_note.Length > 0) Put(2, y, Cut(_note, w - 4), Yellow);
 
         string keys = _tab switch
         {
-            0 => "↑↓ choose   ←→ change access   Enter start/stop   N new code   Q quit",
-            1 => "↑↓ choose   X disconnect or remove   N new code   Q quit",
-            2 => "↑↓ choose   ←→ for which agent   Space turn on/off   N new code   Q quit",
-            _ => "↑↓ choose   X sign out app   N new code   Q quit",
+            0 => "↑↓ choose   ←→ change access   Enter start/stop   Q quit",
+            1 => "↑↓ choose   X disconnect or remove   Q quit",
+            2 => "↑↓ choose   ←→ for which agent   Space turn on/off   Q quit",
+            _ => "↑↓ choose   X sign out app   Q quit",
         };
         Put(2, Viewport.Height - 1, Cut("1-4 tabs   " + keys, w - 4), Dim_);
         return true;
@@ -361,7 +347,6 @@ sealed class Screen : Terminal.Gui.Views.Runnable
         else if (key == Key.Tab) { _tab = (_tab + 1) % Tabs.Length; _row = 0; }
         else if (ch == 'q' || key == Key.Esc) App?.RequestStop();
         else if (ch is 'a' or 'd' && Ask is JsonNode a) Do($"pending/{(ch == 'a' ? "approve" : "deny")}", ch == 'a' ? "Allowed." : "Denied.", ("id", (string?)a["id"] ?? ""));
-        else if (ch == 'n') _ = NewCode();
         else if (_tab == 0 && pick != null && (key == Key.CursorLeft || key == Key.CursorRight))
         {
             int level = Math.Clamp(Registry.Level((string?)pick["access"] ?? "watch") + (key == Key.CursorLeft ? -1 : 1), 0, 2);
@@ -402,18 +387,6 @@ sealed class Screen : Terminal.Gui.Views.Runnable
         string note;
         try { var j = await Cli.Post(path, form); note = j["ok"]?.GetValue<bool>() == true ? done : (string?)j["error"] ?? "Failed."; }
         catch (Exception e) { note = e.Message; }
-        App?.Invoke(() => { _note = note; _code = ""; SetNeedsDraw(); });
+        App?.Invoke(() => { _note = note; SetNeedsDraw(); });
     });
-
-    async Task NewCode()
-    {
-        JsonObject j;
-        try { j = await Cli.Post("remote/code"); } catch (Exception e) { j = new JsonObject { ["error"] = e.Message }; }
-        App?.Invoke(() =>
-        {
-            if (j["ok"]?.GetValue<bool>() == true) { _code = (string?)j["code"] ?? ""; _codeUntil = DateTime.UtcNow.AddSeconds((int?)j["expiresSec"] ?? 600); }
-            else { _code = ""; _note = (string?)j["error"] ?? "No code."; }
-            SetNeedsDraw();
-        });
-    }
 }

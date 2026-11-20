@@ -25,10 +25,8 @@ internal static partial class HttpMode
     static readonly Dictionary<string, DateTime> Tickets = new();   // sha256(ticket) -> expiry
     const string LocalOnly = "This is available only on the computer that runs UDriver.";
     const string ApproveHere = "Approve new agents on the computer running UDriver.";
-    const string WrongCode = "This code is wrong, already used or expired. Get a new code in the UDriver panel.";
-    const string CodeText = "A one-time code lets in one agent or one device, once. Get it in the UDriver panel on the computer that runs UDriver or on a device that is already connected.";
     sealed class Device { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public DateTime Since { get; set; } public DateTime Expires { get; set; } }
-    static Dictionary<string, Device>? _devices;   // sha256(session) -> a device that signed in with a one-time code
+    static Dictionary<string, Device>? _devices;   // sha256(session) -> a device the owner allowed on this computer
     static string DevicesFile => Path.Combine(Program.HomeDir, "devices.json");
     static readonly List<PosixSignalRegistration> Signals = new();
 
@@ -89,7 +87,7 @@ internal static partial class HttpMode
         ctx.Response.Cookies.Append("udp", sid, new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Strict, Path = "/", MaxAge = life });
     }
 
-    /// <summary>Signs in a device that entered a one-time code: 256 random bits in the cookie, only their hash kept in devices.json.</summary>
+    /// <summary>Signs in a device the owner allowed: 256 random bits in the cookie, only their hash kept in devices.json.</summary>
     static void SignInDevice(HttpContext ctx)
     {
         string sid = Rand();
@@ -278,6 +276,28 @@ internal static partial class HttpMode
         });
     }
 
+    /// <summary>Another device asks to open the panel; its browser keeps the request in a cookie and is signed in once the owner allowed it on this computer.</summary>
+    static async Task DeviceLogin(HttpContext ctx)
+    {
+        string id = ctx.Request.Cookies["udw"] ?? "";
+        bool open, allowed = false;
+        lock (Gate)
+        {
+            open = Waiting.TryGetValue(id, out var w) && w.Client.Length == 0 && w.Expires > DateTime.UtcNow && w.Ok != false;
+            if (open && w!.Ok == true) { allowed = true; Waiting.Remove(id); }
+        }
+        if (allowed)
+        {
+            ctx.Response.Cookies.Delete("udw", new CookieOptions { Path = "/panel" });
+            SignInDevice(ctx);
+            ctx.Response.Redirect("/panel");
+            return;
+        }
+        if (!open && (id = Wait(ctx, "", DeviceName(ctx.Request.Headers.UserAgent.ToString()), "the UDriver panel")).Length > 0)
+            ctx.Response.Cookies.Append("udw", id, new CookieOptions { HttpOnly = true, Secure = true, SameSite = SameSiteMode.Strict, Path = "/panel", MaxAge = TimeSpan.FromMinutes(10) });
+        await Html(ctx, LoginPage(false, id, id.Length == 0 ? TooMany : null), id.Length == 0 ? 429 : 200);
+    }
+
     // ---------------- routes ----------------
 
     static async Task Panel(HttpContext ctx, string path, string verb, bool local)
@@ -306,22 +326,14 @@ internal static partial class HttpMode
         if (path == "/panel" && verb == "GET")
         {
             var q = ctx.Request.Query;
-            if (!who.Ok) await Html(ctx, LoginPage(local, null));
+            if (!who.Ok && !local) await DeviceLogin(ctx);
+            else if (!who.Ok) await Html(ctx, LoginPage(true));
             else if (local && (q.ContainsKey("agent") || q.ContainsKey("device"))) await Html(ctx, AgentPage(local, who.Csrf, q.ContainsKey("device")));
             else if (!local) await Html(ctx, PanelPage(false, who.Csrf));
             else if (q.ContainsKey("setup")) await Html(ctx, SetupPage(who.Csrf));
             else if (q.ContainsKey("remote")) await Html(ctx, RemotePage(who.Csrf));
             else if (q.ContainsKey("start") || Registry.Games.Count == 0 && !File.Exists(TunnelYml)) await Html(ctx, MainPage());
             else await Html(ctx, PanelPage(true, who.Csrf));
-            return;
-        }
-        if (path == "/panel/login" && verb == "POST" && !local)
-        {
-            var f = await Form(ctx);
-            string? err = OwnOrigin(ctx, local) ? await Slow(ctx, () => TakeCode(f.GetValueOrDefault("otc", "")), WrongCode) : "Request rejected.";
-            if (err != null) { await Html(ctx, LoginPage(false, err), StatusOf(err)); return; }
-            SignInDevice(ctx);
-            ctx.Response.Redirect("/panel");
             return;
         }
         if (!who.Ok) { await Write(ctx, 401, "text/plain; charset=utf-8", "Sign-in required: open /panel"); return; }
@@ -940,10 +952,8 @@ internal static partial class HttpMode
         .choice:has(input:focus-visible){outline:3px solid var(--blue);outline-offset:-3px}
         .field{display:block;width:100%;min-width:0;min-height:44px;padding:11px 16px;border:0;border-radius:0;background:none;color:var(--text);font-size:17px}
         .field.mono{font-family:var(--mono);font-size:16px}
-        .field::placeholder,.otc::placeholder{color:var(--text-2);opacity:1}
+        .field::placeholder{color:var(--text-2);opacity:1}
         .field.mono::placeholder{font-family:var(--font);font-size:17px}
-        .otc{display:block;width:100%;min-height:64px;padding:12px 16px;border:0;background:none;color:var(--text);font:600 28px/1.2 var(--mono);letter-spacing:.1em;text-align:center;text-transform:uppercase}
-        .otc::placeholder{font-weight:400}
         .namebox{flex-wrap:wrap;gap:4px 12px}
         .namebox label{flex:none}
         .nameline{flex:1 1 170px;display:flex;align-items:center;min-width:0}
@@ -951,8 +961,6 @@ internal static partial class HttpMode
         .nameline .sfx{color:var(--text-2)}
         .badge{width:24px;height:24px;flex:none}
         .badge.no circle{fill:none;stroke:var(--text-3);stroke-width:2}
-        .codebox{flex-direction:column;gap:6px;padding:20px 16px 16px;text-align:center}
-        .code{font:600 34px/1.15 var(--mono);letter-spacing:.06em}
         .steps li{display:flex;align-items:flex-start;gap:12px;min-height:44px;padding:11px 16px;line-height:22px}
         .steps .n{flex:none;display:grid;place-items:center;width:24px;height:24px;margin-top:-1px;border-radius:50%;background:var(--soft);color:var(--on-soft);font-size:13px;font-weight:600}
         .hint{display:flex;align-items:center;gap:6px;margin:0;padding:0 16px;font-size:13px;line-height:18px;color:var(--text-2)}
@@ -1016,19 +1024,17 @@ internal static partial class HttpMode
         </form></dialog>
         """;
 
-    static string LoginPage(bool local, string? error) => Shell(local ? $"""
+    static string LoginPage(bool local, string id = "", string? error = null) => Shell(local ? $"""
         <main>
         <header class="hero">{Icon}<h1 class="title">Open UDriver</h1><p class="subtitle">To open the panel on this computer, double-click {Launcher} in the udriver folder.</p></header>
         </main>
         """ : $"""
         <main>
-        <header class="hero">{Icon}<h1 class="title">Open UDriver</h1><p class="subtitle">Enter the one-time code to use the UDriver panel on this device.</p></header>
-        <form method="post" action="/panel/login" class="stack"><section>
-        <div class="group">{CodeField}</div>
-        {(error != null ? $"<p class=\"foot err\" role=\"alert\">{H(error)}</p>" : "")}
-        <p class="foot">Get the code on the computer that runs UDriver: in the panel, open Remote access, then Open on another device.</p>
-        </section><button class="btn primary" type="submit">Continue</button></form>
+        <header class="hero">{Icon}<h1 class="title" id="wait-t">Open UDriver</h1><p class="subtitle">This device asks to use the UDriver panel.</p></header>
+        <ul class="group">{WaitRows(id, error)}
+        <noscript><p class="foot">After you press Allow, reload this page.</p></noscript>
         </main>
+        {PollScript("location.reload()")}
         """, "Open UDriver");
 
     static string StoppedPage() => Shell($"""
@@ -1076,6 +1082,7 @@ internal static partial class HttpMode
 
     static string PanelPage(bool local, string csrf) => Screen("panel", local, csrf, "UDriver", $"""
         <header class="top">{Icon}<h1>UDriver</h1><span class="st on" id="alive"><i class="dot"></i><span>On</span></span></header>
+        {(local ? Asks : "")}
         <section><h2 class="sec-h">Games</h2>
         <div class="group" id="games">{(local ? $"""<button type="button" class="act" id="addgame">{Plus}Add a project or a build…</button>""" : """<div class="empty" id="addgame">Adding games, changing folders, launching games and raising access work only on the computer that runs UDriver.</div>""")}</div>
         <p class="foot">Access is set for each game. {AccessText} Without computer access, no agent gets your files, terminal or other apps.</p></section>
@@ -1100,13 +1107,13 @@ internal static partial class HttpMode
         <p class="foot">A switched-off feature is closed for every agent, including over the internet. A switch shows on while any of its tools is on.{(local ? "" : " Turning tools on works only on the computer that runs UDriver.")}</p></section>
         <section><h2 class="sec-h" id="devices-h">Connected devices</h2>
         <div class="group" id="devices"></div>
-        <p class="foot">Phones, tablets and other computers that opened this panel with a one-time code. Each stays signed in for 30 days unless you disconnect it.</p></section>
+        <p class="foot">Phones, tablets and other computers you allowed to open this panel. Each stays signed in for 30 days unless you disconnect it.</p></section>
         <section><h2 class="sec-h">Remote access</h2>
         <div class="group">
         <div class="row"><div class="k"><label for="rm-switch" id="rm-label">Use from another device or a web agent</label><span class="st" id="rm-st"><i class="dot"></i><span id="rm-text">Checking…</span></span></div>
         <input type="checkbox" class="switch" role="switch" id="rm-switch" aria-describedby="rm-text"></div>
         <div class="row" id="rm-addr" hidden><div class="k"><span class="sub">Address</span><span class="url" id="rm-url"></span></div><button type="button" class="pill" id="rm-copy">Copy</button></div>
-        {(local ? """<a class="act chev" id="rm-code" href="/panel?agent=1" hidden><span class="k"><span>Add a remote agent</span><span class="sub">Get the address and a one-time code</span></span></a><a class="act chev" id="rm-device" href="/panel?device=1" hidden><span class="k"><span>Open on another device</span><span class="sub">Use this panel on a phone, a tablet or another computer</span></span></a>""" : $"""<div class="empty" id="rm-code" hidden>{ApproveHere}</div>""")}
+        {(local ? """<a class="act chev" id="rm-code" href="/panel?agent=1" hidden><span class="k"><span>Add a remote agent</span><span class="sub">Get the address to paste into the agent</span></span></a><a class="act chev" id="rm-device" href="/panel?device=1" hidden><span class="k"><span>Open on another device</span><span class="sub">Use this panel on a phone, a tablet or another computer</span></span></a>""" : $"""<div class="empty" id="rm-code" hidden>{ApproveHere}</div>""")}
         {(local ? """<div class="row" id="rm-cf"><div class="k"><span>Cloudflare</span><span class="sub" id="rm-cf-text"></span></div></div><a class="act chev" href="/panel?remote=1" id="rm-change">Change address…</a><button type="button" class="act danger" id="rm-signout" hidden>Sign out of Cloudflare</button>""" : "")}
         <div class="row" id="rm-tunnel" hidden><div class="k"><span>Tunnel</span><span class="sub">Restart it if a remote agent cannot connect.</span></div><button type="button" class="link" id="rm-restart">Restart</button></div>
         </div>
@@ -1140,26 +1147,25 @@ internal static partial class HttpMode
         <p class="foot" id="r-host-foot"></p></section>
         <section><button type="button" class="btn primary" id="r-on">Turn on remote access</button><p class="foot center" id="r-note">Creates the tunnel. Takes about ten seconds.</p>
         <p class="foot err" id="r-err" role="alert" hidden></p></section>
-        <p class="foot">Each agent or device then gets in with its own one-time code. {CodeText}</p>
+        <p class="foot">Each agent or device then asks to connect, and you press Allow on this computer.</p>
         <p class="foot">The tunnel runs on this computer and nothing is opened on your router. You can restart it, move it to another domain or turn it off in the panel at any time.</p>
         """);
 
     static string AgentPage(bool local, string csrf, bool device) => Screen("agent", local, csrf, device ? "Open on another device · UDriver" : "Add a remote agent · UDriver", $"""
-        <header class="head">{Back}<h1 class="title">{(device ? "Open on another device" : "Add a remote agent")}</h1><p class="subtitle">{(device ? "Open the address on the other device and enter the code there." : "Copy two things into your agent. That is all.")}</p></header>
+        <header class="head">{Back}<h1 class="title">{(device ? "Open on another device" : "Add a remote agent")}</h1><p class="subtitle">{(device ? "Open the address on the other device, then press Allow on this computer." : "Paste one address into your agent. That is all.")}</p></header>
         <section><h2 class="sec-h">Address</h2><div class="group">
         <div class="row"><span class="mono k" id="a-url"{(device ? " data-panel=\"1\"" : "")}>…</span></div><button type="button" class="act" id="a-copy-url">Copy address</button>
         </div></section>
-        <section><h2 class="sec-h">One-time code</h2><div class="group">
-        <div class="row codebox"><span class="code" id="a-code">…</span><span class="sub" id="a-exp">Works once. Expires in 10 minutes.</span></div>
-        <button type="button" class="act" id="a-copy-code">Copy code</button><button type="button" class="act" id="a-new">Get a new code</button>
-        </div></section>
         <section><h2 class="sec-h">What to do</h2>
         <ol class="group steps">{(device
-            ? "<li><span class=\"n\">1</span><span>On the phone, tablet or other computer, open the address in a browser.</span></li><li><span class=\"n\">2</span><span>Enter the code and press Continue.</span></li><li><span class=\"n\">3</span><span>The device appears under Connected devices. Disconnect it there at any time.</span></li>"
-            : "<li><span class=\"n\">1</span><span>In your agent, add an MCP server and paste the address.</span></li><li><span class=\"n\">2</span><span>A sign-in page opens. Paste the code and press Allow.</span></li><li><span class=\"n\">3</span><span>The agent appears under Connected agents. Disconnect it there at any time.</span></li>")}</ol>
-        <p class="foot">{CodeText}</p></section>
+            ? "<li><span class=\"n\">1</span><span>On the phone, tablet or other computer, open the address in a browser.</span></li><li><span class=\"n\">2</span><span>This computer asks you to allow it. Press Allow if the check number matches.</span></li><li><span class=\"n\">3</span><span>The device appears under Connected devices. Disconnect it there at any time.</span></li>"
+            : "<li><span class=\"n\">1</span><span>In your agent, add an MCP server and paste the address.</span></li><li><span class=\"n\">2</span><span>A sign-in page opens with a check number, and this computer asks you to allow the agent. Press Allow if the numbers match.</span></li><li><span class=\"n\">3</span><span>The agent appears under Connected agents. Disconnect it there at any time.</span></li>")}</ol>
+        </section>
+        {Asks}
         <a class="btn primary" href="/panel">Done</a>
         """);
+
+    const string Asks = """<section id="asks" hidden><h2 class="sec-h">Asks to connect</h2><div class="group" id="asks-g"></div><p class="foot">Allow only if the sign-in page shows the same check number.</p></section>""";
 
     const string Js = """
         "use strict";
@@ -1276,7 +1282,7 @@ internal static partial class HttpMode
         }
         let R={}, who="";
         async function panel(){
-          const [g,a,r,t,p]=await Promise.all([get("/panel/api/games"),get("/panel/api/agents"),get("/panel/api/remote"),get("/panel/api/tools"),get("/panel/api/problems")]); R=r;
+          const [g,a,r,t,p]=await Promise.all([get("/panel/api/games"),get("/panel/api/agents"),get("/panel/api/remote"),get("/panel/api/tools"),get("/panel/api/problems"),asks()]); R=r;
           $("games").replaceChildren(...gameRows(g.games,true),addRow);
           const agents=a.agents.filter(x=>!x.disconnected), name=x=>(t.clients.find(c=>c.id===x.client)||{}).name||x.label||"Agent";
           const from=f=>f==="remote"?"From anywhere":"On this computer";
@@ -1337,7 +1343,7 @@ internal static partial class HttpMode
           $("devices").replaceChildren(...(devices.length?devices.map(d=>{
             const row=el("div","row"), k=el("div","k");
             k.append(el("span","name",d.name+(d.you?" (this device)":"")),el("span","sub","Connected "+new Date(d.since).toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric"})));
-            row.append(k,button("link danger","Disconnect",async b=>{ if(!d.you||await ask("Disconnect this device?","To open the panel here again, you will need a new one-time code.","Disconnect"))
+            row.append(k,button("link danger","Disconnect",async b=>{ if(!d.you||await ask("Disconnect this device?","To open the panel here again, you will need to allow it on the computer that runs UDriver.","Disconnect"))
               act(b,()=>post("/panel/api/devices/disconnect",{id:d.id})); }));
             return row;
           }):[emptyRow("No other device is connected.")]));
@@ -1349,6 +1355,16 @@ internal static partial class HttpMode
             $("rm-change").textContent=r.saved?"Change address…":"Set up…"; show("rm-signout",r.signedIn&&r.cloudflared);
           }
           $("alive").className="st on"; $("alive").lastChild.textContent="On";
+        }
+        async function asks(){
+          if(!$("asks")) return;
+          const p=(await get("/panel/api/pending")).pending; show("asks",p.length>0);
+          $("asks-g").replaceChildren(...p.map(x=>{
+            const row=el("div","row"), k=el("div","k");
+            k.append(el("span","name",(x.app||"An agent")+" wants to use your games"),el("span","sub","Check number "+x.check+" · access goes to "+(x.to||"this computer")));
+            row.append(k,button("link danger","Deny",b=>act(b,()=>post("/panel/api/pending/deny",{id:x.id}))),button("link","Allow",b=>act(b,()=>post("/panel/api/pending/approve",{id:x.id}))));
+            return row;
+          }));
         }
         async function setup(){
           const g=await get("/panel/api/games");
@@ -1384,7 +1400,7 @@ internal static partial class HttpMode
           $("r-host-foot").textContent=d?"":"Type the whole address: a name, a dot, and the domain you picked in Cloudflare.";
         }
         function showHost(){ const h=host(), e=h?hostError(h):""; $("r-url").textContent=h&&!e?"https://"+h+"/mcp":e||"—"; }
-        const pages={panel,setup,remote,agent:async()=>{},main:async()=>{}};
+        const pages={panel,setup,remote,agent:asks,main:async()=>{}};
         let failing=0;
         async function refresh(){
           if(busy) return;
@@ -1431,11 +1447,9 @@ internal static partial class HttpMode
           }));
         }
         if(M.page==="agent"){
-          const code=()=>act($("a-new"),async()=>{ try{ const j=await post("/panel/api/remote/code"); $("a-url").textContent=$("a-url").dataset.panel?j.panel:j.address; $("a-code").textContent=j.code; $("a-exp").textContent="Works once. Expires in 10 minutes."; }
-            catch(e){ $("a-code").textContent="—"; $("a-exp").textContent=e.message; } });
-          on("a-new","onclick",code); on("a-copy-url","onclick",()=>copy($("a-url").textContent,$("a-copy-url"))); on("a-copy-code","onclick",()=>copy($("a-code").textContent,$("a-copy-code")));
-          code();
+          get("/panel/api/remote").then(r=>$("a-url").textContent=($("a-url").dataset.panel?r.panel:r.address)||"Turn on remote access first.");
+          on("a-copy-url","onclick",()=>copy($("a-url").textContent,$("a-copy-url")));
         }
-        refresh(); if(M.page!=="main"&&M.page!=="agent") setInterval(refresh,2000);
+        refresh(); if(M.page!=="main") setInterval(refresh,2000);
         """;
 }

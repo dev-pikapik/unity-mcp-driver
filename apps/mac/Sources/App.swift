@@ -58,6 +58,18 @@ enum Section: Int, CaseIterable {
     var section = Section.games
     var approvals: Approvals!
     let split = NSSplitViewController()
+    /// Shown instead of the screens until the first answer from the server.
+    var loading: NSView? = {
+        let spin = NSProgressIndicator()
+        spin.style = .spinning
+        spin.startAnimation(nil)
+        let s = stack([spin, label("Starting UDriver…", color: .secondaryLabelColor)], spacing: 12, align: .centerX)
+        let v = NSView()
+        s.translatesAutoresizingMaskIntoConstraints = false
+        v.addSubview(s)
+        NSLayoutConstraint.activate([s.centerXAnchor.constraint(equalTo: v.centerXAnchor), s.centerYAnchor.constraint(equalTo: v.centerYAnchor)])
+        return v
+    }()
 
     func applicationDidFinishLaunching(_ n: Notification) {
         App.shared = self
@@ -103,6 +115,8 @@ enum Section: Int, CaseIterable {
                 alert("UDriver could not start", err, in: window)
             }
             await refresh()
+            loading = nil
+            select(section)
             if model.up && model.games.isEmpty && !UserDefaults.standard.bool(forKey: "welcomed") { showWelcome() }
             while true {
                 try? await Task.sleep(for: .milliseconds(1500))
@@ -139,12 +153,54 @@ enum Section: Int, CaseIterable {
         screens[section.rawValue].show(model)
     }
 
-    /// Runs a server action, shows its error if any, then refreshes.
+    /// Runs a server action, shows its error if any, then refreshes. Meanwhile the clicked button is disabled
+    /// and says what is happening, and the sidebar shows a spinner with the same words.
     func act(_ path: String, _ form: [String: String] = [:], then: ((J) -> Void)? = nil) {
+        let text = working(path)
+        let b = Button.pressed?.window == nil ? nil : Button.pressed
+        Button.pressed = nil
+        let title = b?.title
+        b?.isEnabled = false
+        b?.title = text
         Task {
-            do { let j = try await api.json(path, form); then?(j) }
-            catch { alert(error.localizedDescription, in: window) }
-            await refresh()
+            await busy(text) {
+                do { let j = try await api.json(path, form); then?(j) }
+                catch { alert(error.localizedDescription, in: window) }
+                await refresh()
+            }
+            b?.isEnabled = true
+            if let title { b?.title = title }
+        }
+    }
+
+    func busy<T>(_ text: String, _ work: () async throws -> T) async rethrows -> T {
+        sidebar.working.append(text)
+        sidebar.update(model)
+        defer {
+            if let i = sidebar.working.firstIndex(of: text) { sidebar.working.remove(at: i) }
+            sidebar.update(model)
+        }
+        return try await work()
+    }
+
+    func working(_ path: String) -> String {
+        switch path.replacingOccurrences(of: "/panel/api/", with: "") {
+        case "games/add": "Adding the game…"
+        case "games/start": "Launching the game…"
+        case "games/stop": "Stopping the game…"
+        case "games/remove": "Removing the game…"
+        case "agents/disconnect": "Disconnecting the agent…"
+        case "clients/revoke": "Removing the agent…"
+        case "pending/approve": "Allowing the agent…"
+        case "pending/deny": "Denying the agent…"
+        case "remote/install": "Downloading the helper…"
+        case "remote/login": "Signing in to Cloudflare…"
+        case "remote/on": "Turning on Access from Anywhere…"
+        case "remote/off": "Turning off Access from Anywhere…"
+        case "remote/signout": "Signing out of Cloudflare…"
+        case "local-clients": "Creating the setup…"
+        case "problems/dismiss": "Dismissing…"
+        default: "Saving…"
         }
     }
 
@@ -165,9 +221,8 @@ enum Section: Int, CaseIterable {
         section = s
         let vc = screens[s.rawValue]
         content.view.subviews.forEach { $0.removeFromSuperview() }
-        vc.view.frame = content.view.bounds
-        vc.view.autoresizingMask = [.width, .height]
-        content.view.addSubview(vc.view)
+        for v in [vc.view, loading].compactMap({ $0 }) { v.frame = content.view.bounds; v.autoresizingMask = [.width, .height] }
+        content.view.addSubview(loading ?? vc.view)
         window.title = s.title
         sidebar.select(s)
         if let bar = window.toolbar {
@@ -289,7 +344,7 @@ enum Section: Int, CaseIterable {
     @objc func checkUpdates() {
         Task {
             do {
-                let u = try await api.json("/panel/api/update")
+                let u = try await busy("Checking for updates…") { try await api.json("/panel/api/update") }
                 if u["installed"] as? Bool != true { return alert("Updates are not available for this copy.", "Only a copy installed from a UDriver download can update itself.", in: window) }
                 if let e = u["error"] as? String { return alert("Could not check for updates.", e, in: window) }
                 guard u["available"] as? Bool == true, let next = u["version"] as? String else {
@@ -301,7 +356,7 @@ enum Section: Int, CaseIterable {
                 a.addButton(withTitle: "Update Now")
                 a.addButton(withTitle: "Later")
                 guard await a.beginSheetModal(for: window) == .alertFirstButtonReturn else { return }
-                try await api.json("/panel/api/update/apply", ["restart": "true"], timeout: 600)
+                _ = try await busy("Downloading the update…") { try await api.json("/panel/api/update/apply", ["restart": "true"], timeout: 600) }
                 NSApp.terminate(nil)
             } catch {
                 alert("The update did not finish.", error.localizedDescription, in: window)
@@ -317,6 +372,8 @@ enum Section: Int, CaseIterable {
     let table = NSTableView()
     let foot = label("", size: 12, color: .secondaryLabelColor)
     let dot = NSView()
+    let spin = NSProgressIndicator()
+    var working: [String] = []
     var counts: [String] = ["", "", "", "", ""]
 
     override func loadView() {
@@ -333,7 +390,9 @@ enum Section: Int, CaseIterable {
         scroll.drawsBackground = false
         dot.wantsLayer = true
         dot.layer?.cornerRadius = 4
-        let footer = stack([fixed(dot, width: 8, height: 8), foot], .horizontal, spacing: 7)
+        spin.style = .spinning
+        spin.controlSize = .small
+        let footer = stack([fixed(dot, width: 8, height: 8), fixed(spin, width: 12, height: 12), foot], .horizontal, spacing: 7)
         footer.edgeInsets = .init(top: 0, left: 18, bottom: 14, right: 12)
         let v = NSView()
         for x in [scroll, footer] as [NSView] { x.translatesAutoresizingMaskIntoConstraints = false; v.addSubview(x) }
@@ -348,7 +407,10 @@ enum Section: Int, CaseIterable {
 
     func status(_ text: String, ok: Bool?) {
         foot.stringValue = text
-        dot.layer?.backgroundColor = (ok == nil ? NSColor.systemOrange : ok! ? .systemGreen : .systemRed).cgColor
+        dot.layer?.backgroundColor = (ok == true ? NSColor.systemGreen : .systemRed).cgColor
+        dot.isHidden = ok == nil
+        spin.isHidden = ok != nil
+        if ok == nil { spin.startAnimation(nil) } else { spin.stopAnimation(nil) }
         dot.setAccessibilityElement(false)
     }
 
@@ -357,7 +419,7 @@ enum Section: Int, CaseIterable {
         let sel = table.selectedRow
         table.reloadData()
         table.selectRowIndexes([sel], byExtendingSelection: false)
-        if let p = m.problem { status(m.up ? "Ready on this Mac" : p, ok: m.up) } else { status("Ready on this Mac", ok: true) }
+        if let w = working.last { status(w, ok: nil) } else if let p = m.problem { status(m.up ? "Ready on this Mac" : p, ok: m.up) } else { status("Ready on this Mac", ok: true) }
     }
 
     func select(_ s: Section) {
@@ -428,7 +490,7 @@ enum Section: Int, CaseIterable {
         let number = label(p.s("check"), size: 48, weight: .bold)
         number.alignment = .center
         number.setAccessibilityLabel("Check number \(p.s("check").map(String.init).joined(separator: " "))")
-        let note = wrapping("Allow only if the agent shows the same number.", size: 13)
+        let note = wrapping("Allow only if the sign-in page shows the same number.", size: 13)
         note.alignment = .center
         let globe = NSImageView(image: symbol("globe", nil, size: 18)!)
         globe.contentTintColor = .systemBlue

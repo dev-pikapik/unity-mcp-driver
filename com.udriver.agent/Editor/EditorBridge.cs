@@ -1,26 +1,26 @@
-using System;
-using System.Collections.Concurrent;
-using System.Globalization;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Net;
-using System.Text;
-using System.Threading;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
-using UnityEditor;
-using UnityEditor.Build.Reporting;
-using UnityEditor.Compilation;
-using UnityEditor.SceneManagement;
-using UnityEngine;
-using UnityEngine.SceneManagement;
-#if UDRV_TESTS
-using UnityEditor.TestTools.TestRunner.Api;
-#endif
-
 namespace UDriver.Editor
 {
+    using System;
+    using System.Collections.Concurrent;
+    using System.Globalization;
+    using System.Collections.Generic;
+    using System.IO;
+    using System.Linq;
+    using System.Net;
+    using System.Text;
+    using System.Threading;
+    using Newtonsoft.Json;
+    using Newtonsoft.Json.Linq;
+    using UnityEditor;
+    using UnityEditor.Build.Reporting;
+    using UnityEditor.Compilation;
+    using UnityEditor.SceneManagement;
+    using UnityEngine;
+    using UnityEngine.SceneManagement;
+    #if UDRV_TESTS
+    using UnityEditor.TestTools.TestRunner.Api;
+    #endif
+
     /// <summary>Editor bridge on its own port; restarts on every script reload, long operations keep state in SessionState.</summary>
     [InitializeOnLoad]
     public static class EditorBridge

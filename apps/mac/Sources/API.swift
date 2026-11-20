@@ -133,7 +133,9 @@ struct ServerError: LocalizedError {
         if let saved = read("panel.port").flatMap({ Int($0) }), !ports.contains(saved) { ports.append(saved) }
         for p in ports {
             port = p
-            guard let v = await serverVersion(), v.isEmpty || v.compare(version, options: .numeric) == .orderedAscending else { continue }
+            // A port taken but not answering is a hung server: stop it only if it is udriver-mcp.
+            let v = await serverVersion()
+            guard v.map({ $0.isEmpty || $0.compare(version, options: .numeric) == .orderedAscending }) ?? (bindable(p) == nil) else { continue }
             let ls = Process()
             ls.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
             ls.arguments = ["-nP", "-iTCP:\(p)", "-sTCP:LISTEN", "-Fpc"]
@@ -143,13 +145,14 @@ struct ServerError: LocalizedError {
             guard (try? ls.run()) != nil else { continue }
             let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
             ls.waitUntilExit()
-            var pid: Int32 = 0, stopped = false
+            var pid: Int32 = 0, stopped: [Int32] = []
             for line in text.split(separator: "\n") {
                 if line.hasPrefix("p") { pid = Int32(line.dropFirst()) ?? 0 }
                 // The server's own SIGTERM handler also stops its cloudflared.
-                if line.hasPrefix("c"), pid > 0, line == "cudriver-mcp" || (!v.isEmpty && line == "cdotnet") { stopped = kill(pid, SIGTERM) == 0 || stopped }
+                if line.hasPrefix("c"), pid > 0, line == "cudriver-mcp" || (v?.isEmpty == false && line == "cdotnet"), kill(pid, SIGTERM) == 0 { stopped.append(pid) }
             }
-            for _ in 0..<25 where stopped { if await serverVersion() == nil { break }; try? await Task.sleep(for: .milliseconds(200)) }
+            for _ in 0..<25 where !stopped.isEmpty { if bindable(p) != nil { break }; try? await Task.sleep(for: .milliseconds(200)) }
+            if !stopped.isEmpty, bindable(p) == nil { stopped.forEach { kill($0, SIGKILL) } }
         }
         port = keep
     }
@@ -165,7 +168,7 @@ struct ServerError: LocalizedError {
             if await ours() { return nil }
             port = first
         }
-        if await running(), await nextPort() { return nil }
+        if await running() || bindable(port) == nil, await nextPort() { return nil }
         let fm = FileManager.default
         guard let (file, args) = command() else {
             return fm.fileExists(atPath: dll) ? "UDriver needs .NET 10. Run the UDriver installer once, then open this app again."

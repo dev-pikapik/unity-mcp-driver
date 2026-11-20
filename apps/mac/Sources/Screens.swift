@@ -156,7 +156,7 @@ let levelHints = [
         for x in [scroll, line, side] { v.addSubview(x) }
         NSLayoutConstraint.activate([
             scroll.leadingAnchor.constraint(equalTo: v.leadingAnchor), scroll.topAnchor.constraint(equalTo: v.topAnchor), scroll.bottomAnchor.constraint(equalTo: v.bottomAnchor),
-            line.leadingAnchor.constraint(equalTo: scroll.trailingAnchor), line.topAnchor.constraint(equalTo: v.topAnchor), line.bottomAnchor.constraint(equalTo: v.bottomAnchor), line.widthAnchor.constraint(equalToConstant: 1),
+            line.leadingAnchor.constraint(equalTo: scroll.trailingAnchor), line.topAnchor.constraint(equalTo: v.safeAreaLayoutGuide.topAnchor), line.bottomAnchor.constraint(equalTo: v.bottomAnchor), line.widthAnchor.constraint(equalToConstant: 1),
             side.leadingAnchor.constraint(equalTo: line.trailingAnchor), side.trailingAnchor.constraint(equalTo: v.trailingAnchor),
             side.topAnchor.constraint(equalTo: v.safeAreaLayoutGuide.topAnchor), side.bottomAnchor.constraint(equalTo: v.bottomAnchor), side.widthAnchor.constraint(equalToConstant: 336),
             inspector.leadingAnchor.constraint(equalTo: side.leadingAnchor), inspector.trailingAnchor.constraint(equalTo: side.trailingAnchor), inspector.topAnchor.constraint(equalTo: side.topAnchor),
@@ -433,7 +433,7 @@ final class Card: NSCollectionViewItem {
         i.label = "Connect Agent"
         let b = Button("Connect Agent", symbol: "plus", primary: true) { App.shared.select(.access) }
         b.keyEquivalent = "n"
-        b.toolTip = "Get a one-time code for a new agent"
+        b.toolTip = "Get the address for a new agent"
         i.view = b
         return i
     }
@@ -617,16 +617,11 @@ final class Toggle: NSSwitch {
 
 @MainActor final class AccessScreen: Page {
     override var column: CGFloat? { 720 }
-    var code: J?
-    var codeUntil = Date.distantPast
-    var timer: Timer?
-    let countdown = wrapping("", size: 13)
 
     override func show(_ m: Model) {
         loadViewIfNeeded()
         let r = m.remote
-        if Date() > codeUntil { code = nil }
-        fill(key([r.filter { $0.key != "onlineSec" }, code ?? [:]])) {
+        fill(key([r.filter { $0.key != "onlineSec" }])) {
             let on = r["on"] as? Bool ?? false
             let sw = Toggle { [weak self] v in self?.flip(v, r) }
             sw.state = on ? .on : .off
@@ -640,7 +635,7 @@ final class Toggle: NSSwitch {
 
             if !on {
                 views.append(contentsOf: setup(r))
-                return views + local()
+                return views + local() + cloudflare(r)
             }
             let address = r.s("address")
             let addr = label(address, mono: true)
@@ -648,23 +643,39 @@ final class Toggle: NSSwitch {
             addr.lineBreakMode = .byTruncatingMiddle
             views.append(box(stack([stack([caption("Address"), addr], spacing: 4), spacer(), Button("Copy", symbol: "doc.on.doc") { clip(address) }], .horizontal, spacing: 10)))
 
-            if let c = code {
-                let big = label(c.s("code"), size: 34, weight: .bold, mono: true)
-                big.isSelectable = true
-                big.setAccessibilityLabel("Code \(c.s("code").map(String.init).joined(separator: " "))")
-                let qrImage = NSImageView(image: qr(c.s("panel").nilIfEmpty ?? c.s("address"), side: 120) ?? NSImage())
-                qrImage.setAccessibilityLabel("QR code to open UDriver on your phone")
-                let left = stack([caption("Code for a new agent"), big, countdown,
-                                  stack([Button("Copy", symbol: "doc.on.doc") { clip(c.s("code")) }, Button("New Code", symbol: "arrow.clockwise") { [weak self] in self?.newCode() }], .horizontal)], spacing: 10)
-                left.setCustomSpacing(4, after: left.arrangedSubviews[0])
-                left.setCustomSpacing(16, after: countdown)
-                let right = stack([box(fixed(qrImage, width: 120, height: 120), padding: 6), label("Open on your phone", size: 11, color: .secondaryLabelColor)], spacing: 6, align: .centerX)
-                views.append(box(stack([left, spacer(), right], .horizontal, spacing: 20, align: .top)))
-            } else {
-                views.append(box(stack([stack([caption("Code for a new agent"), wrapping("A new agent asks for a code the first time it connects from another device. Each code works once.", size: 13)], spacing: 6), spacer(),
-                                          Button("New Code", primary: true) { [weak self] in self?.newCode() }], .horizontal, spacing: 12)))
+            let qrImage = NSImageView(image: qr(r.s("panel").nilIfEmpty ?? address, side: 120) ?? NSImage())
+            qrImage.setAccessibilityLabel("QR code to open UDriver on your phone")
+            let left = stack([caption("Connect a new agent"),
+                              wrapping("Paste the address into the agent. When it connects for the first time, this Mac asks you to allow it. Press Allow if the agent's page shows the same check number.", size: 13)], spacing: 6)
+            let right = stack([box(fixed(qrImage, width: 120, height: 120), padding: 6), label("Open on your phone", size: 11, color: .secondaryLabelColor)], spacing: 6, align: .centerX)
+            views.append(box(stack([left, spacer(), right], .horizontal, spacing: 20, align: .top)))
+            return views + local() + cloudflare(r)
+        }
+    }
+
+    func cloudflare(_ r: J) -> [NSView] {
+        guard r["signedIn"] as? Bool == true else { return [] }
+        let domain = r.s("domain").nilIfEmpty.map { "Signed in · domain \($0)" } ?? "Signed in"
+        let out = Button("Turn Off and Sign Out") { [weak self] in self?.signOut() }
+        out.hasDestructiveAction = true
+        let row = stack([tile("cloud", .systemGray, side: 28),
+                         stack([label("Cloudflare", size: 14, weight: .semibold), wrapping(domain)], spacing: 3), spacer(), out], .horizontal, spacing: 12)
+        return [box(row)]
+    }
+
+    func signOut() {
+        guard let w = view.window else { return }
+        let a = NSAlert()
+        a.messageText = "Turn off and sign out of Cloudflare?"
+        a.informativeText = "Access from anywhere turns off and UDriver forgets its Cloudflare sign-in on this Mac. Your tunnel stays in your Cloudflare account, so you can sign in and turn it on again later."
+        a.addButton(withTitle: "Turn Off and Sign Out").hasDestructiveAction = true
+        a.addButton(withTitle: "Cancel")
+        a.beginSheetModal(for: w) { res in
+            guard res == .alertFirstButtonReturn else { return }
+            self.last = ""
+            App.shared.act("/panel/api/remote/signout") { j in
+                if let note = (j["note"] as? String)?.nilIfEmpty { alert("Signed out of UDriver's Cloudflare sign-in", note, in: w) }
             }
-            return views + local()
         }
     }
 
@@ -735,25 +746,6 @@ final class Toggle: NSSwitch {
             self.last = ""
             if res == .alertFirstButtonReturn { App.shared.act("/panel/api/remote/off") } else { self.show(App.shared.model) }
         }
-    }
-
-    func newCode() {
-        App.shared.act("/panel/api/remote/code") { [weak self] j in
-            guard let self else { return }
-            self.code = j
-            self.codeUntil = Date().addingTimeInterval(TimeInterval(j["expiresSec"] as? Int ?? 600))
-            self.timer?.invalidate()
-            self.timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.tick() }
-            }
-            self.tick()
-        }
-    }
-
-    func tick() {
-        let left = Int(codeUntil.timeIntervalSinceNow)
-        if left <= 0 { timer?.invalidate(); code = nil; show(App.shared.model); return }
-        countdown.stringValue = String(format: "Works once, expires in %d:%02d. Paste it on the page the agent opens.", left / 60, left % 60)
     }
 
     @objc func copyCommand() {

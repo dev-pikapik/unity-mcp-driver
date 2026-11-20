@@ -478,7 +478,7 @@ internal static partial class Program
             .OnFirstRun(_ => { if (OperatingSystem.IsWindows()) Environment.Exit(Cli.Run(["tui"]).GetAwaiter().GetResult()); }).Run();
         if (args is ["setup"]) { HttpMode.TerminalSetup(); return; }
         if (args is ["inject" or "restore", var gamePath]) { Environment.ExitCode = Inject.Run(args[0], gamePath); return; }
-        if (args is ["tui" or "status" or "approve" or "deny" or "code" or "tools" or "levels" or "computer" or "clear-mark", ..]) { Environment.ExitCode = await Cli.Run(args); return; }
+        if (args is ["tui" or "status" or "approve" or "deny" or "tools" or "levels" or "computer" or "clear-mark", ..]) { Environment.ExitCode = await Cli.Run(args); return; }
         // Game drivers from before 2.0 keep their keys in files; a running game's file stays, it tells OldAgent the game needs updating.
         try { foreach (var f in Directory.EnumerateFiles(HomeDir, "*.token")) if (!int.TryParse(Path.GetFileNameWithoutExtension(f), out int tp) || Free(tp)) File.Delete(f); } catch { }
         if (int.TryParse(Environment.GetEnvironmentVariable("UDRIVER_HTTP_PORT"), out int httpPort))
@@ -718,12 +718,11 @@ internal static partial class Program
         var tools = new JsonArray();
         var known = new HashSet<string>();
         var running = await Targets();
-        int top = Registry.Games.Select(g => GameLevel(g, running.Any(t => t.Shell && t.Game?.Id == g.Id))).Append(-1).Max();
+        // Every tool the owner has not turned off, whatever games are added yet: remote agents read the list once, and each call still checks the game's access.
         foreach (var d in LocalTools.Concat(ToolManifest.Tools))
         {
             known.Add(d.Name);
-            if (Blocked(d.Name, null) == null && (d.Name is "targets" or "app_status" || Math.Min(Need(d.Name, null), 2) <= top
-                || d.Name == "app_launch" && BuildDirs.Length > 0 && Math.Min(Need(d.Name, null), 2) <= Registry.Level(Registry.DefaultAccess))) tools.Add(ToolJson(d));
+            if (Blocked(d.Name, null) == null) tools.Add(ToolJson(d));
         }
         var live = _liveTools;
         if (live == null)

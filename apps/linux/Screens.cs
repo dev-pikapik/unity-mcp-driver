@@ -32,7 +32,7 @@ abstract class Screen
         var b = Gtk.Button.NewWithLabel(label);
         b.Valign = Gtk.Align.Center;
         if (style != null) b.AddCssClass(style);
-        b.OnClicked += (_, _) => click();
+        b.OnClicked += (_, _) => { Shell.Pressed = b; click(); Shell.Pressed = null; };
         return b;
     }
 
@@ -341,7 +341,7 @@ sealed class AgentsScreen : ListScreen
         connect.Child = Adw.ButtonContent.New();
         ((Adw.ButtonContent)connect.Child).IconName = "list-add-symbolic";
         ((Adw.ButtonContent)connect.Child).Label = "Connect Agent";
-        connect.TooltipText = "Get a one-time code for a new agent";
+        connect.TooltipText = "Get the address for a new agent";
         connect.AddCssClass("suggested-action");
         connect.OnClicked += (_, _) => Shell.Select(Section.Access);
         Header.PackEnd(connect);
@@ -503,20 +503,15 @@ sealed class ToolsScreen : ListScreen
 sealed class AccessScreen : ListScreen
 {
     public override string Title => "Access from Anywhere";
-    JsonNode? code;
-    DateTime codeUntil;
-    Gtk.Label? countdown;
-    bool ticking;
 
     public AccessScreen(Shell shell) : base(shell) { }
 
     public override void Show(Model m)
     {
         M = m;
-        if (DateTime.Now > codeUntil) code = null;
         var r = m.Remote.DeepClone().AsObject();
         r.Remove("onlineSec");
-        if (!Changed(Key(r, code))) return;
+        if (!Changed(Key(r))) return;
 
         bool on = r.B("on");
         string state = r.S("state");
@@ -545,38 +540,20 @@ sealed class AccessScreen : ListScreen
             addr.AddSuffix(Button("Copy", () => Shell.Copy(address)));
             where.Add(addr);
             groups.Add(where);
-            groups.Add(Code());
+            groups.Add(Connect(r.S("panel") is { Length: > 0 } p ? p : address));
         }
         groups.Add(Local());
+        if (r.B("signedIn")) groups.Add(Cloudflare(r));
         Fill(groups);
     }
 
-    Adw.PreferencesGroup Code()
+    static Adw.PreferencesGroup Connect(string panel)
     {
-        var g = Group("Code for a new agent");
-        if (code == null)
-        {
-            g.Description = "A new agent asks for a code the first time it connects from another device. Each code works once.";
-            g.HeaderSuffix = Button("New Code", NewCode, "suggested-action");
-            return g;
-        }
-        string c = code.S("code");
-        var big = Gtk.Label.New(c);
-        big.AddCssClass("code");
-        big.Selectable = true;
-        big.Xalign = 0;
-        countdown = Text("", "dim-label");
-        Tick();
-        var buttons = Gtk.Box.New(Gtk.Orientation.Horizontal, 8);
-        buttons.Append(Button("Copy", () => Shell.Copy(c)));
-        buttons.Append(Button("New Code", NewCode));
-        var left = Gtk.Box.New(Gtk.Orientation.Vertical, 10);
-        left.Hexpand = true;
-        left.Valign = Gtk.Align.Center;
-        left.Append(big);
-        left.Append(countdown);
-        left.Append(buttons);
-        var qr = Gtk.Picture.NewForPaintable(Shell.Texture(new PngByteQRCode(new QRCodeGenerator().CreateQrCode(code.S("panel") is { Length: > 0 } p ? p : code.S("address"), QRCodeGenerator.ECCLevel.M)).GetGraphic(8)));
+        var g = Group("Connect a new agent");
+        var text = Text("Paste the address into the agent. When it connects for the first time, this computer asks you to allow it. Press Allow if the agent's page shows the same check number.");
+        text.Hexpand = true;
+        text.Valign = Gtk.Align.Center;
+        var qr = Gtk.Picture.NewForPaintable(Shell.Texture(new PngByteQRCode(new QRCodeGenerator().CreateQrCode(panel, QRCodeGenerator.ECCLevel.M)).GetGraphic(8)));
         qr.SetSizeRequest(140, 140);
         qr.CanShrink = false;
         var right = Gtk.Box.New(Gtk.Orientation.Vertical, 6);
@@ -585,11 +562,23 @@ sealed class AccessScreen : ListScreen
         var box = Gtk.Box.New(Gtk.Orientation.Horizontal, 20);
         box.AddCssClass("card");
         box.MarginTop = 4;
-        box.Append(left);
+        box.Append(text);
         box.Append(right);
-        left.MarginStart = left.MarginTop = left.MarginBottom = 18;
+        text.MarginStart = text.MarginTop = text.MarginBottom = 18;
         right.MarginEnd = right.MarginTop = right.MarginBottom = 18;
         g.Add(box);
+        return g;
+    }
+
+    Adw.PreferencesGroup Cloudflare(JsonNode r)
+    {
+        var g = Group();
+        var row = Row("Cloudflare", r.S("domain") is { Length: > 0 } d ? "Signed in · domain " + d : "Signed in");
+        row.AddPrefix(Shell.Tile("weather-overcast-symbolic", "gray"));
+        row.AddSuffix(Button("Turn Off and Sign Out", () => Shell.Confirm("Turn off and sign out of Cloudflare?",
+            "Access from anywhere turns off and UDriver forgets its Cloudflare sign-in on this computer. Your tunnel stays in your Cloudflare account, so you can sign in and turn it on again later.",
+            "Turn Off and Sign Out", () => Shell.Act("/panel/api/remote/signout", then: j => { if (j.S("note") is { Length: > 0 } n) Shell.Alert("Signed out of UDriver's Cloudflare sign-in", n); })), "destructive-action"));
+        g.Add(row);
         return g;
     }
 
@@ -636,33 +625,6 @@ sealed class AccessScreen : ListScreen
         }
         Shell.Confirm("Turn off access from anywhere?", "Agents and devices that connect over the internet lose access at once.", "Turn Off",
             () => Shell.Act("/panel/api/remote/off"), Undo);
-    }
-
-    void NewCode() => Shell.Act("/panel/api/remote/code", then: j =>
-    {
-        code = j;
-        codeUntil = DateTime.Now.AddSeconds(j.I("expiresSec") ?? 600);
-        Forget();
-        Run();
-    });
-
-    async void Run()
-    {
-        if (ticking) return;
-        ticking = true;
-        while (code != null)
-        {
-            await Task.Delay(1000);
-            Tick();
-        }
-        ticking = false;
-    }
-
-    void Tick()
-    {
-        int left = (int)(codeUntil - DateTime.Now).TotalSeconds;
-        if (left <= 0) { code = null; Show(M); return; }
-        countdown?.SetLabel($"Works once, expires in {left / 60}:{left % 60:00}. Paste it on the page the agent opens.");
     }
 
     Adw.PreferencesGroup Local()
