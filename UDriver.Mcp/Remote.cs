@@ -312,6 +312,7 @@ internal static partial class HttpMode
         switch (path)
         {
             case "/panel/api/remote/code":
+                if (!local) { await Json(ctx, 403, Fail(LocalOnly)); return true; }
                 if (_public.Length == 0) error = "Turn on remote access first.";
                 else reply = new JsonObject { ["ok"] = true, ["code"] = NewCode(), ["address"] = _public + "/mcp", ["panel"] = _public + "/panel", ["expiresSec"] = 600 };
                 break;

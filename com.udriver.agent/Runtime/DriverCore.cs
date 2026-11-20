@@ -127,7 +127,7 @@ namespace UDriver
                 var info = new JObject
                 {
                     ["kind"] = kind, ["name"] = Application.productName,
-                    ["project"] = Application.isEditor ? Path.GetDirectoryName(Application.dataPath) : Path.GetFullPath(Environment.GetCommandLineArgs()[0]),
+                    ["project"] = Application.isEditor ? Path.GetDirectoryName(Application.dataPath) : GamePath(),
                     ["pid"] = System.Diagnostics.Process.GetCurrentProcess().Id, ["unity"] = Application.unityVersion, ["port"] = port,
                 };
                 WritePrivate(FileFor(port, ".token"), t);
@@ -135,6 +135,17 @@ namespace UDriver
             }
             catch (Exception e) { Debug.LogWarning("[UDriver] could not write the token file (app_connect will not work, app_launch will): " + e.Message); }
             return t;
+        }
+
+        static string GamePath()
+        {
+            string data = Application.dataPath, dir = Path.GetDirectoryName(data);
+            if (Application.platform == RuntimePlatform.OSXPlayer) return dir;
+            string name = Path.GetFileName(data);
+            if (name.EndsWith("_Data")) name = name.Substring(0, name.Length - 5);
+            foreach (var ext in new[] { ".exe", ".x86_64", ".arm64", ".x86", "" })
+                if (File.Exists(Path.Combine(dir, name + ext))) return Path.Combine(dir, name + ext);
+            return Path.GetFullPath(Environment.GetCommandLineArgs()[0]);
         }
 
         public static void Unpublish(int port)
@@ -582,7 +593,7 @@ namespace UDriver
             r.Text("scenes: " + string.Join(", ", scenes));
             r.Text("screen: " + Screen.width + "x" + Screen.height + " | focused: " + Application.isFocused + " | frame: " + Time.frameCount
                    + " | fps: " + (Time.unscaledDeltaTime > 0 ? (1f / Time.unscaledDeltaTime).ToString("0") : "?") + " | timeScale: " + Time.timeScale);
-            r.Text("ui panels: " + UiTools.Roots().Count + " | input methods: event" + (InputTools.InjectAvailable ? ", input" : " (Input System not active: method=input unavailable)"));
+            r.Text("ui panels: " + UiTools.Roots().Count + " | input methods: event" + (InputTools.InjectAvailable ? ", input" : " (Input System not active: method=input unavailable)") + (InputTools.OsKeysAvailable ? ", os (real key events for Input.GetKey)" : ""));
             r.Text("harmony (trace_add): " + (ProbeTools.HarmonyAvailable ? "available" : "not found - add 0Harmony.dll to Assets/Plugins to enable method tracing"));
             r.Text("safety: " + (AllowUnsafe ? "UNSAFE - state_set/state_call may reach any .NET API (UDRIVER_UNSAFE=1)" : "restricted - state_set/state_call limited to game code, UnityEngine and basic types; access token required; loopback only"));
             r.Text("probes: " + ProbeTools.Count + " | recording frames: " + CaptureTools.Recording + " (" + CaptureTools.FrameCount + " stored) | last event seq: " + EventStore.LastSeq);

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>UDriver</AssemblyName>
+    <RootNamespace>UDriver.App</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="GirCore.Adw-1" Version="0.8.1" />
+    <PackageReference Include="QRCoder" Version="1.6.0" />
+    <EmbeddedResource Include="../../packaging/udriver.png" LogicalName="logo.png" />
+  </ItemGroup>
+</Project>

@@ -3,7 +3,7 @@ $Dir = $PSScriptRoot
 $U = Join-Path $env:USERPROFILE '.udriver'
 # Settings kept in remote.env by earlier versions; read as literal text, a variable already set wins.
 $OldEnv = if (Test-Path -LiteralPath "$U\remote.env") { Get-Content -LiteralPath "$U\remote.env" } else { @() }
-foreach ($K in 'UDRIVER_HTTP_PORT', 'UDRIVER_BUILDS_DIR', 'UDRIVER_DISABLE_TOOLS', 'UDRIVER_READONLY', 'UDRIVER_OAUTH_REDIRECT_HOSTS') {
+foreach ($K in 'UDRIVER_HTTP_PORT', 'UDRIVER_BUILDS_DIR', 'UDRIVER_DISABLE_TOOLS', 'UDRIVER_READONLY') {
     $Line = $OldEnv | Where-Object { $_.StartsWith("$K=") } | Select-Object -First 1
     if (-not $Line) { continue }
     $V = $Line.Substring($K.Length + 1)
@@ -51,25 +51,25 @@ if (Test-Path -LiteralPath "$Dir\com.udriver.agent") {
     } catch { Fail "Could not copy the Unity package from $Dir" }
 }
 
-# .NET 8 or newer SDK (the server targets .NET 8 and runs on newer runtimes too).
+# .NET 10 or newer SDK (the server targets .NET 10 and runs on newer runtimes too).
 function Find-Dotnet {
     foreach ($d in @((Get-Command dotnet -ErrorAction SilentlyContinue).Source, "$U\dotnet\dotnet.exe", "$env:ProgramFiles\dotnet\dotnet.exe")) {
-        if ($d -and (Test-Path -LiteralPath $d) -and (& $d --list-sdks 2>$null | Where-Object { [int](($_ -split '\.')[0]) -ge 8 })) { return $d }
+        if ($d -and (Test-Path -LiteralPath $d) -and (& $d --list-sdks 2>$null | Where-Object { [int](($_ -split '\.')[0]) -ge 10 })) { return $d }
     }
 }
 $Dotnet = Find-Dotnet
 if (-not $Dotnet) {
     Write-Host ''
-    Write-Host 'UDriver needs the .NET 8 SDK, a free program from Microsoft.'
+    Write-Host 'UDriver needs the .NET 10 SDK, a free program from Microsoft.'
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         Write-Host 'Installing it now. If Windows asks whether to allow changes, choose Yes.'
-        winget install --id Microsoft.DotNet.SDK.8 -e --silent --disable-interactivity --accept-source-agreements --accept-package-agreements
+        winget install --id Microsoft.DotNet.SDK.10 -e --silent --disable-interactivity --accept-source-agreements --accept-package-agreements
         $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
         $Dotnet = Find-Dotnet
     }
     if (-not $Dotnet) {
-        Start-Process 'https://dotnet.microsoft.com/download/dotnet/8.0'
-        Fail 'Install the .NET 8 SDK from the Microsoft page that just opened, then start UDriver again.'
+        Start-Process 'https://dotnet.microsoft.com/download/dotnet/10.0'
+        Fail 'Install the .NET 10 SDK from the Microsoft page that just opened, then start UDriver again.'
     }
 }
 

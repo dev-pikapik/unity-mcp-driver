@@ -16,10 +16,12 @@ internal static class Registry
     {
         public string DefaultAccess = "play";
         public List<Game> Games = new();
+        public SortedSet<string> ToolsOff = new() { "state_call" };
+        public SortedDictionary<string, SortedSet<string>> ClientToolsOff = new();   // client id -> tools turned off for it
     }
 
     internal static readonly string[] Levels = { "watch", "play", "full" };
-    internal static int Level(string access) => Math.Max(Array.IndexOf(Levels, access), 0);
+    internal static int Level(string access) => access == "none" ? -1 : Math.Max(Array.IndexOf(Levels, access), 0);
 
     static string File_ => Path.Combine(Program.HomeDir, "targets.json");
     static string AgentDir => Path.Combine(Program.HomeDir, "agents");
@@ -55,9 +57,12 @@ internal static class Registry
                 d.Games.Add(new Game
                 {
                     Id = id, Name = (string?)o["name"] ?? id, Kind = (string?)o["kind"] == "project" ? "project" : "build", Path = (string?)o["path"] ?? "",
-                    Access = Valid((string?)o["access"]) ?? "watch", Pid = (int?)o["pid"] ?? 0, PidStart = (long?)o["pidStart"] ?? 0,
+                    Access = (string?)o["access"] == "none" ? "none" : Valid((string?)o["access"]) ?? "watch", Pid = (int?)o["pid"] ?? 0, PidStart = (long?)o["pidStart"] ?? 0,
                     SeenPid = (int?)o["seenPid"] ?? 0, SeenStart = (long?)o["seenStart"] ?? 0,
                 });
+        if (j["toolsOff"] is JsonArray off) d.ToolsOff = new(off.Select(x => (string?)x ?? "").Where(x => x.Length > 0));
+        foreach (var (client, tools) in j["clientToolsOff"] as JsonObject ?? new JsonObject())
+            if (tools is JsonArray a) d.ClientToolsOff[client] = new(a.Select(x => (string?)x ?? "").Where(x => x.Length > 0));
         return d;
     }
 
@@ -91,8 +96,11 @@ internal static class Registry
     {
         var d = File.Exists(File_) ? Parse(File.ReadAllText(File_)) : new Data();
         T result = work(d);
-        var games = new JsonArray(d.Games.Select(g => (JsonNode)ToJson(g)).ToArray());
-        Program.WritePrivate(File_, new JsonObject { ["defaultAccess"] = d.DefaultAccess, ["games"] = games }.ToJsonString(new() { WriteIndented = true }));
+        static JsonArray Names(IEnumerable<string> s) => new(s.Select(x => (JsonNode)x!).ToArray());
+        var json = new JsonObject { ["defaultAccess"] = d.DefaultAccess, ["games"] = new JsonArray(d.Games.Select(g => (JsonNode)ToJson(g)).ToArray()) };
+        json["toolsOff"] = Names(d.ToolsOff);
+        if (d.ClientToolsOff.Count > 0) json["clientToolsOff"] = new JsonObject(d.ClientToolsOff.Select(x => KeyValuePair.Create(x.Key, (JsonNode?)Names(x.Value))));
+        Program.WritePrivate(File_, json.ToJsonString(new() { WriteIndented = true }));
         lock (Sync) _stamp = (default, -2);
         return result;
     });
@@ -102,7 +110,8 @@ internal static class Registry
     internal static string DefaultAccess => Load().DefaultAccess;
     internal static List<Game> Games => Load().Games;
 
-    internal static Game? Find(string want) => Load().Games.FirstOrDefault(g => g.Id == want) ?? Load().Games.FirstOrDefault(g => g.Name.Equals(want, StringComparison.OrdinalIgnoreCase));
+    internal static Game? Find(string want) => Load().Games.FirstOrDefault(g => g.Id == want) ?? Load().Games.FirstOrDefault(g => g.Name.Equals(want, StringComparison.OrdinalIgnoreCase))
+        ?? (Path.IsPathFullyQualified(want) ? ForPath(want) : null);
 
     /// <summary>The .app for a file inside it; links resolved where the path exists.</summary>
     internal static string Norm(string path)
@@ -189,7 +198,7 @@ internal static class Registry
         return g;
     }
 
-    /// <summary>Gives every live target its record; unknown ones are added with the default access.
+    /// <summary>Gives every live target its record; unknown ones are added with no access until the owner allows them.
     /// The process is remembered so a running game keeps its record when the owner changes the path.</summary>
     internal static void Attach(List<Program.Target> targets)
     {
@@ -216,7 +225,7 @@ internal static class Registry
                     if ((t.Game = Match(d.Games, norm, t.Proc?.Id ?? t.Pid)) != null) continue;
                     bool known = Classify(norm, out string kind, out string real, out string name) == null;
                     if (!known) { kind = t.Kind == "editor" || Directory.Exists(norm) ? "project" : "build"; real = norm; name = Path.GetFileNameWithoutExtension(norm); }
-                    t.Game = AddTo(d, kind, real, t.Name.Length > 0 && kind == "build" ? t.Name : name, null);
+                    t.Game = AddTo(d, kind, real, t.Name.Length > 0 && kind == "build" ? t.Name : name, "none");
                     if ((t.Proc?.Id ?? t.Pid) is > 0 and int pid) { t.Game.SeenPid = pid; t.Game.SeenStart = StartOf(pid); }
                 }
                 return 0;
@@ -257,10 +266,11 @@ internal static class Registry
         added = null;
         if (access != null && Valid(access) == null) return "Access must be watch, play or full.";
         if (Classify(path, out string kind, out string real, out string name) is string err) return err;
+        if (kind == "build" && Inject.Ensure(Inject.GameExe(real)) is string cannot) return cannot;
         added = Change(d =>
         {
             var same = Match(d.Games, real, 0);
-            if (same != null && same.Path.Equals(real, PathCmp)) return same;
+            if (same != null && same.Path.Equals(real, PathCmp)) { same.Access = access ?? same.Access; return same; }
             return AddTo(d, kind, real, name, access);
         });
         return null;
@@ -287,6 +297,31 @@ internal static class Registry
     internal static string? SetDefault(string access) =>
         Valid(access) == null ? "Access must be watch, play or full." : Change(d => { d.DefaultAccess = access; return (string?)null; });
 
+    // ---------------- tools turned off in the panel ----------------
+
+    internal static bool ToolOff(string tool, string client)
+    {
+        var d = Load();
+        return d.ToolsOff.Contains(tool) || d.ClientToolsOff.TryGetValue(client, out var off) && off.Contains(tool);
+    }
+
+    internal static (SortedSet<string> All, SortedDictionary<string, SortedSet<string>> Clients) ToolsOff()
+    {
+        var d = Load();
+        return (d.ToolsOff, d.ClientToolsOff);
+    }
+
+    /// <summary>client null: for every agent.</summary>
+    internal static void SetTool(IEnumerable<string> tools, string? client, bool on) => Change(d =>
+    {
+        var off = client == null ? d.ToolsOff : d.ClientToolsOff.TryGetValue(client, out var s) ? s : d.ClientToolsOff[client] = new();
+        if (on) off.ExceptWith(tools); else off.UnionWith(tools);
+        if (client != null && off.Count == 0) d.ClientToolsOff.Remove(client);
+        return 0;
+    });
+
+    internal static void ForgetClient(string client) => Change(d => d.ClientToolsOff.Remove(client));
+
     // ---------------- agents ----------------
 
     static string AgentFile(int n, string ext) => Path.Combine(AgentDir, n + ext);
@@ -304,7 +339,7 @@ internal static class Registry
 
     static void Write(Program.Session s) => Program.WritePrivate(AgentFile(s.Slot, ".json"), new JsonObject
     {
-        ["label"] = s.Label, ["pid"] = Environment.ProcessId, ["from"] = s.Local ? "this computer" : "remote", ["client"] = s.Client,
+        ["label"] = s.Label, ["name"] = s.Name, ["pid"] = Environment.ProcessId, ["from"] = s.Local ? "this computer" : "remote", ["client"] = s.Client,
         ["target"] = s.LastTarget, ["lastSeen"] = s.LastSeen == default ? null : s.LastSeen.ToString("O"),
     }.ToJsonString());
 
@@ -332,6 +367,16 @@ internal static class Registry
             if (Mine.Count == 0) AppDomain.CurrentDomain.ProcessExit += (_, _) => { lock (Mine) foreach (var m in Mine.ToList()) Release(m); };
             Mine.Add(s);
         }
+    }
+
+    /// <summary>The name the agent gave in initialize, shown in the panel instead of "agent N": no control characters, at most 64.</summary>
+    internal static void Rename(Program.Session s, string name)
+    {
+        name = new string(name.Where(c => !char.IsControl(c)).ToArray()).Trim();
+        if (name.Length > 64) name = name.Substring(0, char.IsHighSurrogate(name[63]) ? 63 : 64);
+        s.Name = name;
+        s.Written = default;
+        Touch(s);
     }
 
     internal static void Touch(Program.Session s)
@@ -378,7 +423,7 @@ internal static class Registry
             DateTime.TryParse((string?)a["lastSeen"], null, System.Globalization.DateTimeStyles.RoundtripKind, out var seen);
             list.Add(new JsonObject
             {
-                ["id"] = slot, ["label"] = (string?)a["label"], ["from"] = (string?)a["from"], ["client"] = (string?)a["client"] ?? "", ["target"] = (string?)a["target"] ?? "",
+                ["id"] = slot, ["label"] = (string?)a["name"] is { Length: > 0 } name ? name : (string?)a["label"], ["from"] = (string?)a["from"], ["client"] = (string?)a["client"] ?? "", ["target"] = (string?)a["target"] ?? "",
                 ["agoSec"] = seen == default ? null : (int)(DateTime.UtcNow - seen).TotalSeconds, ["pid"] = pid,
                 ["disconnected"] = File.Exists(AgentFile(slot, ".off")),
             });

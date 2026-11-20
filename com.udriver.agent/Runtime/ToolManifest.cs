@@ -17,7 +17,7 @@ namespace UDriver
 
     public static class ToolManifest
     {
-        public const string Version = "0.8.2";
+        public const string Version = "1.0.0";
 
         /// <summary>Game drivers take 17890, then 17911-17930; editor bridges 17891-17910.</summary>
         public const int GamePort = 17890, EditorPort = 17891, EditorPortLast = 17910, GamePortLast = 17930;
@@ -89,8 +89,9 @@ namespace UDriver
             T("ui_focus", "Give keyboard focus to an element.", Tg("")),
             T("type_text", "Type text as keystrokes into the given (or currently focused) element. Falls back to setting the value directly if keystrokes had no effect.",
                 Tg("", P("text", "string", "Text to type.", true), P("clear", "boolean", "Clear the field first."), P("submit", "boolean", "Press Enter afterwards."), P("method", "string", "event (default) | input | set."))),
-            T("key", "Press, hold or release a key. With method=event use UnityEngine.KeyCode names (Return, Escape, Tab, Space, Backspace, Delete, LeftArrow, A, Alpha1, F5...). With method=input use Input System Key names (Enter, Escape, Digit1...).",
-                P("key", "string", "Key name.", true), P("action", "string", "press (default) | down | up."), P("holdMs", "integer", "For press: how long to hold."), Mods, Method),
+            T("key", "Press, hold or release a key like a real keyboard. Key names are UnityEngine.KeyCode names (Return, Escape, Tab, Space, Backspace, LeftArrow, W, Alpha1, LeftShift, F5...; Enter and Digit1 work too). method=auto (default) picks the route: the focused UI Toolkit element; else the selected uGUI object (Return/Space submit, Escape cancels, arrows and Tab move the selection, a text field takes every key); else gameplay input, read by Input.GetKey or Input System actions.",
+                P("key", "string", "Key name.", true), P("action", "string", "press (default) | down | up."), P("holdMs", "integer", "For press: how long to hold."), Mods,
+                P("method", "string", "auto (default) | event: UI Toolkit events | input: Input System virtual keyboard (Input System Key names) | os: real key events posted to the game window (macOS and Windows builds), for gameplay code even while a UI object is selected.")),
             T("play", "Play the game for a stretch in one call: each step holds/taps keys, presses an Input System action, tilts the left stick or moves the mouse for its duration, frame by frame inside the game; use it for walking, jumping and looking around. Example: {\"steps\":[{\"hold\":[\"W\",\"LeftShift\"],\"ms\":800},{\"tap\":[\"Space\"],\"look\":[200,0],\"ms\":300}],\"observe\":[\"/Player:Transform.position\"]}.",
                 P("steps", "array", "Up to 100 steps, at most 60000 ms in total. Step fields (all optional): hold (Input System Key names held during the step: W, LeftShift, Space...), tap (keys pressed for one frame at the start), action (Input System action name or Map/Action; its keyboard or mouse-button binding is held during the step), move ([x,y] left gamepad stick, -1..1), look ([dx,dy] total mouse delta over the step, +y up), ms (duration; default one frame).", true),
                 P("observe", "array", "State paths (as in state_get) read after every step."),
@@ -217,7 +218,7 @@ namespace UDriver
                 P("names", "array", "Full test names to run."), P("groups", "array", "Regex groups (e.g. namespace or fixture names)."), P("categories", "array", "NUnit categories."), P("assemblies", "array", "Test assembly names."),
                 P("onlyFailed", "boolean", "For results: only failed tests (default true)."), P("limit", "integer", "For results: max tests listed (default 30).")),
             T("editor_build", "Build a player from the editor (Development Build by default so the driver is active). The editor is blocked while building; poll with action=status.",
-                P("action", "string", "build | status.", true), P("path", "string", "Absolute output path inside an approved build folder: Game.exe on Windows, Game.app on macOS, Game.x86_64 on Linux, e.g. C:/Builds/QA/Game.exe."), P("development", "boolean", "Default true."), P("scenes", "array", "Scene paths (default: enabled scenes from Build Settings).")),
+                P("action", "string", "build | status.", true), P("path", "string", "Absolute output path inside the project folder and an approved build folder: Game.exe on Windows, Game.app on macOS, Game.x86_64 on Linux, e.g. C:/Projects/Game/Builds/StandaloneWindows64/Game.exe."), P("development", "boolean", "Default true."), P("scenes", "array", "Scene paths (default: enabled scenes from Build Settings).")),
             T("editor_scene", "Scenes in the editor: list (open scenes + Build Settings), open a scene by asset path, or save open scenes.",
                 P("action", "string", "list | open | save.", true), P("path", "string", "Scene asset path for open.")),
             T("editor_assets", "Search project assets (AssetDatabase.FindAssets syntax, e.g. 't:VisualTreeAsset order', 't:Scene', 't:Script Trade').",

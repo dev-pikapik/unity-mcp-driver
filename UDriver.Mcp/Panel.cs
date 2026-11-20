@@ -6,6 +6,8 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http;
+using Velopack;
+using Velopack.Sources;
 
 internal static partial class HttpMode
 {
@@ -15,11 +17,14 @@ internal static partial class HttpMode
 
     static bool _panel;
     static string? _panelKey;
-    static string PanelKey => _panelKey ??= LoadPanelKey();
+    static string PanelKey => _panelKey ??= LoadKey("panel.key", () => Rand());
+    static string? _appKey;
+    static string AppKey => _appKey ??= LoadKey("app.key", () => Hash(Rand()).ToLowerInvariant());
     static string PidFile => Path.Combine(Program.HomeDir, "panel.pid");
     static readonly Dictionary<string, (DateTime Exp, string Csrf)> Sessions = new();
     static readonly Dictionary<string, DateTime> Tickets = new();   // sha256(ticket) -> expiry
     const string LocalOnly = "This is available only on the computer that runs UDriver.";
+    const string ApproveHere = "Approve new agents on the computer running UDriver.";
     const string WrongCode = "This code is wrong, already used or expired. Get a new code in the UDriver panel.";
     const string CodeText = "A one-time code lets in one agent or one device, once. Get it in the UDriver panel on the computer that runs UDriver or on a device that is already connected.";
     sealed class Device { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public DateTime Since { get; set; } public DateTime Expires { get; set; } }
@@ -42,14 +47,15 @@ internal static partial class HttpMode
         if (_public.Length > 0) { StartTunnel(); Notify("UDriver started: " + _public); }
         _ = Task.Run(Monitor);
         _ = PanelKey;   // the launcher reads panel.key to open the panel of a server that is already running
+        _ = AppKey;     // native apps on this computer send app.key as a Bearer token to /panel/api/*
         if (Env("UDRIVER_OPEN_PANEL") == "1") OpenBrowser($"http://127.0.0.1:{_port}/panel?ticket={NewTicket()}");
     }
 
-    static string LoadPanelKey()
+    static string LoadKey(string name, Func<string> make)
     {
-        string file = Path.Combine(Program.HomeDir, "panel.key");
+        string file = Path.Combine(Program.HomeDir, name);
         try { string k = File.ReadAllText(file).Trim(); if (k.Length >= 32) return k; } catch { }
-        string key = Rand();
+        string key = make();
         Program.WritePrivate(file, key);
         return key;
     }
@@ -293,13 +299,15 @@ internal static partial class HttpMode
             ctx.Response.Redirect("/panel");
             return;
         }
-        var who = Who(ctx, local);
+        string bearer = ctx.Request.Headers["Authorization"].ToString();
+        bool app = local && path.StartsWith("/panel/api/") && bearer.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) && Same(bearer.Substring(7).Trim(), AppKey);
+        var who = app ? (Ok: true, Csrf: "") : Who(ctx, local);
 
         if (path == "/panel" && verb == "GET")
         {
             var q = ctx.Request.Query;
             if (!who.Ok) await Html(ctx, LoginPage(local, null));
-            else if (q.ContainsKey("agent") || q.ContainsKey("device")) await Html(ctx, AgentPage(local, who.Csrf, q.ContainsKey("device")));
+            else if (local && (q.ContainsKey("agent") || q.ContainsKey("device"))) await Html(ctx, AgentPage(local, who.Csrf, q.ContainsKey("device")));
             else if (!local) await Html(ctx, PanelPage(false, who.Csrf));
             else if (q.ContainsKey("setup")) await Html(ctx, SetupPage(who.Csrf));
             else if (q.ContainsKey("remote")) await Html(ctx, RemotePage(who.Csrf));
@@ -319,12 +327,22 @@ internal static partial class HttpMode
         if (!who.Ok) { await Write(ctx, 401, "text/plain; charset=utf-8", "Sign-in required: open /panel"); return; }
 
         if (path == "/panel/api/games" && verb == "GET") { await Json(ctx, 200, await GamesJson()); return; }
+        if (path == "/panel/api/games/preview" && verb == "GET")
+        {
+            if (await Preview(ctx.Request.Query["id"].ToString()) is { } frame) await Write(ctx, 200, frame.Type, frame.Image);
+            else await Write(ctx, 404, "text/plain", "This game is not running.");
+            return;
+        }
         if (path == "/panel/api/agents" && verb == "GET") { await Json(ctx, 200, new JsonObject { ["agents"] = Registry.Agents(), ["devices"] = DevicesJson(ctx) }); return; }
         if (path == "/panel/api/remote" && verb == "GET") { await Json(ctx, 200, RemoteJson()); return; }
+        if (path == "/panel/api/pending" && verb == "GET") { await Json(ctx, 200, new JsonObject { ["pending"] = PendingJson() }); return; }
+        if (path == "/panel/api/clients" && verb == "GET") { await Json(ctx, 200, new JsonObject { ["clients"] = ClientsJson() }); return; }
+        if (path == "/panel/api/tools" && verb == "GET") { await Json(ctx, 200, ToolsJson()); return; }
+        if (path == "/panel/api/update" && verb == "GET") { await Json(ctx, 200, await UpdateJson()); return; }
         if (verb != "POST") { await Write(ctx, 404, "text/plain", "not found"); return; }
 
         var form = await Form(ctx);
-        if (!OwnOrigin(ctx, local) || !Same(form.GetValueOrDefault("csrf", ""), who.Csrf)) { await Write(ctx, 403, "text/plain; charset=utf-8", "Request rejected (reload the panel page)."); return; }
+        if (!app && (!OwnOrigin(ctx, local) || !Same(form.GetValueOrDefault("csrf", ""), who.Csrf))) { await Write(ctx, 403, "text/plain; charset=utf-8", "Request rejected (reload the panel page)."); return; }
         if (path.StartsWith("/panel/api/remote/") && await RemoteAction(ctx, path, form, local)) return;
 
         switch (path)
@@ -383,9 +401,54 @@ internal static partial class HttpMode
                 bool gone = int.TryParse(form.GetValueOrDefault("id"), out int slot) && DisconnectAgent(slot);
                 await Json(ctx, gone ? 200 : 400, gone ? new JsonObject { ["ok"] = true } : Fail("This agent is no longer connected."));
                 return;
+            case "/panel/api/update/apply" when local:
+                Velopack.UpdateInfo? next;
+                try { if ((next = Updates.IsInstalled ? await Updates.CheckForUpdatesAsync() : null) != null) await Updates.DownloadUpdatesAsync(next); }
+                catch (Exception e) { await Json(ctx, 502, Fail("The update could not be downloaded: " + e.Message)); return; }
+                if (next == null) { await Json(ctx, 400, Fail("There is no update to install.")); return; }
+                await Json(ctx, 200, new JsonObject { ["ok"] = true, ["version"] = next.TargetFullRelease.Version.ToString() });
+                Updates.WaitExitThenApplyUpdates(next.TargetFullRelease, true, form.GetValueOrDefault("restart") == "true", []);
+                _ = Task.Delay(500).ContinueWith(_ => Environment.Exit(0));
+                return;
             case "/panel/api/stop-all":
                 var all = await StopAll();
                 await Json(ctx, 200, new JsonObject { ["ok"] = true, ["stoppedGames"] = all.Games, ["disconnectedAgents"] = all.Agents });
+                return;
+            case "/panel/api/pending/approve" or "/panel/api/pending/deny":
+                if (!local) { await Json(ctx, 403, Fail(ApproveHere)); return; }
+                bool decided = Decide(form.GetValueOrDefault("id", ""), path.EndsWith("/approve"));
+                await Json(ctx, decided ? 200 : 400, decided ? new JsonObject { ["ok"] = true } : Fail("This request has expired or was already answered."));
+                return;
+            case "/panel/api/clients/revoke":
+                string rid = form.GetValueOrDefault("id", "");
+                bool revoked = rid != Program.StdioClient && rid != Program.LinkClient && KnownClient(rid);
+                if (revoked) RevokeClient(rid);
+                await Json(ctx, revoked ? 200 : 400, revoked ? new JsonObject { ["ok"] = true } : Fail("This app is no longer connected."));
+                return;
+            case "/panel/api/local-clients" when local:
+                string lname = form.GetValueOrDefault("name", "").Trim();
+                if (lname.Length == 0) lname = "Local app";
+                if (lname.Length > 80) lname = lname.Substring(0, 80);
+                var (lid, ltoken) = AddLocalClient(lname);
+                string lurl = $"http://127.0.0.1:{_port}/mcp";
+                await Json(ctx, 200, new JsonObject
+                {
+                    ["ok"] = true, ["id"] = lid, ["name"] = lname, ["url"] = lurl, ["token"] = ltoken,
+                    ["mcpJson"] = new JsonObject { ["mcpServers"] = new JsonObject { ["udriver"] = new JsonObject
+                    {
+                        ["type"] = "http", ["url"] = lurl, ["headers"] = new JsonObject { ["Authorization"] = "Bearer " + ltoken },
+                    } } },
+                });
+                return;
+            case "/panel/api/tools/set":
+                string[] toolNames = form.GetValueOrDefault("tool", "").Split(',');
+                string forClient = form.GetValueOrDefault("client", "");
+                bool enable = form.GetValueOrDefault("enabled") == "true";
+                string? toolErr = toolNames.Length > 100 || !toolNames.All(n => Regex.IsMatch(n, "^[A-Za-z0-9_.-]{1,80}$")) ? "Unknown tool."
+                    : forClient.Length > 0 && !KnownClient(forClient) ? "This app is no longer connected."
+                    : enable && !local ? LocalOnly : null;
+                if (toolErr == null) Registry.SetTool(toolNames, forClient.Length > 0 ? forClient : null, enable);
+                await Json(ctx, toolErr == null ? 200 : 400, toolErr == null ? new JsonObject { ["ok"] = true } : Fail(toolErr));
                 return;
             case "/panel/api/devices/disconnect":
                 bool off = DisconnectDevice(form.GetValueOrDefault("id", "-"));
@@ -397,6 +460,22 @@ internal static partial class HttpMode
     }
 
     static JsonObject Fail(string error) => new() { ["ok"] = false, ["error"] = error };
+
+    // Installed copies update from GitHub Releases; UDRIVER_UPDATE_URL points at another feed or a local folder.
+    static UpdateManager? _updates;
+    static UpdateManager Updates => _updates ??= Environment.GetEnvironmentVariable("UDRIVER_UPDATE_URL") is { Length: > 0 } feed
+        ? new UpdateManager(feed) : new UpdateManager(new GithubSource("https://github.com/dev-pikapik/unity-mcp-driver", null, false));
+
+    static async Task<JsonObject> UpdateJson()
+    {
+        if (!Updates.IsInstalled) return new JsonObject { ["installed"] = false, ["available"] = false };
+        try
+        {
+            var next = await Updates.CheckForUpdatesAsync();
+            return new JsonObject { ["installed"] = true, ["current"] = Updates.CurrentVersion?.ToString(), ["available"] = next != null, ["version"] = next?.TargetFullRelease.Version.ToString() };
+        }
+        catch (Exception e) { return new JsonObject { ["installed"] = true, ["current"] = Updates.CurrentVersion?.ToString(), ["available"] = false, ["error"] = "Could not check for updates: " + e.Message }; }
+    }
 
     /// <summary>True when the new level is higher than the current one or not a level at all.</summary>
     static bool Raises(string access, string? current) => !Registry.Levels.Contains(access) || Registry.Level(access) > Registry.Level(current ?? "watch");
@@ -422,26 +501,117 @@ internal static partial class HttpMode
         return any;
     }
 
-    /// <summary>Signs a remote client out (null: every client) and refuses its open session.</summary>
-    static void RevokeClient(string? one)
+    /// <summary>Signs a client out (null: every client): its tokens, codes and sign-in requests end and its open session is refused.
+    /// With forget it is also removed with its tool switches (null: only keys of local apps).</summary>
+    static void RevokeClient(string? one, bool forget = true)
     {
         List<Program.Session> sessions;
+        List<string> gone;
         lock (Gate)
         {
+            gone = forget ? _store.Clients.Where(x => one == null ? x.Value.Local : x.Key == one).Select(x => x.Key).ToList() : new();
+            foreach (var k in gone) _store.Clients.Remove(k);
             foreach (var k in _store.AccessClient.Where(x => one == null || x.Value == one).Select(x => x.Key).ToList()) { _store.Access.Remove(k); _store.AccessClient.Remove(k); }
             foreach (var k in _store.RefreshClient.Where(x => one == null || x.Value == one).Select(x => x.Key).ToList()) { _store.Refresh.Remove(k); _store.RefreshClient.Remove(k); }
             foreach (var k in Rotated.Where(x => one == null || x.Value.Client == one).Select(x => x.Key).ToList()) Rotated.Remove(k);
+            foreach (var k in Codes.Where(x => one == null || x.Value.ClientId == one).Select(x => x.Key).ToList()) Codes.Remove(k);
+            foreach (var k in Waiting.Where(x => one == null || x.Value.Client == one).Select(x => x.Key).ToList()) Waiting.Remove(k);
             Save();
             sessions = Agents.Values.Where(s => one == null || s.Client == one).ToList();
             foreach (var s in sessions) Agents.Remove(s.Client);
         }
         foreach (var s in sessions) { s.Off = true; Registry.Release(s); }
+        foreach (var k in gone) Registry.ForgetClient(k);
+    }
+
+    static readonly string[] ToolGroups = { "Look", "Play", "Change" };   // by access level: watch, play, full
+
+    static readonly Dictionary<string, string> ToolTitles = new()
+    {
+        ["app_launch"] = "Start a game", ["app_kill"] = "Stop a started game", ["app_status"] = "Check a started game", ["app_connect"] = "Connect to a running game",
+        ["targets"] = "List running games", ["batch"] = "Run several steps at once", ["status"] = "Game overview", ["ui_tree"] = "Read the screen",
+        ["ui_find"] = "Find on screen", ["ui_inspect"] = "Inspect a screen element", ["ui_click"] = "Click or tap", ["ui_hover"] = "Hover",
+        ["ui_drag"] = "Drag", ["pointer"] = "Hold and move the pointer", ["ui_scroll"] = "Scroll", ["ui_scroll_to"] = "Scroll to an element",
+        ["ui_set_value"] = "Fill in fields and sliders", ["ui_focus"] = "Focus an element", ["type_text"] = "Type text", ["key"] = "Press keys",
+        ["play"] = "Play for a while", ["input_actions"] = "List game controls", ["screenshot"] = "Take a screenshot", ["frames_record"] = "Record frames",
+        ["frames_get"] = "View recorded frames", ["time_control"] = "Pause or step time", ["events_query"] = "Read game events", ["events_config"] = "Choose logged events",
+        ["errors"] = "Read errors", ["wait_for"] = "Wait for something", ["scene_tree"] = "Read the scene", ["state_get"] = "Read a value",
+        ["state_query"] = "Search values", ["state_export"] = "Export values to a file", ["state_set"] = "Change a value", ["state_call"] = "Call game code",
+        ["types_find"] = "Find code types", ["type_members"] = "List a type's members", ["watch_add"] = "Watch a value", ["trace_add"] = "Trace calls",
+        ["trigger_add"] = "React to events", ["probe_list"] = "List probes", ["probe_remove"] = "Remove a probe", ["profiler_get"] = "Read performance",
+        ["profiler_list"] = "List performance counters", ["memory_summary"] = "Memory overview", ["memory_top"] = "Biggest memory users", ["memory_snapshot"] = "Compare memory",
+        ["memory_watch"] = "Watch memory growth", ["memory_refs"] = "Find what holds memory", ["memory_capture"] = "Save a memory capture", ["render_stats"] = "Rendering stats",
+        ["render_scene"] = "Inspect rendering", ["screen_pick"] = "What is at a point", ["locate"] = "Find an object on screen", ["self_test"] = "Check the driver",
+        ["editor_status"] = "Editor status", ["editor_play"] = "Enter or leave Play Mode", ["editor_compile"] = "Compile scripts", ["editor_tests"] = "Run tests",
+        ["editor_build"] = "Build the game", ["editor_scene"] = "Open or save scenes", ["editor_assets"] = "Find project assets", ["editor_menu"] = "Run an editor menu command",
+    };
+
+    static readonly string[][] ToolFeatures =
+    {
+        new[] { "Screenshots", "screenshot", "render_scene", "frames_record", "frames_get" },
+        new[] { "Scene and objects", "scene_tree", "state_get", "ui_tree", "state_query", "ui_find", "ui_inspect", "screen_pick", "locate" },
+        new[] { "Games and status", "targets", "status", "app_status", "app_connect", "input_actions", "batch" },
+        new[] { "Errors, events and timing", "errors", "events_query", "wait_for", "time_control" },
+        new[] { "Performance", "profiler_get", "profiler_list", "render_stats" },
+        new[] { "Memory", "memory_summary", "memory_top", "memory_snapshot", "memory_watch", "memory_refs" },
+        new[] { "Game code", "types_find", "type_members", "probe_list" },
+        new[] { "Editor checks and builds", "editor_status", "editor_compile", "editor_tests", "editor_build", "editor_assets" },
+        new[] { "Press, tap and type", "ui_click", "key", "type_text", "ui_set_value", "ui_focus", "play" },
+        new[] { "Drag, hover and scroll", "ui_drag", "ui_hover", "pointer", "ui_scroll", "ui_scroll_to" },
+        new[] { "Start and stop games", "app_launch", "app_kill", "editor_play" },
+        new[] { "Watch values and react", "watch_add", "trigger_add", "probe_remove", "events_config" },
+        new[] { "Save captures and self-check", "state_export", "memory_capture", "self_test" },
+        new[] { "Change values in the game", "state_set", "trace_add" },
+        new[] { "Run any game code, including code that writes files or uses the network", "state_call" },
+        new[] { "Editor menu commands", "editor_menu", "editor_scene" },
+    };
+
+    static readonly Dictionary<string, (string Feature, int Order)> ToolFeature = ToolFeatures
+        .SelectMany((f, i) => f.Skip(1).Select((n, j) => KeyValuePair.Create(n, (f[0], i * 100 + j)))).ToDictionary();
+
+    static readonly Dictionary<string, (DateTime At, string Type, byte[] Image)> Previews = new();
+
+    /// <summary>The running game's current frame, at most one screenshot per game every 2 s.</summary>
+    static async Task<(string Type, byte[] Image)?> Preview(string id)
+    {
+        var now = DateTime.UtcNow;
+        lock (Gate) if (Previews.TryGetValue(id, out var p) && now - p.At < TimeSpan.FromSeconds(2)) return (p.Type, p.Image);
+        if ((await Program.Targets()).FirstOrDefault(t => t.Game?.Id == id && t.Kind == "game" && t.Up) is not { } game) return null;
+        var shot = await Program.TryCall(game.Port, "screenshot", new JsonObject { ["maxWidth"] = 640 });
+        if (shot?["isError"]?.GetValue<bool>() == true || (shot?["content"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault(c => (string?)c["type"] == "image") is not { } img) return null;
+        byte[] data;
+        try { data = Convert.FromBase64String((string?)img["data"] ?? ""); } catch (FormatException) { return null; }
+        string type = (string?)img["mimeType"] ?? "image/jpeg";
+        lock (Gate) Previews[id] = (now, type, data);
+        return (type, data);
+    }
+
+    static JsonObject ToolsJson()
+    {
+        var (off, perClient) = Registry.ToolsOff();
+        var tools = Program.ToolCatalog();
+        foreach (var t in tools.OfType<JsonObject>())
+        {
+            string n = (string)t["name"]!;
+            t["enabled"] = !off.Contains(n);
+            t["offFor"] = new JsonArray(perClient.Where(x => x.Value.Contains(n)).Select(x => (JsonNode)x.Key!).ToArray());
+            t["title"] = ToolTitles.GetValueOrDefault(n, n);
+            t["group"] = ToolGroups[Registry.Level((string?)t["access"] ?? "")];
+            t["feature"] = ToolFeature.TryGetValue(n, out var f) ? f.Feature : (string)t["title"]!;
+        }
+        var sorted = tools.OfType<JsonObject>().OrderBy(t => Array.IndexOf(ToolGroups, (string)t["group"]!))
+            .ThenBy(t => ToolFeature.TryGetValue((string)t["name"]!, out var f) ? f.Order : int.MaxValue).ToArray();
+        tools.Clear();
+        return new JsonObject { ["tools"] = new JsonArray(sorted), ["clients"] = ClientsJson() };
     }
 
     static bool DisconnectAgent(int slot)
     {
         if (Registry.Own(slot) is not { } s) return Registry.Disconnect(slot);
-        if (s.Client.Length > 0) { RevokeClient(s.Client); return true; }
+        bool? localKey;
+        lock (Gate) localKey = _store.Clients.GetValueOrDefault(s.Client)?.Local;
+        // An app signed in through /authorize keeps its registration and switches and must sign in again; a local key has no way back.
+        if (localKey != null) { RevokeClient(s.Client, localKey.Value); return true; }
         lock (Gate) Agents.Remove(s.Client);
         s.Off = true;
         Registry.Release(s);
@@ -459,7 +629,7 @@ internal static partial class HttpMode
             copies.ForEach(c => c.Dispose());
             games.Add(new JsonObject
             {
-                ["id"] = g.Id, ["name"] = g.Name, ["kind"] = g.Kind, ["path"] = g.Path, ["access"] = g.Access,
+                ["id"] = g.Id, ["name"] = g.Name, ["kind"] = g.Kind, ["engine"] = Inject.Engine(g), ["path"] = g.Path, ["access"] = g.Access,
                 ["state"] = live.Any(t => t.Kind == "editor" && t.Up) ? "editor open" : live.Any(t => t.Kind == "game" && t.Live) || copies.Count > 0 ? "running" : "not running",
                 ["startedByUDriver"] = copies.Count > 0, ["exists"] = File.Exists(g.Path) || Directory.Exists(g.Path),
             });
@@ -645,6 +815,7 @@ internal static partial class HttpMode
         .k{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
         .name{font-weight:600}
         .sub{font-size:13px;line-height:18px;color:var(--text-2)} .sub .mono{font-size:13px}
+        .sub.warn{color:var(--orange-text)}
         .clamp{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
         .btns{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:-6px 0 -10px}
         .btns .link:first-child{margin-left:-4px}
@@ -839,6 +1010,13 @@ internal static partial class HttpMode
         <section><h2 class="sec-h" id="agents-h">Connected agents</h2>
         <div class="group" id="agents"><button type="button" class="act" id="copycmd">Copy command to connect an agent</button></div>
         <p class="foot">On this computer, add UDriver to your agent as an MCP server (the standard way agents plug in tools) with this command.</p></section>
+        <section id="before-s" hidden><h2 class="sec-h">Allowed before</h2>
+        <div class="group" id="before"></div>
+        <p class="foot">These agents may come back without asking again. Remove one to make it ask next time.</p></section>
+        <section><h2 class="sec-h">Tools · Look</h2><div class="group"><select class="field" id="tools-for" aria-label="Tool settings for"></select></div><div class="group" id="tools-Look"></div></section>
+        <section><h2 class="sec-h">Tools · Play</h2><div class="group" id="tools-Play"></div></section>
+        <section><h2 class="sec-h">Tools · Change</h2><div class="group" id="tools-Change"></div>
+        <p class="foot">A switched-off feature is closed for every agent, including over the internet. A switch shows on while any of its tools is on.{(local ? "" : " Turning tools on works only on the computer that runs UDriver.")}</p></section>
         <section><h2 class="sec-h" id="devices-h">Connected devices</h2>
         <div class="group" id="devices"></div>
         <p class="foot">Phones, tablets and other computers that opened this panel with a one-time code. Each stays signed in for 30 days unless you disconnect it.</p></section>
@@ -847,8 +1025,7 @@ internal static partial class HttpMode
         <div class="row"><div class="k"><label for="rm-switch" id="rm-label">Use from another device or a web agent</label><span class="st" id="rm-st"><i class="dot"></i><span id="rm-text">Checking…</span></span></div>
         <input type="checkbox" class="switch" role="switch" id="rm-switch" aria-describedby="rm-text"></div>
         <div class="row" id="rm-addr" hidden><div class="k"><span class="sub">Address</span><span class="url" id="rm-url"></span></div><button type="button" class="pill" id="rm-copy">Copy</button></div>
-        <a class="act chev" id="rm-code" href="/panel?agent=1" hidden><span class="k"><span>Add a remote agent</span><span class="sub">Get the address and a one-time code</span></span></a>
-        <a class="act chev" id="rm-device" href="/panel?device=1" hidden><span class="k"><span>Open on another device</span><span class="sub">Use this panel on a phone, a tablet or another computer</span></span></a>
+        {(local ? """<a class="act chev" id="rm-code" href="/panel?agent=1" hidden><span class="k"><span>Add a remote agent</span><span class="sub">Get the address and a one-time code</span></span></a><a class="act chev" id="rm-device" href="/panel?device=1" hidden><span class="k"><span>Open on another device</span><span class="sub">Use this panel on a phone, a tablet or another computer</span></span></a>""" : $"""<div class="empty" id="rm-code" hidden>{ApproveHere}</div>""")}
         {(local ? """<div class="row" id="rm-cf"><div class="k"><span>Cloudflare</span><span class="sub" id="rm-cf-text"></span></div></div><a class="act chev" href="/panel?remote=1" id="rm-change">Change address…</a><button type="button" class="act danger" id="rm-signout" hidden>Sign out of Cloudflare</button>""" : "")}
         <div class="row" id="rm-tunnel" hidden><div class="k"><span>Tunnel</span><span class="sub">Restart it if a remote agent cannot connect.</span></div><button type="button" class="link" id="rm-restart">Restart</button></div>
         </div>
@@ -987,7 +1164,8 @@ internal static partial class HttpMode
             const row=el("div","row"+(full?" game":"")), k=el("div","k");
             k.append(el("span","name",g.name),sub(g.kind,g.path));
             if(full){
-              k.append(!g.exists?status("bad","Not found at this path. Use Change folder."):g.state==="editor open"?status("on","Editor open"):g.state==="running"?status("on","Running"):status("","Not running"));
+              k.append(el("span","sub","Engine: "+(g.engine||"Unity")),!g.exists?status("bad","Not found at this path. Use Change folder."):g.state==="editor open"?status("on","Editor open"):g.state==="running"?status("on","Running"):status("","Not running"));
+              if(g.access==="none") k.append(status("bad","Not allowed — set access to use it"));
               const btns=el("div","btns");
               if(local) btns.append(button("link","Change folder…",()=>openGame(g)));
               if(g.kind==="build"&&g.exists){
@@ -1012,19 +1190,47 @@ internal static partial class HttpMode
           if(r.state==="ready") return ["","Off. Signed in to Cloudflare; choose an address next."];
           return ["","Off."];
         }
-        let R={};
+        let R={}, who="";
         async function panel(){
-          const [g,a,r]=await Promise.all([get("/panel/api/games"),get("/panel/api/agents"),get("/panel/api/remote")]); R=r;
+          const [g,a,r,t]=await Promise.all([get("/panel/api/games"),get("/panel/api/agents"),get("/panel/api/remote"),get("/panel/api/tools")]); R=r;
           $("games").replaceChildren(...gameRows(g.games,true),addRow);
-          const agents=a.agents.filter(x=>!x.disconnected);
+          const agents=a.agents.filter(x=>!x.disconnected), name=x=>(t.clients.find(c=>c.id===x.client)||{}).name||x.label||"Agent";
+          const from=f=>f==="remote"?"From anywhere":"On this computer";
           $("agents-h").textContent="Connected agents · "+agents.length;
           $("agents").replaceChildren(...(agents.length?agents.map(x=>{
             const row=el("div","row"), k=el("div","k");
-            const where=x.from==="remote"?"Remote"+(r.host?" · through "+r.host:""):"On this computer";
-            k.append(el("span","name","Agent "+x.id),el("span","sub",where+(x.target?" · working in "+x.target+" now":"")));
+            k.append(el("span","name",name(x)),el("span","sub",from(x.from)+(x.target?" · working in "+x.target+" now":"")));
             row.append(k,button("link danger","Disconnect",b=>act(b,()=>post("/panel/api/agents/disconnect",{id:x.id}))));
             return row;
           }):[emptyRow("No agent is connected right now.")]),connectRow);
+          const before=[];
+          for(const c of t.clients) if(c.kind!=="stdio"&&c.status==="allowed"&&!agents.some(x=>x.client===c.id||name(x)===c.name)){
+            const b=before.find(x=>x.name===c.name); if(b) b.ids.push(c.id); else before.push({name:c.name,kind:c.kind,ids:[c.id]}); }
+          show("before-s",before.length);
+          $("before").replaceChildren(...before.map(c=>{
+            const row=el("div","row"), k=el("div","k");
+            k.append(el("span","name",c.name),el("span","sub",from(c.kind==="local"?"":"remote")+" · Not connected now")); row.append(k);
+            if(c.kind!=="link") row.append(button("link danger","Remove",async b=>{ if(await ask("Remove "+c.name+"?","It loses access at once and has to ask again to come back.","Remove"))
+              act(b,()=>Promise.all(c.ids.map(id=>post("/panel/api/clients/revoke",{id})))); }));
+            return row;
+          }));
+          const fs=$("tools-for"), opts=[["","For: All agents"],...t.clients.map(c=>[c.id,"For: "+c.name])], key=JSON.stringify(opts);
+          if(fs.dataset.k!==key){ fs.dataset.k=key; fs.replaceChildren(...opts.map(([v,n])=>{ const o=el("option",null,n); o.value=v; return o; })); }
+          if(!opts.some(([v])=>v===who)) who=""; fs.value=who;
+          const isOn=x=>x.enabled&&!(who&&x.offFor.includes(who));
+          for(const grp of ["Look","Play","Change"]){
+            const feats=[];
+            for(const x of t.tools) if(x.group===grp){ const f=feats.find(f=>f.name===x.feature); if(f) f.tools.push(x); else feats.push({name:x.feature,tools:[x]}); }
+            $("tools-"+grp).replaceChildren(...feats.map(f=>{
+              const names=f.tools.map(x=>x.name), on=f.tools.filter(isOn).length, locked=who&&!f.tools.some(x=>x.enabled), mixed=on>0&&on<names.length;
+              const row=el("div","row"), k=el("div","k"), l=el("label","name",f.name), sw=el("input","switch");
+              sw.type="checkbox"; sw.setAttribute("role","switch"); sw.id=l.htmlFor="tool-"+names[0]; sw.checked=on>0; sw.disabled=locked||!local&&!on;
+              if(locked) sw.title="Switched off for every agent. Turn it on under All agents first.";
+              sw.onchange=()=>act(sw,()=>post("/panel/api/tools/set",{tool:names.join(","),enabled:sw.checked,client:who}));
+              k.append(l,el("span","sub mono"+(mixed?" warn":""),(mixed?"some off · ":"")+names.join(" · "))); row.append(k,sw);
+              return row;
+            }));
+          }
           const devices=a.devices||[];
           $("devices-h").textContent="Connected devices · "+devices.length;
           $("devices").replaceChildren(...(devices.length?devices.map(d=>{
@@ -1091,6 +1297,7 @@ internal static partial class HttpMode
         if(M.page==="panel"){
           on("copycmd","onclick",()=>copy(M.cmd,$("copycmd")));
           on("rm-copy","onclick",()=>copy(R.address,$("rm-copy")));
+          on("tools-for","onchange",e=>{ who=e.target.value; refresh(); });
           on("rm-restart","onclick",()=>act($("rm-restart"),()=>post("/panel/api/remote/restart"),"Restarting…"));
           on("rm-switch","onclick",async e=>{
             e.preventDefault();

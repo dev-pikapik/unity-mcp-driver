@@ -1,0 +1,10 @@
+#!/bin/sh
+# UDriver in the terminal. No arguments opens the full screen; otherwise: status, approve <id>, deny <id>, code, tools on|off <tool> [--for <app>].
+D=$(dirname "$(readlink -f "$0")")
+[ $# -eq 0 ] && set -- tui
+if [ -x "$D/udriver-mcp" ]; then exec "$D/udriver-mcp" "$@"; fi
+# The same .NET the launcher found: a system dotnet older than 10 must not win over ~/.dotnet.
+for N in "$(command -v dotnet)" "$HOME/.udriver/dotnet/dotnet" "$HOME/.dotnet/dotnet" /usr/local/share/dotnet/dotnet; do
+  [ -x "$N" ] && "$N" --list-runtimes 2>/dev/null | grep -qE '^Microsoft\.NETCore\.App [1-9][0-9]\.' && exec "$N" "${UDRIVER_SERVER_DLL:-$HOME/.udriver/server/udriver-mcp.dll}" "$@"
+done
+echo "UDriver needs .NET 10. Start UDriver.command once; it shows how to install it." >&2; exit 1

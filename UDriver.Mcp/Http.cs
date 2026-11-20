@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using System.Web;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -11,8 +12,9 @@ using Microsoft.Extensions.Logging;
 
 internal static partial class HttpMode
 {
-    sealed class Client { public string Name { get; set; } = ""; public List<string> RedirectUris { get; set; } = new(); public bool Used { get; set; } }   // Used: has obtained a token
+    sealed class Client { public string Name { get; set; } = ""; public List<string> RedirectUris { get; set; } = new(); public bool Used { get; set; } public bool Local { get; set; } }   // Used: has obtained a token; Local: a key from the panel, valid on this computer only
     sealed class Code { public string ClientId = "", RedirectUri = "", Challenge = ""; public DateTime Expires; }
+    sealed class Pending { public string Client = "", App = "", Dest = "", Ip = "", Redirect = "", Challenge = ""; public int Check; public DateTime Expires; public bool? Ok; }
     sealed class Store
     {
         public Dictionary<string, Client> Clients { get; set; } = new();
@@ -26,20 +28,6 @@ internal static partial class HttpMode
     static readonly Dictionary<string, Code> Codes = new();
     static Store _store = new();
     static string _public = "", _urlSecret = "", _storeFile = "";
-    static readonly List<string> RedirectHosts = new()
-    {
-        "claude.ai", "claude.com",
-        "chatgpt.com",
-        // Google-hosted agent apps: per-user OAuth callbacks and the enterprise callback.
-        "oauth-redirect.googleusercontent.com", "oauth-redirect-sandbox.googleusercontent.com",
-        "oauth-redirect-test.googleusercontent.com", "vertexaisearch.cloud.google.com",
-    };
-    static readonly Dictionary<string, string> RedirectPaths = new()
-    {
-        ["claude.ai"] = "/api/mcp/auth_callback", ["claude.com"] = "/api/mcp/auth_callback",
-        ["oauth-redirect.googleusercontent.com"] = "/r/", ["oauth-redirect-sandbox.googleusercontent.com"] = "/r/",
-        ["oauth-redirect-test.googleusercontent.com"] = "/r/", ["vertexaisearch.cloud.google.com"] = "/oauth-redirect",
-    };
     static int _port;
 
     // Wrong codes are counted per address and in total; over the limit the answer is 429 before any hashing.
@@ -49,9 +37,13 @@ internal static partial class HttpMode
     const int IpLimit = 10, AllLimit = 50;
     const string TooMany = "Too many wrong attempts. Wait 10 minutes, then try again.";
     const string CheckBusy = "Another sign-in is being checked. Try again in a moment.";
+    const string Expired = "This request has expired. Start connecting again from the app.";
     static readonly Dictionary<string, Program.Session> Agents = new();
     static readonly Dictionary<string, (DateTime Until, string Client, JsonObject Reply)> Rotated = new();   // sha256(old refresh token) -> its replacement
     static readonly Queue<(DateTime At, string Ip)> Registrations = new();
+    static readonly Dictionary<string, Pending> Waiting = new();   // sign-ins the owner can confirm in the panel instead of typing a code
+    static readonly HashSet<string> BadSchemes = new() { "javascript", "data", "file", "vbscript", "about", "blob", "ws", "wss", "ftp",
+        "ms-msdt", "search-ms", "search", "ms-officecmd", "ms-word", "ms-excel", "ms-powerpoint", "ms-settings", "ms-appinstaller" };
 
     static string Env(string k) => Environment.GetEnvironmentVariable(k) ?? "";
     static string Rand(int bytes = 32) => Convert.ToBase64String(RandomNumberGenerator.GetBytes(bytes)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
@@ -76,11 +68,10 @@ internal static partial class HttpMode
                 : "HTTP mode needs UDRIVER_PANEL=1 (agents sign in with one-time codes from the panel) or UDRIVER_AUTH=secret-url.");
             Environment.Exit(2);
         }
-        foreach (var h in Env("UDRIVER_OAUTH_REDIRECT_HOSTS").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) RedirectHosts.Add(h);
         _storeFile = Path.Combine(Program.HomeDir, "oauth.json");
         try { _store = JsonSerializer.Deserialize<Store>(File.ReadAllText(_storeFile)) ?? new Store(); } catch { _store = new Store(); }
 
-        var builder = WebApplication.CreateSlimBuilder();
+        var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { ContentRootPath = AppContext.BaseDirectory });
         builder.Logging.ClearProviders();
         builder.WebHost.ConfigureKestrel(o =>
         {
@@ -120,9 +111,10 @@ internal static partial class HttpMode
         catch { }
     }
 
-    static async Task Write(HttpContext ctx, int status, string type, string body, Action<HttpResponse>? extra = null)
+    static Task Write(HttpContext ctx, int status, string type, string body, Action<HttpResponse>? extra = null) => Write(ctx, status, type, Encoding.UTF8.GetBytes(body), extra);
+
+    static async Task Write(HttpContext ctx, int status, string type, byte[] bytes, Action<HttpResponse>? extra = null)
     {
-        var bytes = Encoding.UTF8.GetBytes(body);
         ctx.Response.StatusCode = status;
         ctx.Response.ContentType = type;
         ctx.Response.Headers["Cache-Control"] = "no-store";
@@ -217,15 +209,13 @@ internal static partial class HttpMode
 
         if (_panel && !secretMode && (path == "/" || path == "/panel" || path.StartsWith("/panel/")))
         { await Panel(ctx, path, verb, IsLocal(ctx)); return; }
-        if (_panel && _public.Length == 0) { await Write(ctx, 503, "text/plain; charset=utf-8", "Remote access to UDriver is off"); return; }
+        if (_panel && _public.Length == 0 && !(path == "/mcp" && IsLocal(ctx))) { await Write(ctx, 503, "text/plain; charset=utf-8", "Remote access to UDriver is off"); return; }
 
-        // Pages may call in only from the connector's own sites.
+        // The sign-in form is posted only by its own page; everything else answers to Bearer tokens, so CORS without credentials.
         string origin = ctx.Request.Headers["Origin"].ToString();
-        if (origin.Length > 0 && origin != _public && !(Uri.TryCreate(origin, UriKind.Absolute, out var ou) && RedirectHosts.Contains(ou.Host)))
+        if (path == "/authorize" && verb == "POST" && !OwnOrigin(ctx, IsLocal(ctx)))
         { await OAuthError(ctx, 403, "forbidden", "origin not allowed"); return; }
-
-        // Bearer tokens only, so CORS without credentials.
-        if (origin.Length > 0 && origin != _public)
+        if (origin.Length > 0 && origin != _public && (path is "/mcp" or "/token" or "/register" || path.StartsWith("/.well-known/")))
         {
             var h = ctx.Response.Headers;
             h["Access-Control-Allow-Origin"] = origin;
@@ -244,7 +234,8 @@ internal static partial class HttpMode
         if (secretMode)
         {
             if (!Same(path, "/mcp/" + _urlSecret)) { await Write(ctx, 404, "text/plain", "not found"); return; }
-            Program.Current.Value = Agent("", IsLocal(ctx));
+            Program.Current.Value = Agent(Program.LinkClient, IsLocal(ctx));
+            if (!File.Exists(LinkUsedFile)) Program.WritePrivate(LinkUsedFile, "");
             await Mcp(ctx); return;
         }
 
@@ -267,6 +258,7 @@ internal static partial class HttpMode
         }
         else if (path == "/register" && verb == "POST") await Register(ctx);
         else if (path == "/authorize" && (verb == "GET" || verb == "POST")) await Authorize(ctx);
+        else if (path == "/authorize/status" && verb == "GET") await Json(ctx, 200, new JsonObject { ["state"] = PendingState(ctx.Request.Query["id"].ToString()) });
         else if (path == "/token" && verb == "POST") await Token(ctx);
         else if (path == "/mcp")
         {
@@ -276,7 +268,8 @@ internal static partial class HttpMode
                 lock (Gate)
                 {
                     string key = Hash(auth.Substring(7).Trim());
-                    if (_store.Access.TryGetValue(key, out var exp) && exp > DateTime.UtcNow) _store.AccessClient.TryGetValue(key, out clientId);
+                    if (_store.Access.TryGetValue(key, out var exp) && exp > DateTime.UtcNow && _store.AccessClient.TryGetValue(key, out var id)
+                        && _store.Clients.TryGetValue(id, out var c) && (!c.Local || IsLocal(ctx))) clientId = id;
                 }
             if (clientId == null)
             {
@@ -336,31 +329,24 @@ internal static partial class HttpMode
 
     // ---------------- OAuth ----------------
 
+    static bool Loopback(string host) => host is "localhost" or "127.0.0.1" or "[::1]";
+
+    /// <summary>Any https site, http on this computer only, or a native app's own scheme (RFC 8252) that a browser cannot run.</summary>
     static bool RedirectAllowed(string uri)
     {
         if (!Uri.TryCreate(uri, UriKind.Absolute, out var u) || u.UserInfo.Length > 0 || u.Fragment.Length > 0) return false;
-        if (u.Scheme == "http") return u.Host == "localhost" || u.Host == "127.0.0.1";   // native apps on this machine
-        if (u.Scheme != "https" || !u.IsDefaultPort || !RedirectHosts.Contains(u.Host)) return false;
-        if (u.Host == "chatgpt.com")
-        {
-            const string callbackPrefix = "/connector/oauth/";
-            string callbackPath = u.AbsolutePath;
-            if (u.Query.Length != 0) return false;
-            if (callbackPath == "/connector_platform_oauth_redirect") return true;
-            if (!callbackPath.StartsWith(callbackPrefix, StringComparison.Ordinal) || callbackPath.Length == callbackPrefix.Length)
-                return false;
-            return callbackPath[callbackPrefix.Length..].All(c => char.IsAsciiLetterOrDigit(c) || c == '-' || c == '_');
-        }
-        if (!RedirectPaths.TryGetValue(u.Host, out var want)) return true;
-        string path = u.AbsolutePath;
-        return u.Query.Length == 0 && (want.EndsWith('/') ? path.Length > want.Length && path.StartsWith(want, StringComparison.Ordinal) && path.IndexOf('/', want.Length) < 0 : path == want);
+        if (u.Scheme == "https") return u.Host.Length > 0;
+        if (u.Scheme == "http") return Loopback(u.Host);
+        return Regex.IsMatch(u.Scheme, "^[a-z][a-z0-9+.-]*$") && !BadSchemes.Contains(u.Scheme);
     }
+
+    static string Dest(string uri) => Uri.TryCreate(uri, UriKind.Absolute, out var u) ? u.Scheme is "https" or "http" ? u.IdnHost : u.Scheme + ":" : "";
 
     static bool RedirectMatches(Client c, string uri)
     {
         if (c.RedirectUris.Contains(uri)) return true;
         // Native apps may use a different loopback port than the one they registered.
-        if (!Uri.TryCreate(uri, UriKind.Absolute, out var u) || u.Scheme != "http" || (u.Host != "localhost" && u.Host != "127.0.0.1")) return false;
+        if (!Uri.TryCreate(uri, UriKind.Absolute, out var u) || u.Scheme != "http" || !Loopback(u.Host)) return false;
         return c.RedirectUris.Any(r => Uri.TryCreate(r, UriKind.Absolute, out var x) && x.Scheme == "http" && x.Host == u.Host && x.AbsolutePath == u.AbsolutePath);
     }
 
@@ -373,11 +359,12 @@ internal static partial class HttpMode
         // Some agent apps also send test callbacks: keep the allowed ones, drop the rest.
         var uris = all.Where(RedirectAllowed).ToList();
         if (uris.Count == 0 || all.Count > 10)
-        { await OAuthError(ctx, 400, "invalid_redirect_uri", "redirect URIs must point to " + string.Join(", ", RedirectHosts) + " or to localhost"); return; }
+        { await OAuthError(ctx, 400, "invalid_redirect_uri", "redirect URIs must be https, http on localhost, or an app's own scheme"); return; }
         string id = "c_" + Rand(16), name = ((string?)req?["client_name"] ?? "MCP client");
         if (name.Length > 80) name = name.Substring(0, 80);
         string ip = ClientIp(ctx);
         var now = DateTime.UtcNow;
+        string? evicted = null;
         lock (Gate)
         {
             // Open registration: rate-limited; at the cap the oldest never-used app goes first.
@@ -387,11 +374,12 @@ internal static partial class HttpMode
             {
                 Registrations.Enqueue((now, ip));
                 if (_store.Clients.Count >= 200)
-                    _store.Clients.Remove(_store.Clients.FirstOrDefault(x => !x.Value.Used).Key ?? _store.Clients.Keys.First());
+                    _store.Clients.Remove(evicted = _store.Clients.OrderBy(x => x.Value.Used).ThenBy(x => x.Value.Local).First().Key);
                 _store.Clients[id] = new Client { Name = name, RedirectUris = uris };
                 Save();
             }
         }
+        if (evicted != null) Registry.ForgetClient(evicted);
         if (id.Length == 0) { await OAuthError(ctx, 429, "too_many_requests", "too many app registrations, try again in a few minutes"); return; }
         // A requested client secret is issued but never checked: PKCE and the one-time code protect sign-in.
         string method = (string?)req?["token_endpoint_auth_method"] ?? "none";
@@ -411,19 +399,82 @@ internal static partial class HttpMode
     {
         string H(string s) => WebUtility.HtmlEncode(s);
         var hidden = new StringBuilder();
-        foreach (var k in new[] { "response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method", "state", "scope", "resource" })
+        foreach (var k in new[] { "response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method", "state", "scope", "resource", "pending" })
             if (p.TryGetValue(k, out var v)) hidden.Append($"<input type=\"hidden\" name=\"{k}\" value=\"{H(v)}\">");
+        string pid = p.GetValueOrDefault("pending", "");
+        Pending? w;
+        lock (Gate) Waiting.TryGetValue(pid, out w);
         return Shell($"""
             <main>
             <header class="hero">{Icon}<h1 class="title">Allow access?</h1><p class="subtitle">The app “{H(clientName)}” wants to use your Unity games on this computer.</p></header>
+            <ul class="group"><li class="row"><div class="k"><span class="sub">Access goes to</span><span class="title url">{H(Dest(redirect))}</span></div></li>
+            {(w != null ? $"<li class=\"row\"><div class=\"k\"><span class=\"sub\">Check number</span><span class=\"title\">{w.Check}</span></div></li>" : "")}</ul>
             <form method="post" action="/authorize" class="stack">{hidden}<section>
             <div class="group">{CodeField}</div>
             {(error != null ? $"<p class=\"foot err\" role=\"alert\">{H(error)}</p>" : "")}
-            <p class="foot">Paste the one-time code from the UDriver panel.</p>
+            <p class="foot">Paste the one-time code from the UDriver panel{(w != null ? ", or allow this request in the panel if it shows the same check number" : "")}.</p>
+            {(w != null ? "<p class=\"foot\" id=\"wait\" role=\"status\">Waiting for the panel…</p>" : "")}
             </section><button class="btn primary" type="submit">Allow</button></form>
-            <p class="foot center">After you allow, you'll be sent back to {H(redirect)}<br>If you didn't start this connection yourself, close this page.</p>
+            <p class="foot center">After you allow, you'll be sent back to {H(Dest(redirect))}<br>If you didn't start this connection yourself, close this page.</p>
             </main>
+            {(w != null ? PollScript.Replace("{id}", pid) : "")}
             """, "Allow access · UDriver");
+    }
+
+    const string PollScript = """
+        <script>
+        const form=document.querySelector("form"), wait=document.getElementById("wait");
+        const timer=setInterval(async()=>{ let s; try{ s=(await (await fetch("/authorize/status?id={id}")).json()).state; }catch{ return; }
+          if(s==="approved"){ clearInterval(timer); form.submit(); }
+          else if(s!=="waiting"){ clearInterval(timer); wait.textContent=s==="denied"?"The request was declined in the UDriver panel.":"This request has expired. Start connecting again from the app."; } },2000);
+        </script>
+        """;
+
+    /// <summary>Lists the sign-in in the panel for 5 minutes under a check number no other listed request has;
+    /// "" once 3 from this address or 20 in total are open, and the page then takes only a one-time code.</summary>
+    static string Wait(HttpContext ctx, string client, string app, string redirect, string challenge)
+    {
+        string id = Rand(16), ip = ClientIp(ctx);
+        var now = DateTime.UtcNow;
+        lock (Gate)
+        {
+            foreach (var k in Waiting.Where(x => x.Value.Expires < now).Select(x => x.Key).ToList()) Waiting.Remove(k);
+            if (Waiting.Count >= 20 || Waiting.Count(x => x.Value.Ip == ip && x.Value.Ok != false) >= 3) return "";
+            int check;
+            do check = RandomNumberGenerator.GetInt32(10, 100); while (Waiting.Values.Any(x => x.Check == check));
+            Waiting[id] = new Pending
+            {
+                Client = client, App = app, Dest = Dest(redirect), Ip = ip, Redirect = redirect, Challenge = challenge, Check = check, Expires = now.AddMinutes(5),
+            };
+        }
+        return id;
+    }
+
+    static string PendingState(string id)
+    {
+        lock (Gate)
+            return !Waiting.TryGetValue(id, out var w) || w.Expires < DateTime.UtcNow ? "expired" : w.Ok switch { null => "waiting", true => "approved", false => "denied" };
+    }
+
+    static JsonArray PendingJson()
+    {
+        var now = DateTime.UtcNow;
+        lock (Gate)
+            return new JsonArray(Waiting.Where(x => x.Value.Ok == null && x.Value.Expires > now).OrderBy(x => x.Value.Expires).Select(x => (JsonNode)new JsonObject
+            {
+                ["id"] = x.Key, ["client"] = x.Value.Client, ["app"] = x.Value.App, ["to"] = x.Value.Dest, ["ip"] = x.Value.Ip, ["check"] = x.Value.Check,
+                ["expiresInSec"] = (int)(x.Value.Expires - now).TotalSeconds,
+            }).ToArray());
+    }
+
+    static bool Decide(string id, bool ok)
+    {
+        lock (Gate)
+        {
+            if (!Waiting.TryGetValue(id, out var w) || w.Ok != null || w.Expires < DateTime.UtcNow) return false;
+            w.Ok = ok;
+            return true;
+        }
     }
 
     static async Task Authorize(HttpContext ctx)
@@ -439,11 +490,27 @@ internal static partial class HttpMode
         { await Write(ctx, 400, "text/plain; charset=utf-8", "Unknown app or redirect address. Remove the connector and add it again."); return; }
         if (p.GetValueOrDefault("response_type") != "code" || p.GetValueOrDefault("code_challenge", "").Length < 20 || p.GetValueOrDefault("code_challenge_method") != "S256")
         { await Write(ctx, 400, "text/plain; charset=utf-8", "Requests without PKCE (S256) are not accepted."); return; }
-        string host = new Uri(redirect).Host;
+        string host = Dest(redirect);
 
-        if (ctx.Request.Method == "GET") { await Html(ctx, Page(p, client.Name, redirect, null)); return; }
+        if (ctx.Request.Method == "GET")
+        {
+            p["pending"] = Wait(ctx, p["client_id"], client.Name, redirect, p["code_challenge"]);
+            await Html(ctx, Page(p, client.Name, redirect, null));
+            return;
+        }
 
-        string? err = await Slow(ctx, () => TakeCode(p.GetValueOrDefault("otc", "")), WrongCode);
+        string pid = p.GetValueOrDefault("pending", ""), otc = p.GetValueOrDefault("otc", "");
+        bool approved = false, expired;
+        var now = DateTime.UtcNow;
+        lock (Gate)
+        {
+            bool found = Waiting.TryGetValue(pid, out var w);
+            if (found && w!.Ok == true && w.Client == p["client_id"] && w.Redirect == redirect && w.Challenge == p["code_challenge"])
+            { approved = w.Expires > now; Waiting.Remove(pid); }
+            // The page posts itself without a code once the panel approved; by then the request may have run out or been used.
+            expired = !approved && pid.Length > 0 && otc.Length == 0 && (!found || w!.Expires <= now);
+        }
+        string? err = approved ? null : expired ? Expired : await Slow(ctx, () => TakeCode(otc), WrongCode);
         if (err != null) { await Html(ctx, Page(p, client.Name, redirect, err), StatusOf(err)); return; }
 
         string code = Rand();
@@ -463,6 +530,52 @@ internal static partial class HttpMode
             </main>
             <script>location.replace(document.getElementById("go").href)</script>
             """, "Access allowed · UDriver"));
+    }
+
+    /// <summary>A key for an app on this computer that can only send a URL and a header; it works only through 127.0.0.1.</summary>
+    static (string Id, string Token) AddLocalClient(string name)
+    {
+        string id = "l_" + Rand(16), token = Rand(48);
+        lock (Gate)
+        {
+            _store.Clients[id] = new Client { Name = name, Used = true, Local = true };
+            _store.Access[Hash(token)] = DateTime.MaxValue;
+            _store.AccessClient[Hash(token)] = id;
+            Save();
+        }
+        return (id, token);
+    }
+
+    static string LinkUsedFile => Path.Combine(Program.HomeDir, "link.used");
+
+    /// <summary>status: connected (an agent is on now), allowed (may connect without asking), waiting (asks now), denied (has no access).</summary>
+    static JsonArray ClientsJson()
+    {
+        var live = Registry.Agents().Where(a => (bool?)a!["disconnected"] != true).Select(a => (string?)a!["client"] is { Length: > 0 } c ? c : Program.StdioClient).ToHashSet();
+        string Live(string id, string otherwise) => live.Contains(id) ? "connected" : otherwise;
+        var list = new JsonArray(new JsonObject { ["id"] = Program.StdioClient, ["name"] = "Apps that start UDriver themselves", ["kind"] = "stdio", ["status"] = Live(Program.StdioClient, "allowed") });
+        if (live.Contains(Program.LinkClient) || File.Exists(LinkUsedFile))
+            list.Add(new JsonObject { ["id"] = Program.LinkClient, ["name"] = "Apps with the secret link", ["kind"] = "link", ["used"] = true, ["status"] = Live(Program.LinkClient, "allowed") });
+        var now = DateTime.UtcNow;
+        lock (Gate)
+        {
+            var tokens = _store.AccessClient.Where(x => _store.Access.GetValueOrDefault(x.Key) > now)
+                .Concat(_store.RefreshClient.Where(x => _store.Refresh.GetValueOrDefault(x.Key) > now)).Select(x => x.Value).ToHashSet();
+            var asks = Waiting.Values.Where(w => w.Expires > now).ToList();
+            foreach (var (id, c) in _store.Clients)
+                list.Add(new JsonObject
+                {
+                    ["id"] = id, ["name"] = c.Name, ["kind"] = c.Local ? "local" : "remote", ["used"] = c.Used,
+                    ["status"] = Live(id, tokens.Contains(id) ? "allowed" : asks.Any(w => w.Client == id && w.Ok != false) ? "waiting" : "denied"),
+                    ["to"] = new JsonArray(c.RedirectUris.Select(Dest).Distinct().Select(x => (JsonNode)x!).ToArray()),
+                });
+        }
+        return list;
+    }
+
+    static bool KnownClient(string id)
+    {
+        lock (Gate) return id is Program.StdioClient or Program.LinkClient || _store.Clients.ContainsKey(id);
     }
 
     static JsonObject Issue(string clientId)
@@ -494,7 +607,9 @@ internal static partial class HttpMode
             lock (Gate) { if (Codes.TryGetValue(key, out c)) Codes.Remove(key); }   // single use
             string verifier = p.GetValueOrDefault("code_verifier", "");
             string challenge = Convert.ToBase64String(SHA256.HashData(Encoding.ASCII.GetBytes(verifier))).TrimEnd('=').Replace('+', '-').Replace('/', '_');
-            if (c == null || c.Expires < DateTime.UtcNow || c.ClientId != clientId || c.RedirectUri != p.GetValueOrDefault("redirect_uri", "") || verifier.Length < 43 || !Same(challenge, c.Challenge))
+            bool known;
+            lock (Gate) known = _store.Clients.ContainsKey(clientId);
+            if (c == null || !known || c.Expires < DateTime.UtcNow || c.ClientId != clientId || c.RedirectUri != p.GetValueOrDefault("redirect_uri", "") || verifier.Length < 43 || !Same(challenge, c.Challenge))
             { await OAuthError(ctx, 400, "invalid_grant", "authorization code is invalid, expired, or the PKCE verifier does not match"); return; }
             lock (Gate) if (_store.Clients.TryGetValue(clientId, out var cl)) cl.Used = true;   // saved by Issue
             await Json(ctx, 200, Issue(clientId));
@@ -509,7 +624,7 @@ internal static partial class HttpMode
             {
                 foreach (var k in Rotated.Where(x => x.Value.Until < now).Select(x => x.Key).ToList()) Rotated.Remove(k);
                 if (Rotated.TryGetValue(key, out var r) && r.Client == clientId) again = r.Reply;
-                ok = again == null && _store.Refresh.TryGetValue(key, out var exp) && exp > now && _store.RefreshClient.GetValueOrDefault(key) == clientId;
+                ok = again == null && _store.Clients.ContainsKey(clientId) && _store.Refresh.TryGetValue(key, out var exp) && exp > now && _store.RefreshClient.GetValueOrDefault(key) == clientId;
                 if (ok) { _store.Refresh.Remove(key); _store.RefreshClient.Remove(key); }   // rotation
             }
             // A client that lost the answer may retry for 30 s and gets the same new pair.

@@ -7,3 +7,5 @@ remote.env
 .vs/
 .idea/
 *.user
+packaging/build/
+packaging/releases/

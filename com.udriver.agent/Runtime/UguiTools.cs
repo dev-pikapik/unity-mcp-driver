@@ -471,13 +471,42 @@ namespace UDriver
             return "text = " + now;
         }
 
-        /// <summary>Submit / cancel / navigation keys for the selected uGUI object. Returns false if nothing is selected.</summary>
-        public static bool Key(KeyCode code)
+        /// <summary>A key for the selected uGUI object: a text field being edited takes every key, other controls submit / cancel / navigate. Returns false if nothing takes it.</summary>
+        public static bool Key(KeyCode code, EventModifiers mods)
         {
             var go = Selected();
-            if (go == null) return false;
+            if (go == null || !go.activeInHierarchy) return false;
             var es = Es();
-            if (code == KeyCode.Return || code == KeyCode.KeypadEnter) ExecuteEvents.Execute(go, new BaseEventData(es), ExecuteEvents.submitHandler);
+            bool shift = (mods & EventModifiers.Shift) != 0;
+            if (code == KeyCode.Tab)
+            {
+                var s = go.GetComponent<Selectable>();
+                var next = s == null ? null : shift ? s.FindSelectableOnUp() ?? s.FindSelectableOnLeft() : s.FindSelectableOnDown() ?? s.FindSelectableOnRight();
+                if (next != null) es.SetSelectedGameObject(next.gameObject);
+                return true;
+            }
+            foreach (var c in go.GetComponents<Component>())
+            {
+                // InputField / TMP_InputField: the same steps their OnUpdateSelected runs for a real key.
+                var kp = c != null ? c.GetType().GetMethod("KeyPressed", BindingFlags.Instance | BindingFlags.NonPublic, null, new[] { typeof(Event) }, null) : null;
+                if (kp == null) continue;
+                // Not in edit mode (e.g. after Enter): the field is navigated and submitted like a button.
+                if (!(UiTools.Prop(c.GetType(), "isFocused")?.GetValue(c) is bool editing && editing)) break;
+                char ch = code >= KeyCode.A && code <= KeyCode.Z && shift ? (char)(code - 32) : code >= KeyCode.Space && code < KeyCode.Delete ? (char)code : '\0';
+                if (kp.Invoke(c, new object[] { new Event { type = EventType.KeyDown, keyCode = code, character = ch, modifiers = mods } }).ToString() == "Finish")
+                {
+                    if (code != KeyCode.Escape) c.GetType().GetMethod("SendOnSubmit", BindingFlags.Instance | BindingFlags.NonPublic, null, Type.EmptyTypes, null)?.Invoke(c, null);
+                    var off = c.GetType().GetMethod("DeactivateInputField");
+                    off?.Invoke(c, off.GetParameters().Length == 0 ? null : new object[] { false });
+                    EventStore.Emit("ui.submit", (code == KeyCode.Escape ? "cancel " : "submit ") + Desc(go));
+                }
+                return true;
+            }
+            if (code == KeyCode.Return || code == KeyCode.KeypadEnter || code == KeyCode.Space)
+            {
+                ExecuteEvents.Execute(go, new BaseEventData(es), ExecuteEvents.submitHandler);
+                EventStore.Emit("ui.submit", "submit " + Desc(go));
+            }
             else if (code == KeyCode.Escape) ExecuteEvents.Execute(go, new BaseEventData(es), ExecuteEvents.cancelHandler);
             else
             {
@@ -550,7 +579,7 @@ namespace UDriver
         public static GameObject Selected() { return null; }
         public static void Focus(GameObject go) { }
         public static string TypeText(GameObject go, string text, bool clear, bool submit) { return ""; }
-        public static bool Key(KeyCode code) { return false; }
+        public static bool Key(KeyCode code, EventModifiers mods) { return false; }
         public static void Inspect(GameObject go, ToolResponse r) { }
         public static GameObject SelfTestCreate(Action onClick) { return null; }
 #endif

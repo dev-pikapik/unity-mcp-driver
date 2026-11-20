@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
@@ -21,6 +22,7 @@ namespace UDriver
         static int _buttons; // pressed-button mask for method=input (bit0 left, bit1 right, bit2 middle)
 
         public static bool InjectAvailable { get { return Inj.Available; } }
+        public static bool OsKeysAvailable { get { return Os.Available; } }
 
         internal static void Register()
         {
@@ -185,6 +187,30 @@ namespace UDriver
             var mods = (code >= KeyCode.UpArrow && code <= KeyCode.F15) || code == KeyCode.Backspace || code == KeyCode.Delete ? _mods | EventModifiers.FunctionKey : _mods;
             EventBase e = down ? (EventBase)KeyDownEvent.GetPooled(c, code, mods) : KeyUpEvent.GetPooled(c, code, mods);
             using (e) top.SendEvent(e);
+        }
+
+        static KeyCode Code(string key)
+        {
+            KeyCode c;
+            string k = key.Length == 1 && char.IsDigit(key[0]) ? "Alpha" + key
+                : key.StartsWith("Digit", StringComparison.OrdinalIgnoreCase) ? "Alpha" + key.Substring(5)
+                : key.Equals("Enter", StringComparison.OrdinalIgnoreCase) ? "Return"
+                : key.Equals("Esc", StringComparison.OrdinalIgnoreCase) ? "Escape" : key;
+            if (!Enum.TryParse(k, true, out c) || c == KeyCode.None || char.IsDigit(k[0]))
+                throw new ToolException("unknown key '" + key + "'. Use UnityEngine.KeyCode names: Return, Escape, Tab, Space, Backspace, Delete, LeftArrow, W, Alpha1, LeftShift, F5...");
+            return c;
+        }
+
+        /// <summary>Input System Key name for a KeyCode.</summary>
+        static string KeyName(KeyCode c)
+        {
+            if (c >= KeyCode.Alpha0 && c <= KeyCode.Alpha9) return "Digit" + (c - KeyCode.Alpha0);
+            return c == KeyCode.Return ? "Enter" : c == KeyCode.KeypadEnter ? "NumpadEnter" : c == KeyCode.LeftControl ? "LeftCtrl" : c == KeyCode.RightControl ? "RightCtrl" : c.ToString();
+        }
+
+        static bool Held(KeyCode c)
+        {
+            try { return Input.GetKey(c); } catch (InvalidOperationException) { return false; }
         }
 
         /// <summary>Runtime UI Toolkit drives submit/cancel/tab through navigation events rather than raw keys.</summary>
@@ -507,32 +533,58 @@ namespace UDriver
             UiTools.HookPanels();
             string key = a.Str("key");
             if (key == null) throw new ToolException("key is required");
-            string m = Method(a, r), action = a.Str("action", "press");
+            string m = a.Str("method", "auto"), action = a.Str("action", "press"), note = "";
+            if (m != "auto" && m != "os") Method(a, r);
+            if (m == "os" && !Os.Available) throw new ToolException("method=os works only in macOS and Windows game builds");
             int hold = Mathf.Clamp(a.Int("holdMs", 0), 0, MaxHoldMs);
             long seq = EventStore.LastSeq;
+            SetMods(a);
+            var code = m == "input" ? KeyCode.None : Code(key);
+            if (m == "auto" || m == "event")
+            {
+                VisualElement top;
+                var f = Focused(out top);
+                // No UI Toolkit focus but a selected uGUI object: route the key there.
+                if (f == null && action != "up" && Ugui.Key(code, _mods))
+                {
+                    _mods = EventModifiers.None;
+                    yield return null;
+                    r.Text("key " + key + " sent to the selected uGUI object " + Ugui.Desc(Ugui.Selected()) + (m == "auto" ? " (to reach gameplay code instead, use method=os)" : ""));
+                    Feedback(r, seq, false);
+                    yield break;
+                }
+                if (m == "auto") m = f != null ? "event" : Inj.Available ? "input" : Os.Available ? "os" : top != null ? "event" : null;
+                if (m == null) throw new ToolException("nothing can take this key: no UI element is focused or selected (ui_focus one first), the Input System package is not active, and real key events are posted only by macOS and Windows game builds");
+                if (m == "input") key = KeyName(code);
+                if (m == "event")
+                {
+                    if (action != "up") { SendKey(top, true, '\0', code); Nav(top, f, code); }
+                    if (action == "press") { if (hold > 0) yield return new WaitForSecondsRealtime(hold / 1000f); else yield return null; }
+                    if (action != "down") SendKey(top, false, '\0', code);
+                }
+            }
             if (m == "input")
             {
                 if (action != "up") Inj.SendKey(key, true);
                 if (action == "press") { if (hold > 0) yield return new WaitForSecondsRealtime(hold / 1000f); else yield return null; }
                 if (action != "down") Inj.SendKey(key, false);
             }
-            else
+            else if (m == "os")
             {
-                KeyCode code;
-                if (!Enum.TryParse(key, true, out code))
-                    throw new ToolException("unknown key '" + key + "'. With method=event use UnityEngine.KeyCode names: Return, Escape, Tab, Space, Backspace, Delete, LeftArrow, A, Alpha1, F5...");
-                SetMods(a);
-                VisualElement top;
-                var f = Focused(out top);
-                // No UI Toolkit focus but a selected uGUI object: route submit / cancel / arrows there.
-                if (f == null && action != "up" && Ugui.Key(code)) { yield return null; r.Text("key " + key + " sent to uGUI selection " + Ugui.Desc(Ugui.Selected())); Feedback(r, seq, false); yield break; }
-                if (action != "up") { SendKey(top, true, '\0', code); Nav(top, f, code); }
-                if (action == "press") { if (hold > 0) yield return new WaitForSecondsRealtime(hold / 1000f); else yield return null; }
-                if (action != "down") SendKey(top, false, '\0', code);
-                _mods = EventModifiers.None;
+                if (action != "up")
+                {
+                    Os.Send(code, true, _mods);
+                    bool seen = false;
+                    float until = Time.realtimeSinceStartup + 0.5f;
+                    while (!(seen = Held(code)) && Time.realtimeSinceStartup < until) yield return null;
+                    note = seen ? "; the game's Input.GetKey saw it" : "; WARNING: the game's Input.GetKey did not see it - bring the game window to the front and retry";
+                    if (action == "press" && hold > 0) yield return new WaitForSecondsRealtime(hold / 1000f);
+                }
+                if (action != "down") { Os.Send(code, false, _mods); yield return null; }
             }
+            _mods = EventModifiers.None;
             yield return null;
-            r.Text("key " + action + " " + key + " via " + m);
+            r.Text("key " + action + " " + key + " via " + m + note);
             Feedback(r, seq, false);
         }
 
@@ -648,6 +700,138 @@ namespace UDriver
             if (errs.Count > 5) r.Text("  ... more errors: events_query sinceSeq=" + seq + " categories=[\"log\"]");
             r.Text("total: " + done + "/" + steps.Count + " steps, " + (Time.frameCount - f0) + " frames, " + Mathf.RoundToInt((Time.realtimeSinceStartup - start) * 1000f) + " ms"
                    + (stopped != null ? ", stopped by " + stopped : ""));
+        }
+
+        // ---------------- real key events for the old Input Manager ----------------
+
+        /// <summary>Key events posted to this game's own window, the only input Input.GetKey reads.</summary>
+        static class Os
+        {
+            static readonly bool Mac = Application.platform == RuntimePlatform.OSXPlayer, Win = Application.platform == RuntimePlatform.WindowsPlayer;
+            public static readonly bool Available = Mac || Win;
+            static readonly int Pid = System.Diagnostics.Process.GetCurrentProcess().Id;
+
+            static char Char(KeyCode c, EventModifiers mods)
+            {
+                if (c >= KeyCode.A && c <= KeyCode.Z && (mods & EventModifiers.Shift) != 0) return (char)(c - 32);
+                return c >= KeyCode.Space && c < KeyCode.Delete ? (char)c : '\0';
+            }
+
+            static Exception NoCode(KeyCode c) { return new ToolException("key " + c + " cannot be sent as a real key event; letters, digits, punctuation, Space, Return, Escape, Tab, Backspace, Delete, arrows, Home/End/PageUp/PageDown, Shift/Control/Alt and F1-F12 can"); }
+
+            public static void Send(KeyCode c, bool down, EventModifiers mods)
+            {
+                if (Mac) { PostMac(c, down, mods); return; }
+                var w = Window();
+                if (w == IntPtr.Zero) throw new ToolException("the game window was not found");
+                var with = new List<KeyCode>();
+                if ((mods & EventModifiers.Shift) != 0) with.Add(KeyCode.LeftShift);
+                if ((mods & EventModifiers.Control) != 0) with.Add(KeyCode.LeftControl);
+                if ((mods & EventModifiers.Alt) != 0) with.Add(KeyCode.LeftAlt);
+                int vk = WinKey(c);
+                if (down) foreach (var x in with) PostWin(w, WinKey(x), x, true);
+                PostWin(w, vk, c, down);
+                if (!down) foreach (var x in with) PostWin(w, WinKey(x), x, false);
+            }
+
+            // macOS: virtual key codes of the ANSI layout, indexed by the KeyCode character.
+            const string MacChars = "asdfhgzxcv\0bqweryt123465=97-80]ou[ip\0lj'k;\\,/nm.\t `";
+            const string CG = "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics";
+            [DllImport(CG)] static extern IntPtr CGEventCreateKeyboardEvent(IntPtr source, ushort key, [MarshalAs(UnmanagedType.I1)] bool down);
+            [DllImport(CG)] static extern void CGEventSetType(IntPtr e, uint type);
+            [DllImport(CG)] static extern void CGEventSetFlags(IntPtr e, ulong flags);
+            [DllImport(CG)] static extern void CGEventKeyboardSetUnicodeString(IntPtr e, UIntPtr length, ref ushort s);
+            [DllImport("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")] static extern void CFRelease(IntPtr p);
+            const string ObjC = "/usr/lib/libobjc.A.dylib";
+            [DllImport(ObjC)] static extern IntPtr objc_getClass(string name);
+            [DllImport(ObjC)] static extern IntPtr sel_registerName(string name);
+            [DllImport(ObjC, EntryPoint = "objc_msgSend")] static extern IntPtr Send(IntPtr self, IntPtr sel);
+            [DllImport(ObjC, EntryPoint = "objc_msgSend")] static extern IntPtr Send(IntPtr self, IntPtr sel, IntPtr arg);
+            [DllImport(ObjC, EntryPoint = "objc_msgSend")] static extern void Send(IntPtr self, IntPtr sel, IntPtr arg, [MarshalAs(UnmanagedType.I1)] bool flag);
+
+            static int MacKey(KeyCode c)
+            {
+                int i = c > KeyCode.None && (int)c < 128 ? MacChars.IndexOf((char)c) : -1;
+                if (i >= 0) return i;
+                if (c >= KeyCode.F1 && c <= KeyCode.F12) return new[] { 0x7A, 0x78, 0x63, 0x76, 0x60, 0x61, 0x62, 0x64, 0x65, 0x6D, 0x67, 0x6F }[c - KeyCode.F1];
+                switch (c)
+                {
+                    case KeyCode.Return: return 0x24; case KeyCode.KeypadEnter: return 0x4C; case KeyCode.Escape: return 0x35;
+                    case KeyCode.Backspace: return 0x33; case KeyCode.Delete: return 0x75;
+                    case KeyCode.LeftArrow: return 0x7B; case KeyCode.RightArrow: return 0x7C; case KeyCode.DownArrow: return 0x7D; case KeyCode.UpArrow: return 0x7E;
+                    case KeyCode.Home: return 0x73; case KeyCode.End: return 0x77; case KeyCode.PageUp: return 0x74; case KeyCode.PageDown: return 0x79;
+                    case KeyCode.LeftShift: return 0x38; case KeyCode.RightShift: return 0x3C; case KeyCode.LeftControl: return 0x3B; case KeyCode.RightControl: return 0x3E;
+                    case KeyCode.LeftAlt: return 0x3A; case KeyCode.RightAlt: return 0x3D; case KeyCode.LeftCommand: return 0x37; case KeyCode.RightCommand: return 0x36;
+                }
+                throw NoCode(c);
+            }
+
+            static ulong MacFlags(EventModifiers m)
+            {
+                return ((m & EventModifiers.Shift) != 0 ? 0x20000UL : 0) | ((m & EventModifiers.Control) != 0 ? 0x40000UL : 0)
+                     | ((m & EventModifiers.Alt) != 0 ? 0x80000UL : 0) | ((m & EventModifiers.Command) != 0 ? 0x100000UL : 0);
+            }
+
+            static void PostMac(KeyCode c, bool down, EventModifiers mods)
+            {
+                var e = CGEventCreateKeyboardEvent(IntPtr.Zero, (ushort)MacKey(c), down);
+                var own = c == KeyCode.LeftShift || c == KeyCode.RightShift ? EventModifiers.Shift : c == KeyCode.LeftControl || c == KeyCode.RightControl ? EventModifiers.Control
+                    : c == KeyCode.LeftAlt || c == KeyCode.RightAlt ? EventModifiers.Alt : c == KeyCode.LeftCommand || c == KeyCode.RightCommand ? EventModifiers.Command : EventModifiers.None;
+                // A modifier key reaches an app as a flags-changed event, not a key down/up.
+                if (own != EventModifiers.None) CGEventSetType(e, 12);
+                CGEventSetFlags(e, MacFlags(down ? mods | own : mods));
+                // The real layout may not be Latin; give the character the agent asked for.
+                ushort ch = Char(c, mods);
+                if (ch != 0) CGEventKeyboardSetUnicodeString(e, (UIntPtr)1, ref ch);
+                // Into the game's own event queue: unlike posting through the window server, this needs no Accessibility permission and works in the background.
+                var ns = Send(objc_getClass("NSEvent"), sel_registerName("eventWithCGEvent:"), e);
+                Send(Send(objc_getClass("NSApplication"), sel_registerName("sharedApplication")), sel_registerName("postEvent:atStart:"), ns, false);
+                CFRelease(e);
+            }
+
+            // Windows: WM_KEYDOWN / WM_KEYUP to the game window.
+            [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string title);
+            [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr w, out int pid);
+            [DllImport("user32.dll")] static extern bool PostMessage(IntPtr w, uint msg, IntPtr wp, IntPtr lp);
+            [DllImport("user32.dll")] static extern uint MapVirtualKey(uint code, uint type);
+
+            static IntPtr Window()
+            {
+                for (var w = FindWindowEx(IntPtr.Zero, IntPtr.Zero, "UnityWndClass", null); w != IntPtr.Zero; w = FindWindowEx(IntPtr.Zero, w, "UnityWndClass", null))
+                {
+                    int pid;
+                    GetWindowThreadProcessId(w, out pid);
+                    if (pid == Pid) return w;
+                }
+                return IntPtr.Zero;
+            }
+
+            static int WinKey(KeyCode c)
+            {
+                if (c >= KeyCode.A && c <= KeyCode.Z) return c - KeyCode.A + 'A';
+                if (c >= KeyCode.Alpha0 && c <= KeyCode.Alpha9 || c == KeyCode.Space || c == KeyCode.Return || c == KeyCode.Tab || c == KeyCode.Backspace || c == KeyCode.Escape) return (int)c;
+                if (c >= KeyCode.F1 && c <= KeyCode.F12) return 0x70 + (c - KeyCode.F1);
+                switch (c)
+                {
+                    case KeyCode.KeypadEnter: return 0x0D; case KeyCode.Delete: return 0x2E;
+                    case KeyCode.LeftArrow: return 0x25; case KeyCode.UpArrow: return 0x26; case KeyCode.RightArrow: return 0x27; case KeyCode.DownArrow: return 0x28;
+                    case KeyCode.Home: return 0x24; case KeyCode.End: return 0x23; case KeyCode.PageUp: return 0x21; case KeyCode.PageDown: return 0x22;
+                    case KeyCode.LeftShift: return 0xA0; case KeyCode.RightShift: return 0xA1; case KeyCode.LeftControl: return 0xA2;
+                    case KeyCode.RightControl: return 0xA3; case KeyCode.LeftAlt: return 0xA4; case KeyCode.RightAlt: return 0xA5;
+                    case KeyCode.Semicolon: return 0xBA; case KeyCode.Equals: return 0xBB; case KeyCode.Comma: return 0xBC; case KeyCode.Minus: return 0xBD;
+                    case KeyCode.Period: return 0xBE; case KeyCode.Slash: return 0xBF; case KeyCode.BackQuote: return 0xC0;
+                    case KeyCode.LeftBracket: return 0xDB; case KeyCode.Backslash: return 0xDC; case KeyCode.RightBracket: return 0xDD; case KeyCode.Quote: return 0xDE;
+                }
+                throw NoCode(c);
+            }
+
+            static void PostWin(IntPtr w, int vk, KeyCode c, bool down)
+            {
+                long scan = MapVirtualKey((uint)vk, 0);
+                bool ext = vk >= 0x21 && vk <= 0x2E || c == KeyCode.KeypadEnter || vk == 0xA3 || vk == 0xA5;
+                long lp = 1 | scan << 16 | (ext ? 1L << 24 : 0) | (down ? 0 : 0xC0000000L);
+                PostMessage(w, down ? 0x100u : 0x101u, (IntPtr)vk, (IntPtr)lp);
+            }
         }
 
         // ---------------- Input System injection ----------------

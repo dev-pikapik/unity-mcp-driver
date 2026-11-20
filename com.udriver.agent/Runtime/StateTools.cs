@@ -98,6 +98,13 @@ namespace UDriver
                                     + ". Only a human can lift this, by starting the game/editor with environment variable UDRIVER_UNSAFE=1.");
         }
 
+        /// <summary>The indexer setter that a list or dictionary write will run.</summary>
+        static void GuardItem(object o, Type itf)
+        {
+            var map = o.GetType().GetInterfaceMap(itf);
+            Guard(map.TargetMethods[Array.FindIndex(map.InterfaceMethods, m => m.Name == "set_Item")], "state_set");
+        }
+
         // ---------------- types ----------------
 
 #if UNITY_EDITOR
@@ -1091,8 +1098,8 @@ namespace UDriver
             {
                 string key = last.Substring(1, last.Length - 2).Trim('"', '\'');
                 var list = parent.Obj as IList; var dict = parent.Obj as IDictionary;
-                if (list != null) { var et = list.GetType().IsArray ? list.GetType().GetElementType() : list.GetType().IsGenericType ? list.GetType().GetGenericArguments()[0] : typeof(object); list[int.Parse(key)] = Util.To(val, et); }
-                else if (dict != null && dict.GetType().IsGenericType) { var ga = dict.GetType().GetGenericArguments(); dict[Convert.ChangeType(key, ga[0])] = Util.To(val, ga[1]); }
+                if (list != null) { if (!list.GetType().IsArray) GuardItem(list, typeof(IList)); var et = list.GetType().IsArray ? list.GetType().GetElementType() : list.GetType().IsGenericType ? list.GetType().GetGenericArguments()[0] : typeof(object); list[int.Parse(key)] = Util.To(val, et); }
+                else if (dict != null && dict.GetType().IsGenericType) { GuardItem(dict, typeof(IDictionary)); var ga = dict.GetType().GetGenericArguments(); dict[Convert.ChangeType(key, ga[0])] = Util.To(val, ga[1]); }
                 else throw new ToolException("target is not a list or dictionary");
             }
             else

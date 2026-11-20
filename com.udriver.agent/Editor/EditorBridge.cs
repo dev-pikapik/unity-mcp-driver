@@ -336,8 +336,14 @@ namespace UDriver.Editor
         static void Build(JObject a, ToolResponse r)
         {
             if (a.Str("action", "status") != "build") { r.Text("build: " + SessionState.GetString(KBuild, "never built")); return; }
-            string path = a.Str("path");
-            if (path == null) throw new ToolException("path is required: Game.exe on Windows, Game.app on macOS, Game.x86_64 on Linux, e.g. C:/Builds/QA/Game.exe");
+            var target = EditorUserBuildSettings.activeBuildTarget;
+            string root = Path.GetFullPath(Path.GetDirectoryName(Application.dataPath));
+            string ext = target == BuildTarget.StandaloneWindows || target == BuildTarget.StandaloneWindows64 ? ".exe" : target == BuildTarget.StandaloneOSX ? ".app"
+                : target == BuildTarget.StandaloneLinux64 ? ".x86_64" : target == BuildTarget.Android ? ".apk" : "";
+            string example = "Builds/" + target + "/" + PlayerSettings.productName + ext;
+            string path = Path.GetFullPath(Path.Combine(root, a.Str("path") ?? example));
+            var cmp = Application.platform == RuntimePlatform.LinuxEditor ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+            if (!path.StartsWith(root + Path.DirectorySeparatorChar, cmp)) throw new ToolException("Builds go inside the project folder, for example " + example);
             if (EditorApplication.isPlaying) throw new ToolException("leave Play Mode first (editor_play action=stop)");
             if (EditorUtility.scriptCompilationFailed) throw new ToolException("scripts have compile errors (editor_compile)");
             var scenes = new List<string>();
@@ -348,7 +354,7 @@ namespace UDriver.Editor
             bool dev = a.Bool("development", true);
             var opts = new BuildPlayerOptions
             {
-                scenes = scenes.ToArray(), locationPathName = path, target = EditorUserBuildSettings.activeBuildTarget,
+                scenes = scenes.ToArray(), locationPathName = path, target = target,
                 options = dev ? BuildOptions.Development : BuildOptions.None
             };
             SessionState.SetString(KBuild, "RUNNING since " + DateTime.Now.ToString("HH:mm:ss") + " -> " + path);

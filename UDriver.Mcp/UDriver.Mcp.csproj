@@ -1,16 +1,25 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <AssemblyName>udriver-mcp</AssemblyName>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <!-- Run on whatever newer .NET runtime is installed if .NET 8 itself is absent. -->
+    <!-- Run on whatever newer .NET runtime is installed if .NET 10 itself is absent. -->
     <RollForward>LatestMajor</RollForward>
     <NoWarn>CS8618;CS8625</NoWarn>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../com.udriver.agent/Runtime/ToolManifest.cs" Link="ToolManifest.cs" />
+    <EmbeddedResource Include="../com.udriver.agent/Runtime/*.cs" LogicalName="rt/%(Filename)%(Extension)" />
+    <EmbeddedResource Include="$(PkgNewtonsoft_Json)/lib/netstandard2.0/Newtonsoft.Json.dll" LogicalName="Newtonsoft.Json.dll" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.12.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" GeneratePathProperty="true" ExcludeAssets="all" PrivateAssets="all" />
+    <PackageReference Include="Terminal.Gui" Version="2.5.0" />
+    <PackageReference Include="Velopack" Version="1.2.161" />
   </ItemGroup>
 </Project>

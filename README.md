@@ -5,7 +5,7 @@
 **Let your agent see, play and test your Unity game.**
 
 ![Unity 6000.0+](https://img.shields.io/badge/Unity-6000.0%2B-black?logo=unity)
-![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet)
+![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet)
 ![MCP](https://img.shields.io/badge/MCP-server-6E56CF)
 ![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-informational)
 ![License](https://img.shields.io/badge/license-UDriver%201.0-blue)
@@ -19,7 +19,7 @@ It works with UI Toolkit and uGUI, in Play Mode, Edit Mode and game builds.
 
 ## Install
 
-You need Unity 6000.0 or newer. UDriver also needs the free .NET 8 SDK from Microsoft; if it is missing, the launcher
+You need Unity 6000.0 or newer. UDriver also needs the free .NET 10 SDK from Microsoft; if it is missing, the launcher
 installs it (with Homebrew on a Mac, with winget on Windows) or opens Microsoft's download page.
 
 1. Put the `udriver` folder somewhere it can stay, for example in Documents.
@@ -60,7 +60,7 @@ service is installed.
 | Check | `self_test` |
 
 `editor_menu` is off unless you turn it on with the environment variable `UDRIVER_ENABLE_TOOLS=editor_menu`.
-`editor_build` writes builds only to the folders listed in the environment variable `UDRIVER_BUILDS_DIR`, and is off without it.
+`editor_build` writes builds only inside the project folder and the folders listed in the environment variable `UDRIVER_BUILDS_DIR`, and is off without it.
 
 ## Several games and access levels
 
@@ -100,9 +100,7 @@ minutes. You get it in the panel on this computer or on a device that is already
 - **Turning it off** closes the tunnel at once. Remote agents and devices lose access; agents on this computer keep
   working.
 
-Calls through remote access are limited to about 60 to 90 seconds, because the proxy drops longer requests. Some web
-agents sign in from an address UDriver doesn't know yet. For those, set the environment variable
-`UDRIVER_OAUTH_REDIRECT_HOSTS` to the sign-in host before starting the launcher.
+Calls through remote access are limited to about 60 to 90 seconds, because the proxy drops longer requests.
 
 ## Security
 
@@ -143,6 +141,60 @@ Found a vulnerability? Please report it privately, see [SECURITY.md](SECURITY.md
 - While the editor compiles or reloads scripts, it doesn't answer for up to 25 seconds.
 - Windows has been tested less than macOS.
 
+## In the terminal
+
+`udriver` (in the `packaging` folder, or next to the server in an installed copy; `udriver.cmd` on Windows) opens a
+full-screen terminal view with four tabs: Games, Agents, Tools and Access. It starts UDriver if it isn't running.
+When an app asks for access, the view shows its check number; press **A** to allow or **D** to deny. **N** shows a
+one-time code for a new agent, **Q** quits. The same things as single commands:
+
+```bash
+udriver status
+udriver approve <id>
+udriver deny <id>
+udriver code
+udriver tools off <tool> --for <app>
+```
+
+The Linux AppImage takes the same words: `./UDriver.AppImage tui`, `./UDriver.AppImage status`.
+
+## Installers and updates
+
+Each script builds one system's installer and its update files into `packaging/releases`. The version is the only
+argument, and each needs the .NET 10 SDK:
+
+- Mac: `packaging/pack-mac.sh 1.0.0` makes `UDriver-osx-Setup.pkg` and a zip with UDriver.app and the server inside.
+- Linux: `packaging/pack-linux.sh 1.0.0` makes `UDriver.AppImage` (`RID=linux-arm64` for ARM computers).
+- Windows: `powershell -File packaging\pack-windows.ps1 1.0.0` makes `UDriver-win-Setup.exe` (`-Runtime win-arm64`
+  for ARM computers). After Setup the terminal view opens; later, run `udriver.cmd` from the install folder.
+
+To publish a version, upload every file from `packaging/releases` to a new release at
+github.com/dev-pikapik/unity-mcp-driver/releases. Installed copies look there: the panel's update button and
+`GET /panel/api/update` show a newer version, and `POST /panel/api/update/apply` installs it. Set
+`UDRIVER_UPDATE_URL` to a folder or another address to test updates from there.
+
+### Signing the Mac version
+
+Without signing, macOS warns on first start and people must right-click UDriver and choose **Open**. To sign:
+
+1. In your Apple Developer account, create two certificates: **Developer ID Application** and
+   **Developer ID Installer**. Install both in Keychain on this Mac.
+2. Create an app-specific password at account.apple.com (Sign-In and Security, App-Specific Passwords).
+3. Save the notarization login once under a name you choose, for example `udriver-notary`:
+
+   ```bash
+   xcrun notarytool store-credentials udriver-notary --apple-id you@example.com --team-id ABCDE12345 --password xxxx-xxxx-xxxx-xxxx
+   ```
+
+   Your team ID is on developer.apple.com under Membership details.
+4. Build with your names and that profile name:
+
+   ```bash
+   SIGN_APP="Developer ID Application: Your Name (ABCDE12345)" SIGN_INSTALL="Developer ID Installer: Your Name (ABCDE12345)" NOTARY_PROFILE=udriver-notary packaging/pack-mac.sh 1.0.0
+   ```
+
+   `security find-identity -v -p basic` lists the exact certificate names.
+
 ## Uninstall
 
 On a Mac or Linux, run:
@@ -151,10 +203,10 @@ On a Mac or Linux, run:
 sh uninstall.sh
 ```
 
-It stops the UDriver panel, lists the Unity projects you added, and asks before deleting your
-settings. Agents that use UDriver keep running; remove UDriver from their MCP settings.
+It stops the UDriver panel, puts back the original files of every game build UDriver was added to, lists the
+Unity projects you added, and asks before deleting your settings (kept if a game could not be put back). Agents that use UDriver keep running; remove UDriver from their MCP settings.
 
-On Windows, double-click `uninstall.cmd`. It does the same: stops UDriver, lists the Unity projects you added, tells
+On Windows, double-click `uninstall.cmd`. It does the same: stops UDriver, puts back the games, lists the Unity projects you added, tells
 you how to delete the Cloudflare tunnel, and asks before deleting `%USERPROFILE%\.udriver`.
 
 ## License

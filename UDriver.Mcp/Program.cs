@@ -48,7 +48,7 @@ internal static class Program
     /// <summary>One connected agent: its own last target, and the label Unity shows to other agents.</summary>
     internal sealed class Session
     {
-        public string Label = "", Client = "", LastTarget = "";
+        public string Label = "", Client = "", LastTarget = "", Name = "";
         public bool Local = true, Off;
         public int LastGame, LastEditor, Slot;
         public DateTime LastSeen, Written;
@@ -112,9 +112,11 @@ internal static class Program
     static string? Denied(string name, JsonObject? args, Target? t, Registry.Game? g = null)
     {
         g ??= t?.Game;
-        string level = g?.Access ?? Registry.DefaultAccess;
+        string level = g?.Access ?? (t == null ? Registry.DefaultAccess : "none");
         if (Need(name, args) <= Registry.Level(level)) return null;
-        return $"\"{g?.Name ?? t?.Name ?? "this game"}\" allows {level} only; ask the owner to raise access in the UDriver panel.";
+        string game = g?.Name ?? t?.Name ?? "this game";
+        return level == "none" ? $"\"{game}\" is not allowed: the owner has not given agents access to it. Ask the owner to set its access in the UDriver panel."
+            : $"\"{game}\" allows {level} only; ask the owner to raise access in the UDriver panel.";
     }
 
     static readonly HashSet<string> OffByDefault = new() { "editor_menu" };
@@ -154,7 +156,16 @@ internal static class Program
             .Any(d => r.Equals(d, cmp) || r.StartsWith(d + Path.DirectorySeparatorChar, cmp));
     }
 
-    static string? Blocked(string name, JsonObject? args)
+    /// <summary>The panel's tool switches apply to stdio agents under this one id.</summary>
+    internal const string StdioClient = "local";
+    /// <summary>The same for agents on the UDRIVER_URL_SECRET link.</summary>
+    internal const string LinkClient = "link";
+
+    static string? Blocked(string name, JsonObject? args) =>
+        Registry.ToolOff(name, Me.Client.Length > 0 ? Me.Client : StdioClient) ? $"'{name}' is turned off in the UDriver panel." : Configured(name, args);
+
+    /// <summary>Limits from the server's environment variables.</summary>
+    static string? Configured(string name, JsonObject? args)
     {
         if (Disabled.Contains(name)) return $"'{name}' is disabled on this machine (UDRIVER_DISABLE_TOOLS).";
         if (OffByDefault.Contains(name) && !Enabled.Contains(name))
@@ -163,9 +174,12 @@ internal static class Program
         {
             string? outPath = (string?)args["path"];
             if (BuildDirs.Length == 0) return "editor_build is not enabled: a human must set UDRIVER_BUILDS_DIR (the folder builds may be written to) in the MCP server configuration.";
-            if (outPath == null || !Path.IsPathFullyQualified(outPath) || !Approved(outPath, out string real))
-                return $"editor_build refused: the output path must be an absolute path inside the approved build folders ({string.Join(", ", BuildDirs)}).";
-            args["path"] = real;
+            if (outPath != null && Path.IsPathFullyQualified(outPath))
+            {
+                if (!Approved(outPath, out string real))
+                    return $"editor_build refused: an absolute output path must be inside the approved build folders ({string.Join(", ", BuildDirs)}); a relative path or none builds inside the project.";
+                args["path"] = real;
+            }
         }
         if (!ReadOnly || ObserveTools.Contains(name)) return null;
         if (ObserveActions.TryGetValue(name, out var ok))
@@ -327,7 +341,12 @@ internal static class Program
 
     static async Task Main(string[] args)
     {
+        // Installer hooks. On Windows the first start after Setup opens the terminal screen; updates install only when asked.
+        Velopack.VelopackApp.Build().SetAutoApplyOnStartup(false)
+            .OnFirstRun(_ => { if (OperatingSystem.IsWindows()) Environment.Exit(Cli.Run(["tui"]).GetAwaiter().GetResult()); }).Run();
         if (args is ["setup"]) { HttpMode.TerminalSetup(); return; }
+        if (args is ["inject" or "restore", var gamePath]) { Environment.ExitCode = Inject.Run(args[0], gamePath); return; }
+        if (args is ["tui" or "status" or "approve" or "deny" or "code" or "tools", ..]) { Environment.ExitCode = await Cli.Run(args); return; }
         if (int.TryParse(Environment.GetEnvironmentVariable("UDRIVER_HTTP_PORT"), out int httpPort))
         {
             HttpOn = true;
@@ -403,6 +422,7 @@ internal static class Program
         switch (method)
         {
             case "initialize":
+                if (prm?["clientInfo"]?["name"] is JsonValue agent && agent.TryGetValue<string>(out var agentName)) Registry.Rename(Me, agentName);
                 return new JsonObject
                 {
                     ["protocolVersion"] = Versions.Contains((string?)prm?["protocolVersion"] ?? "") ? (string?)prm!["protocolVersion"] : Versions[0],
@@ -484,7 +504,12 @@ internal static class Program
     {
         var tools = new JsonArray();
         var known = new HashSet<string>();
-        foreach (var d in LocalTools.Concat(ToolManifest.Tools)) { known.Add(d.Name); if (Blocked(d.Name, null) == null) tools.Add(ToolJson(d)); }
+        int top = Registry.Games.Select(g => Registry.Level(g.Access)).Append(BuildDirs.Length > 0 ? Registry.Level(Registry.DefaultAccess) : -1).Max();
+        foreach (var d in LocalTools.Concat(ToolManifest.Tools))
+        {
+            known.Add(d.Name);
+            if (Blocked(d.Name, null) == null && (d.Name is "targets" or "app_status" || Need(d.Name, null) <= top)) tools.Add(ToolJson(d));
+        }
         var live = _liveTools;
         if (live == null)
         {
@@ -494,7 +519,7 @@ internal static class Program
                 {
                     var (status, body) = await Http2(HttpMethod.Get, t.Port, "/tools", null, 1.5);
                     if (status == 200 && JsonNode.Parse(body)?["tools"] is JsonArray arr)
-                        foreach (var x in arr) if (x != null) live.Add(x.DeepClone());
+                        foreach (var x in arr.OfType<JsonObject>()) { var c = (JsonObject)x.DeepClone(); c["game"] = t.Game?.Id; live.Add(c); }
                 }
                 catch { }
             _liveTools = live;
@@ -502,12 +527,29 @@ internal static class Program
         foreach (var t in live)
         {
             string n = (string?)t?["name"] ?? "";
-            if (t == null || !known.Add(n) || Blocked(n, null) != null) continue;
+            if (t == null || Blocked(n, null) != null || Need(n, null) > Registry.Level(Registry.Games.FirstOrDefault(g => g.Id == (string?)t["game"])?.Access ?? "none") || !known.Add(n)) continue;
             var copy = t.DeepClone();
+            copy.AsObject().Remove("game");
             if (copy["inputSchema"]?["properties"] is JsonObject props) props["target"] = TargetParam();
             tools.Add(copy);
         }
         return tools;
+    }
+
+    /// <summary>Every tool an agent may see, for the panel: the lowest access level it works at, and a fixed limit if one applies.</summary>
+    internal static JsonArray ToolCatalog()
+    {
+        var list = new JsonArray();
+        var seen = new HashSet<string>();
+        var live = (_liveTools ?? new JsonArray()).Select(t => (Name: (string?)t?["name"] ?? "", Desc: (string?)t?["description"] ?? ""));
+        foreach (var (n, desc) in LocalTools.Concat(ToolManifest.Tools).Select(d => (d.Name, d.Desc)).Concat(live))
+            if (n.Length > 0 && seen.Add(n))
+                list.Add(new JsonObject
+                {
+                    ["name"] = n, ["description"] = desc,
+                    ["access"] = Registry.Levels[Need(n, null)], ["limit"] = Configured(n, null),
+                });
+        return list;
     }
 
     // ---------------- helpers ----------------
@@ -640,11 +682,13 @@ internal static class Program
     {
         string state = t.Up ? "running" : t.Proc is { HasExited: true } p ? $"exited (code {p.ExitCode})" : t.Proc != null ? "starting" : "not answering";
         return $"{t.Name}  {t.Kind}  port {t.Port}  {state}" + (t.Proc != null ? $"  pid {t.Proc.Id} (app_launch by {(t.Owner == Me.Label ? "you" : t.Owner)})" : "")
-               + $"  access {t.Game?.Access ?? Registry.DefaultAccess}" + (t.Game != null && t.Game.Name != t.Name ? $" (saved as {t.Game.Name})" : "")
+               + "  " + AccessText(t.Game?.Access ?? "none") + (t.Game != null && t.Game.Name != t.Name ? $" (saved as {t.Game.Name})" : "")
                + (t.Unity.Length > 0 ? "  unity " + t.Unity : "") + (t.Path.Length > 0 ? "  " + t.Path : "");
     }
 
-    static string Saved(Registry.Game g) => $"{g.Name}  {g.Kind}  not running  access {g.Access}" + (g.Kind == "build" ? "  (app_launch path=" + g.Name + ")" : "  (open it in the Unity editor)") + "  " + g.Path;
+    static string AccessText(string access) => access == "none" ? "not allowed (the owner can set its access in the UDriver panel)" : "access " + access;
+
+    static string Saved(Registry.Game g) => $"{g.Name}  {g.Kind}  not running  {AccessText(g.Access)}" + (g.Kind == "build" ? "  (app_launch path=" + g.Name + ")" : "  (open it in the Unity editor)") + "  " + g.Path;
 
     static async Task<JsonNode> ListTargets(string? want)
     {
@@ -659,7 +703,7 @@ internal static class Program
     }
 
     /// <summary>Null when nothing listens on the port.</summary>
-    static async Task<JsonNode?> TryCall(int port, string name, JsonObject args)
+    internal static async Task<JsonNode?> TryCall(int port, string name, JsonObject args)
     {
         var body = new JsonObject { ["tool"] = name, ["args"] = args.DeepClone() };
         int status; string text;
@@ -816,6 +860,7 @@ internal static class Program
             g = Registry.ForPath(real);
         }
         if (!byOwner && Denied("app_launch", args, null, g) is string no) return Result(no, true);
+        if (Inject.Ensure(real) is string cannot) return Result(cannot, true);
         if (args["args"] is JsonArray given)
         {
             string? prev = null;

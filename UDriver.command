@@ -3,7 +3,7 @@
 DIR="$(cd "$(dirname "$0")" && pwd)"
 U="$HOME/.udriver"
 # Settings kept in remote.env by earlier versions; read as literal text, a variable already set wins.
-for K in UDRIVER_HTTP_PORT UDRIVER_BUILDS_DIR UDRIVER_DISABLE_TOOLS UDRIVER_READONLY UDRIVER_OAUTH_REDIRECT_HOSTS; do
+for K in UDRIVER_HTTP_PORT UDRIVER_BUILDS_DIR UDRIVER_DISABLE_TOOLS UDRIVER_READONLY; do
   V="$(sed -n "s/^$K=//p" "$U/remote.env" 2>/dev/null | head -n 1)"
   case "$V" in \"*\") V="${V#\"}"; V="${V%\"}" ;; esac
   [ -n "$V" ] && [ -z "$(printenv "$K")" ] && export "$K=$V"
@@ -36,23 +36,23 @@ if [ -d "$DIR/com.udriver.agent" ]; then
   rm -rf "$U/package" && mkdir -p "$U/package" && cp -R "$DIR/com.udriver.agent" "$U/package/" || fail "Could not copy the Unity package from $DIR"
 fi
 
-has_sdk() { [ -n "$1" ] && "$1" --list-sdks 2>/dev/null | grep -qE '^([89]|[1-9][0-9])\.'; }
+has_sdk() { [ -n "$1" ] && "$1" --list-sdks 2>/dev/null | grep -qE '^[1-9][0-9]\.'; }
 find_dotnet() {
-  for D in "$(command -v dotnet)" "$U/dotnet/dotnet" /usr/local/share/dotnet/dotnet; do has_sdk "$D" && { echo "$D"; return; }; done
+  for D in "$(command -v dotnet)" "$U/dotnet/dotnet" "$HOME/.dotnet/dotnet" /usr/local/share/dotnet/dotnet; do has_sdk "$D" && { echo "$D"; return; }; done
 }
 DOTNET="$(find_dotnet)"
 if [ -z "$DOTNET" ]; then
   echo
-  echo "UDriver needs the .NET 8 SDK, a free program from Microsoft."
+  echo "UDriver needs the .NET 10 SDK, a free program from Microsoft."
   for BREW in "$(command -v brew)" /opt/homebrew/bin/brew /usr/local/bin/brew; do [ -x "$BREW" ] && break; done
   if [ "$(uname -s)" = Darwin ] && [ -x "$BREW" ]; then
     echo "Installing it with Homebrew. If macOS asks for your password, type the one you use to log in to this Mac."
-    "$BREW" install --cask dotnet-sdk@8
+    "$BREW" install --cask dotnet-sdk
     DOTNET="$(find_dotnet)"
   fi
   if [ -z "$DOTNET" ]; then
-    browse https://dotnet.microsoft.com/download/dotnet/8.0
-    fail "Install the .NET 8 SDK from the Microsoft page that just opened, then start UDriver again."
+    browse https://dotnet.microsoft.com/download/dotnet/10.0
+    fail "Install the .NET 10 SDK from the Microsoft page that just opened, then start UDriver again."
   fi
 fi
 
