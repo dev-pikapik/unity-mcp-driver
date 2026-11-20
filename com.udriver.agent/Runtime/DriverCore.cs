@@ -318,6 +318,9 @@ namespace UDriver
             RenderTools.Register();
             RecordTools.Register();
             Sandbox.Register();
+            AppMap.Register();
+            QueryTools.Register();
+            NetCapture.Register();
         }
 
         /// <summary>Runs another tool from inside a tool (same arguments an agent would send).</summary>

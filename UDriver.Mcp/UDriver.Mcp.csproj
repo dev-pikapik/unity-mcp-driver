@@ -24,5 +24,6 @@
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" GeneratePathProperty="true" ExcludeAssets="all" PrivateAssets="all" />
     <PackageReference Include="Terminal.Gui" Version="2.5.0" />
     <PackageReference Include="Velopack" Version="1.2.161" />
+    <PackageReference Include="ICSharpCode.Decompiler" Version="11.2.0.10050" />
   </ItemGroup>
 </Project>

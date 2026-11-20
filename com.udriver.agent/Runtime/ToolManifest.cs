@@ -237,6 +237,24 @@ namespace UDriver
                 P("output", "string", "all (default) | last (only the last call's output) | errors (only failing calls). Failing calls are always shown.")),
             T("self_test", "Driver diagnostics: builds a temporary UI and verifies that every core capability really works in this project/build (tree, click, typing, keys, drag, scroll, value setting, screenshots, events, reflection, watches, input injection, uGUI, memory, rendering). Run once after installing; report the output if something fails."),
 
+            // ---- Understanding any app: structure, data, network ----
+            T("app_map", "Explain the app in one call: scenes and screens, UI with human labels (what each button, field, list and chart is and which method it calls), the scripts that drive it (components, ScriptableObjects, static managers), event wiring and data models (classes holding collections of records). Compact by default; drill down with section or target. Call this first in an unfamiliar app.",
+                P("section", "string", "overview (default) | ui | scripts | events | data | assemblies."),
+                P("target", "string", "Drill down into one type name or object path (e.g. TradingService or /Canvas/OrderPanel)."),
+                P("limit", "integer", "Max entries per list (default 40).")),
+            T("query", "Pick exactly the pieces you need from the live app with a selector and get them as JSON, CSV or lines. Roots: a state path (/Go:Comp.f, @Ns.Type.static, #u12), a type name with * wildcards (every live instance, incl. singletons). Steps: .member, [*] items, [n], [a:b], [?.field op value && ...] with op == != < <= > >= ~= (contains), ..name (search deeper). Example: select=\"Contact[?.company ~= 'acme']\" fields=[\"name\",\"email\"] format=csv.",
+                P("select", "string", "Selector.", true), P("fields", "array", "Only these members of each result (paths like 'owner.name')."),
+                P("format", "string", "lines (default) | json | csv."), P("offset", "integer", "Skip this many results."), P("limit", "integer", "Results to show (default 50, csv/json up to 10000).")),
+            T("chart_data", "Charts and graphs in the app: without id lists every chart found (line renderers, chart components, arrays behind a graph); with id returns its series points and the field the data comes from.",
+                P("id", "string", "Chart id from the list."), P("last", "integer", "Only the last N points."), P("format", "string", "lines (default) | json | csv.")),
+            T("form_fill", "Fill a form by its visible labels and optionally press its submit button. Example: fields={\"Name\":\"Ann Lee\",\"Email\":\"ann@demo.test\",\"Stage\":\"Won\"} submit=\"Save\". Dropdowns take the option text, toggles true/false.",
+                P("fields", "object", "Label -> value.", true), P("root", "string", "Only inside this panel (object path or name)."), P("submit", "string", "Label of the button to press after filling.")),
+            T("net_capture", "Record the app's own network traffic (UnityWebRequest, HttpClient, WebSocket, TCP sockets): requests, responses and messages, read with net_log. Needs 0Harmony.dll in the app; Mono only.",
+                P("action", "string", "start | stop | status (default) | clear."), P("bodies", "boolean", "Keep bodies (default true)."), P("maxBody", "integer", "Bytes kept per body (default 65536).")),
+            T("net_log", "Read recorded network traffic as a live feed (since = last seq you saw), one entry in full (id), or where the values from one response ended up in the app (id + trace=true: object fields and charts holding them).",
+                P("since", "integer", "Only entries after this seq."), P("contains", "string", "URL or body substring."), P("kind", "string", "http | websocket | socket."),
+                P("id", "integer", "One entry in full."), P("trace", "boolean", "With id: find where the response values live in the app."), P("limit", "integer", "Entries to show (default 30).")),
+
             // ---- Unity editor (served by the editor bridge, also outside Play Mode) ----
             T("editor_status", "Editor state: Unity version, project, Play Mode, compiling, compile errors, open scenes, last test run and build."),
             T("editor_play", "Control Play Mode. Entering/leaving Play Mode reloads scripts, so the driver is briefly unreachable; then use app_connect.",
@@ -267,7 +285,7 @@ namespace UDriver
         public static readonly string[] EditModeTools =
         {
             "status", "scene_tree", "state_get", "state_set", "state_call", "types_find", "type_members",
-            "events_query", "events_config", "profiler_get", "profiler_list", "memory_top", "memory_summary", "memory_snapshot", "memory_refs", "render_scene", "probe_list", "probe_remove", "locate", "state_query", "state_export", "errors", "eval"
+            "events_query", "events_config", "profiler_get", "profiler_list", "memory_top", "memory_summary", "memory_snapshot", "memory_refs", "render_scene", "probe_list", "probe_remove", "locate", "state_query", "state_export", "errors", "eval", "app_map", "query", "chart_data"
         };
     }
 }

@@ -9,3 +9,11 @@ remote.env
 *.user
 packaging/build/
 packaging/releases/
+com.udriver.agent/**/*.meta
+tests/*/Library/
+tests/*/Temp/
+tests/*/Logs/
+tests/*/UserSettings/
+tests/*/obj/
+tests/*/*.csproj
+tests/*/*.sln

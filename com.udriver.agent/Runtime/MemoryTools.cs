@@ -453,7 +453,7 @@ namespace UDriver
 
         // ---------------- reference walk ----------------
 
-        sealed class ByRef : IEqualityComparer<object>
+        internal sealed class ByRef : IEqualityComparer<object>
         {
             public new bool Equals(object x, object y) { return ReferenceEquals(x, y); }
             public int GetHashCode(object o) { return RuntimeHelpers.GetHashCode(o); }
@@ -495,7 +495,7 @@ namespace UDriver
             return FieldCache[type] = l.ToArray();
         }
 
-        static string Label(FieldInfo f)
+        internal static string Label(FieldInfo f)
         {
             string n = f.Name;
             int k = n.IndexOf(">k__BackingField", StringComparison.Ordinal);

@@ -78,7 +78,7 @@ namespace UDriver
         }
 
         /// <summary>Text of a Text / TMP_Text component on this object (not input fields).</summary>
-        static string LabelOn(GameObject go)
+        internal static string LabelOn(GameObject go)
         {
             foreach (var g in go.GetComponents<Graphic>())
             {
@@ -119,7 +119,7 @@ namespace UDriver
             return sb.ToString();
         }
 
-        static string ValueOf(GameObject go)
+        internal static string ValueOf(GameObject go)
         {
             var sel = go.GetComponent<Selectable>();
             if (sel == null) return null;
@@ -582,6 +582,9 @@ namespace UDriver
         public static bool Key(KeyCode code, EventModifiers mods) { return false; }
         public static void Inspect(GameObject go, ToolResponse r) { }
         public static GameObject SelfTestCreate(Action onClick) { return null; }
+        internal static string LabelOn(GameObject go) { return null; }
+        public static string TextOf(GameObject go) { return ""; }
+        internal static string ValueOf(GameObject go) { return null; }
 #endif
     }
 }
