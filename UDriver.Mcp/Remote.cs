@@ -280,6 +280,7 @@ internal static partial class HttpMode
             // Everything the tunnel carries goes to this server: an address or port saved by another version or computer never ends in a 404.
             var keep = File.ReadAllLines(TunnelYml).TakeWhile(l => !l.StartsWith("ingress:", StringComparison.Ordinal));
             Program.WritePrivate(TunnelYml, string.Join("\n", keep) + $"\ningress:\n  - service: http://127.0.0.1:{_port}\n");
+            StopStrayTunnels();
             var psi = new ProcessStartInfo(CfExe() ?? throw new Exception("cloudflared is not installed")) { UseShellExecute = false, RedirectStandardError = true, RedirectStandardOutput = true, RedirectStandardInput = true };
             foreach (var a in new[] { "tunnel", "--no-autoupdate", "--config", TunnelYml, "run", "udriver" }) psi.ArgumentList.Add(a);
             var p = Process.Start(psi)!;
@@ -309,6 +310,23 @@ internal static partial class HttpMode
             p.BeginOutputReadLine(); p.BeginErrorReadLine();
         }
         catch (Exception e) { _cfNote = "Could not start the tunnel: " + e.Message; }
+    }
+
+    /// A cloudflared left behind by a server that was stopped abruptly keeps taking part of the address's traffic to a server that is gone.
+    static void StopStrayTunnels()
+    {
+        try
+        {
+            var psi = new ProcessStartInfo(OperatingSystem.IsWindows() ? "powershell" : "pkill") { UseShellExecute = false, CreateNoWindow = true };
+            if (OperatingSystem.IsWindows())
+                foreach (var a in new[] { "-NoProfile", "-NonInteractive", "-Command",
+                    $"Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | Where-Object {{ $_.CommandLine -and $_.CommandLine.Contains('{TunnelYml.Replace("'", "''")}') }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}" })
+                    psi.ArgumentList.Add(a);
+            else foreach (var a in new[] { "-f", "--", $"--config {TunnelYml} run" }) psi.ArgumentList.Add(a);
+            using var p = Process.Start(psi)!;
+            p.WaitForExit(15000);
+        }
+        catch { }
     }
 
     static void KillTunnel()

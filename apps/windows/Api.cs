@@ -98,9 +98,49 @@ static class Api
         return File.Exists(dll) && dotnet != null ? (dotnet, [dll]) : null;
     }
 
+    /// Stops an older UDriver server left running by a previous version, with its tunnel: two servers on one tunnel address split agents between them, and the old one turns them away.
+    static async Task StopOlder()
+    {
+        int keep = Port;
+        var ports = Enumerable.Range(keep, 21).ToList();
+        if (int.TryParse(File.Exists(Path.Combine(Home, "panel.port")) ? File.ReadAllText(Path.Combine(Home, "panel.port")).Trim() : "", out int saved) && !ports.Contains(saved)) ports.Add(saved);
+        var old = new Dictionary<int, string>();
+        foreach (int port in ports)
+        {
+            Port = port;
+            if (await ServerVersion() is { } v && !(Version.TryParse(v, out var ver) && ver >= Own)) old[port] = v;
+        }
+        Port = keep;
+        if (old.Count == 0) return;
+        string net;
+        try
+        {
+            using var ns = Process.Start(new ProcessStartInfo("netstat", "-ano") { RedirectStandardOutput = true, CreateNoWindow = true, UseShellExecute = false })!;
+            net = await ns.StandardOutput.ReadToEndAsync();
+        }
+        catch { return; }
+        foreach (var line in net.Split('\n'))
+        {
+            var f = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (f.Length < 5 || f[2] is not ("0.0.0.0:0" or "[::]:0") || !int.TryParse(f[^1], out int pid)) continue;
+            if (!int.TryParse(f[1][(f[1].LastIndexOf(':') + 1)..], out int port) || !old.TryGetValue(port, out var v)) continue;
+            try
+            {
+                using var p = Process.GetProcessById(pid);
+                if (p.ProcessName.Equals("udriver-mcp", StringComparison.OrdinalIgnoreCase) || v.Length > 0 && p.ProcessName.Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+                {
+                    p.Kill(true);
+                    p.WaitForExit(5000);
+                }
+            }
+            catch { }
+        }
+    }
+
     public static async Task<string?> Ensure()
     {
-        // Another program or an older UDriver on the port is left alone: the server then starts on the next free port.
+        // Another program on the port is left alone: the server then starts on the next free port.
+        await StopOlder();
         if (await Ours())
         {
             for (int i = 0; i < 50 && !File.Exists(KeyPath); i++) await Task.Delay(200);

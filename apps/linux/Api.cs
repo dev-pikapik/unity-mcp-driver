@@ -102,10 +102,37 @@ static class Api
         return candidates.FirstOrDefault(File.Exists) is { } dotnet ? (dotnet, [Dll]) : null;
     }
 
+    /// Stops an older UDriver server left running by a previous version, with its tunnel: two servers on one tunnel address split agents between them, and the old one turns them away.
+    static async Task StopOlder()
+    {
+        int keep = Port;
+        var ports = Enumerable.Range(keep, 21).ToList();
+        if (int.TryParse(Read("panel.port"), out int saved) && !ports.Contains(saved)) ports.Add(saved);
+        foreach (int port in ports)
+        {
+            Port = port;
+            if (await ServerVersion() is not { } v || Version.TryParse(v, out var ver) && ver >= Own) continue;
+            string net;
+            try
+            {
+                using var ss = Process.Start(new ProcessStartInfo("ss", $"-Hltnp sport = :{port}") { RedirectStandardOutput = true, UseShellExecute = false })!;
+                net = await ss.StandardOutput.ReadToEndAsync();
+            }
+            catch { continue; }
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(net, "\\(\"([^\"]+)\",pid=(\\d+)"))
+            {
+                if (m.Groups[1].Value != "udriver-mcp" && !(v.Length > 0 && m.Groups[1].Value == "dotnet")) continue;
+                try { using var p = Process.GetProcessById(int.Parse(m.Groups[2].Value)); p.Kill(true); p.WaitForExit(5000); } catch { }
+            }
+        }
+        Port = keep;
+    }
+
     /// Starts the server unless this app's UDriver already answers; returns an error to show, or null once it answers.
-    /// Another program or an older UDriver on the port is left alone: the server then starts on the next free port.
+    /// Another program on the port is left alone: the server then starts on the next free port.
     public static async Task<string?> EnsureServer()
     {
+        await StopOlder();
         if (await Ours()) return null;
         int first = Port;
         if (int.TryParse(Read("panel.port"), out int saved) && saved != Port)

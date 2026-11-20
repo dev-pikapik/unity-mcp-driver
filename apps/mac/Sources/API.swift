@@ -126,9 +126,38 @@ struct ServerError: LocalizedError {
         return candidates.compactMap({ $0 }).first(where: fm.isExecutableFile).map { ($0, [dll]) }
     }
 
+    /// Stops an older UDriver server left running by a previous version, with its tunnel: two servers on one tunnel address split agents between them, and the old one turns them away.
+    func stopOlder() async {
+        let keep = port
+        var ports = Array(keep...keep + 20)
+        if let saved = read("panel.port").flatMap({ Int($0) }), !ports.contains(saved) { ports.append(saved) }
+        for p in ports {
+            port = p
+            guard let v = await serverVersion(), v.isEmpty || v.compare(version, options: .numeric) == .orderedAscending else { continue }
+            let ls = Process()
+            ls.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+            ls.arguments = ["-nP", "-iTCP:\(p)", "-sTCP:LISTEN", "-Fpc"]
+            let out = Pipe()
+            ls.standardOutput = out
+            ls.standardError = FileHandle.nullDevice
+            guard (try? ls.run()) != nil else { continue }
+            let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            ls.waitUntilExit()
+            var pid: Int32 = 0, stopped = false
+            for line in text.split(separator: "\n") {
+                if line.hasPrefix("p") { pid = Int32(line.dropFirst()) ?? 0 }
+                // The server's own SIGTERM handler also stops its cloudflared.
+                if line.hasPrefix("c"), pid > 0, line == "cudriver-mcp" || (!v.isEmpty && line == "cdotnet") { stopped = kill(pid, SIGTERM) == 0 || stopped }
+            }
+            for _ in 0..<25 where stopped { if await serverVersion() == nil { break }; try? await Task.sleep(for: .milliseconds(200)) }
+        }
+        port = keep
+    }
+
     /// Starts the server unless this app's UDriver already answers; returns an error to show, or nil once it answers.
-    /// Another program or an older UDriver on the port is left alone: the server then starts on the next free port.
+    /// Another program on the port is left alone: the server then starts on the next free port.
     func ensureServer() async -> String? {
+        await stopOlder()
         if await ours() { return nil }
         let first = port
         if let saved = read("panel.port").flatMap({ Int($0) }), saved != port {
