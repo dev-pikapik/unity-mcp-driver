@@ -111,17 +111,19 @@ class Mcp:
 class Http:
     """The in-app driver's own /call endpoint (same tools, no server in between)."""
 
-    def __init__(self, home, port):
-        self.home, self.port = home, port
+    def __init__(self, udir, port):
+        self.udir, self.port = udir, port
 
     def tools(self):
         return None
 
     def call(self, name, /, **args):
-        token = open(os.path.join(self.home, ".udriver", "%d.token" % self.port)).read().strip()
+        token = open(os.path.join(self.udir, "%d.token" % self.port)).read().strip()
         req = urllib.request.Request("http://127.0.0.1:%d/call" % self.port, data=json.dumps({"tool": name, "args": args}).encode(),
                                      headers={"Content-Type": "application/json", "X-UDriver-Token": token})
         r = json.loads(urllib.request.urlopen(req, timeout=60).read())
+        if r.get("ok") is False:
+            raise ToolError("%s: %s" % (name, r.get("error")))
         content = r.get("content", [])
         text = "\n\n".join(c.get("text", "") for c in content if c.get("type") == "text")
         images = [base64.b64decode(c["data"]) for c in content if c.get("type") == "image"]
@@ -147,7 +149,7 @@ class App:
         self.p = subprocess.Popen([exe, "-udriver-port", str(port), "-screen-fullscreen", "0", "-screen-width", "1280", "-screen-height", "720",
                                    "-logFile", os.path.join(s.home, folder + ".log"), *extra],
                                   env=dict(os.environ, HOME=s.home, USERPROFILE=s.home), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        info = os.path.join(s.home, ".udriver", "%d.json" % port)
+        info = os.path.join(s.udir, "%d.json" % port)
         for _ in range(240):
             if os.path.exists(info) and busy(port):
                 break
@@ -155,7 +157,7 @@ class App:
         else:
             raise SystemExit("%s did not start its driver on port %d" % (folder, port))
         self.name = json.load(open(info))["name"]
-        self.http = Http(s.home, port)
+        self.http = Http(s.udir, port)
 
     def __call__(self, tool, /, **args):
         if self.s.mcp:
@@ -184,6 +186,8 @@ class Session:
     def __init__(self, transport, shots):
         self.home = tempfile.mkdtemp(prefix="udriver-apps-check-")
         os.makedirs(os.path.join(self.home, ".udriver"), mode=0o700)
+        # A Windows game finds the profile through the shell, not USERPROFILE, so its driver files land in the real one.
+        self.udir = os.path.join(os.path.expanduser("~") if OS == "Windows" else self.home, ".udriver")
         self.shots = shots
         os.makedirs(shots, exist_ok=True)
         self.transport, self.mcp, self.procs = transport, None, []
@@ -213,6 +217,12 @@ class Session:
             self.mcp.close()
         for p in self.procs:
             p.stop() if isinstance(p, App) else p.terminate()
+            if isinstance(p, App) and OS == "Windows":
+                for ext in (".json", ".token"):
+                    try:
+                        os.remove(os.path.join(self.udir, "%d%s" % (p.port, ext)))
+                    except OSError:
+                        pass
         shutil.rmtree(self.home, ignore_errors=True)
 
 
@@ -308,12 +318,18 @@ def terminal(s, feed_url):
     for seq, url in entries:
         last[url.split("?")[0]] = int(seq)
     price_path, src_url = None, None
-    for url, seq in sorted(last.items(), key=lambda kv: -kv[1]):
-        tr = t.text("net_log", id=seq, trace=True)
-        hit = re.search(r"->\s*(/\S*:[\w.]*price\w*)\s*$", tr, re.I | re.M)
-        if hit:
-            price_path, src_url = hit.group(1), url
-            break
+    hits = []
+    for url, seq in last.items():
+        key = ""
+        for line in t.text("net_log", id=seq, trace=True).splitlines():
+            k = re.match(r"\s*(\S+) = ", line)
+            key = k.group(1) if k else key
+            hit = re.search(r"->\s*(/\S*:[\w.]*price\w*)\s*$", line, re.I)
+            if hit:
+                hits.append(("[" in key, url, hit.group(1)))
+    # A single field fed from a list item (an order book level) is a coincidence; a top-level key is the source.
+    if hits:
+        _, src_url, price_path = min(hits)
     t("net_capture", action="stop")
     step("terminal 2 net_capture + net_log trace: a feed response lands in the price field", price_path,
          "%s -> %s (%d addresses seen)" % (src_url, price_path, len(last)))
