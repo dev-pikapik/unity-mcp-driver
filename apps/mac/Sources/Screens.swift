@@ -79,7 +79,7 @@ let levelHints = [
 
 // MARK: - Games
 
-@MainActor final class GamesScreen: NSViewController, Screen, NSCollectionViewDataSource, NSCollectionViewDelegate, NSSearchFieldDelegate {
+@MainActor final class GamesScreen: NSViewController, Screen, NSCollectionViewDataSource, NSCollectionViewDelegateFlowLayout, NSSearchFieldDelegate {
     let grid = NSCollectionView()
     let inspector = stack([], spacing: 12)
     let actions = stack([], .horizontal)
@@ -122,7 +122,6 @@ let levelHints = [
 
     override func loadView() {
         let layout = NSCollectionViewFlowLayout()
-        layout.itemSize = .init(width: 230, height: 196)
         layout.minimumInteritemSpacing = 16
         layout.minimumLineSpacing = 16
         layout.sectionInset = .init(top: 20, left: 24, bottom: 24, right: 24)
@@ -164,15 +163,6 @@ let levelHints = [
             actions.leadingAnchor.constraint(equalTo: side.leadingAnchor, constant: 18), actions.bottomAnchor.constraint(equalTo: side.bottomAnchor, constant: -18),
         ])
         view = v
-    }
-
-    override func viewDidLayout() {
-        super.viewDidLayout()
-        guard let layout = grid.collectionViewLayout as? NSCollectionViewFlowLayout else { return }
-        let w = grid.enclosingScrollView?.contentSize.width ?? 600
-        let cols = max(1, Int((w - 48 + 16) / 236))
-        let itemW = floor((w - 48 - CGFloat(cols - 1) * 16) / CGFloat(cols))
-        if layout.itemSize.width != itemW { layout.itemSize = .init(width: itemW, height: floor((itemW - 8) * 0.625) + 56) }
     }
 
     func show(_ m: Model) {
@@ -322,6 +312,21 @@ let levelHints = [
     }
 
     func collectionView(_ c: NSCollectionView, numberOfItemsInSection s: Int) -> Int { shown.count + 1 }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        grid.collectionViewLayout?.invalidateLayout()
+    }
+
+    /// Sized as if the scroll bar were showing, so a scroll bar that appears later never pushes cards into one column.
+    func collectionView(_ c: NSCollectionView, layout l: NSCollectionViewLayout, sizeForItemAt p: IndexPath) -> NSSize {
+        guard let s = c.enclosingScrollView else { return .init(width: 230, height: 196) }
+        let w = NSScrollView.contentSize(forFrameSize: s.frame.size, horizontalScrollerClass: nil, verticalScrollerClass: NSScroller.self,
+                                         borderType: s.borderType, controlSize: .regular, scrollerStyle: s.scrollerStyle).width
+        let cols = max(1, Int((w - 48 + 16) / 236))
+        let itemW = floor((w - 48 - CGFloat(cols - 1) * 16) / CGFloat(cols))
+        return .init(width: itemW, height: floor((itemW - 8) * 0.625) + 56)
+    }
 
     func collectionView(_ c: NSCollectionView, itemForRepresentedObjectAt p: IndexPath) -> NSCollectionViewItem {
         let card = c.makeItem(withIdentifier: Card.id, for: p) as! Card
