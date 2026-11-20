@@ -171,22 +171,37 @@ internal static partial class Program
     // ---------------- team space ----------------
 
     const int TeamKeep = 300, TeamDataMax = 4000;
-    static readonly List<JsonObject> Team = new();
-    static readonly Dictionary<string, (Session Holder, DateTime Until)> Claims = new();
-    static long _teamSeq = -1;
     static string TeamFile => Path.Combine(HomeDir, "team.jsonl");
+    static string ClaimsFile => Path.Combine(HomeDir, "claims.json");
 
-    static void TeamLoad()
+    /// <summary>Every UDriver server on this computer shares the team files; the lock keeps their reads and writes whole.</summary>
+    static T TeamLocked<T>(Func<T> work) => Registry.Locked(TeamFile + ".lock", work);
+
+    static List<JsonObject> TeamLoad()
     {
-        if (_teamSeq >= 0) return;
-        _teamSeq = 0;
+        var team = new List<JsonObject>();
         try
         {
             foreach (var line in File.ReadLines(TeamFile))
-                try { if (JsonNode.Parse(line) is JsonObject o) { Team.Add(o); _teamSeq = Math.Max(_teamSeq, (long?)o["seq"] ?? 0); } } catch { }
+                try { if (JsonNode.Parse(line) is JsonObject o) team.Add(o); } catch { }
         }
         catch { }
-        if (Team.Count > TeamKeep) Team.RemoveRange(0, Team.Count - TeamKeep);
+        return team;
+    }
+
+    static long LastSeq(List<JsonObject> team) => team.Count > 0 ? (long?)team[^1]["seq"] ?? 0 : 0;
+
+    static int Left(JsonNode? claim) =>
+        DateTime.TryParse((string?)claim?["until"], null, System.Globalization.DateTimeStyles.RoundtripKind, out var until) ? (int)(until - DateTime.UtcNow).TotalSeconds : 0;
+
+    /// <summary>Claims still running whose server is still alive; a claim dies with the server that holds it.</summary>
+    static JsonObject LiveClaims()
+    {
+        JsonObject all;
+        try { all = JsonNode.Parse(File.ReadAllText(ClaimsFile)) as JsonObject ?? new(); } catch { all = new(); }
+        foreach (var (key, c) in all.ToList())
+            if (Left(c) <= 0 || (int?)c?["pid"] is not int pid || !Alive(pid)) all.Remove(key);
+        return all;
     }
 
     /// <summary>The instance a team call is about, or null for the global space; an error when that game is not allowed.</summary>
@@ -210,19 +225,18 @@ internal static partial class Program
         if (data == null || data.ToJsonString().Length > TeamDataMax) return Result($"data is required: text or JSON of at most {TeamDataMax} characters.", true);
         var (t, error) = await TeamScope(want, "team_post");
         if (error != null) return Result(error, true);
-        long seq;
-        lock (Team)
+        long seq = TeamLocked(() =>
         {
-            TeamLoad();
-            seq = ++_teamSeq;
-            Team.Add(new JsonObject
+            var team = TeamLoad();
+            long next = LastSeq(team) + 1;
+            team.Add(new JsonObject
             {
-                ["seq"] = seq, ["time"] = DateTime.UtcNow.ToString("O"), ["from"] = Who(Me), ["game"] = t?.Game?.Id, ["instance"] = t?.Name,
+                ["seq"] = next, ["time"] = DateTime.UtcNow.ToString("O"), ["from"] = Who(Me), ["game"] = t?.Game?.Id, ["instance"] = t?.Name,
                 ["topic"] = topic, ["data"] = data,
             });
-            if (Team.Count > TeamKeep) Team.RemoveRange(0, Team.Count - TeamKeep);
-            try { WritePrivate(TeamFile, string.Join("\n", Team.Select(o => o.ToJsonString())) + "\n"); } catch { }
-        }
+            WritePrivate(TeamFile, string.Join("\n", team.TakeLast(TeamKeep).Select(o => o.ToJsonString())) + "\n");
+            return next;
+        });
         return Result($"Posted #{seq} to {(t != null ? t.Name : "the whole team")} under '{topic}'.");
     }
 
@@ -233,25 +247,18 @@ internal static partial class Program
         var (t, error) = await TeamScope(want, "team_read");
         if (error != null) return Result(error, true);
         var games = Registry.Games;
-        List<JsonObject> seen;
-        long last;
-        lock (Team)
-        {
-            TeamLoad();
-            last = _teamSeq;
-            seen = Team.Where(o => (long?)o["seq"] > since && (topic == null || (string?)o["topic"] == topic)
-                                   && ((string?)o["game"] is not string g ? t == null : Allowed(games.FirstOrDefault(x => x.Id == g)) && (t == null || (string?)o["instance"] == t.Name)))
-                .Select(o => (JsonObject)o.DeepClone()).ToList();
-        }
+        var (team, live) = TeamLocked(() => (TeamLoad(), LiveClaims()));
+        long last = LastSeq(team);
+        var seen = team.Where(o => (long?)o["seq"] > since && (topic == null || (string?)o["topic"] == topic)
+                                   && ((string?)o["game"] is not string g ? t == null : Allowed(games.FirstOrDefault(x => x.Id == g)) && (t == null || (string?)o["instance"] == t.Name))).ToList();
         var claims = new List<string>();
-        lock (Claims)
-            foreach (var (key, c) in Claims.Where(c => c.Value.Until > DateTime.UtcNow).ToList())
-            {
-                int cut = key.IndexOf('\n');
-                string game = key[..cut];
-                if (game.Length == 0 ? t == null : Allowed(games.FirstOrDefault(x => x.Id == game)) && (t == null || t.Game?.Id == game))
-                    claims.Add($"'{key[(cut + 1)..]}' by {Who(c.Holder)} for {(int)(c.Until - DateTime.UtcNow).TotalSeconds} s");
-            }
+        foreach (var (key, c) in live)
+        {
+            int cut = key.IndexOf('\n');
+            string game = key[..cut];
+            if (game.Length == 0 ? t == null : Allowed(games.FirstOrDefault(x => x.Id == game)) && (t == null || t.Game?.Id == game))
+                claims.Add($"'{key[(cut + 1)..]}' by {c?["who"]} for {Left(c)} s");
+        }
         var text = new StringBuilder();
         foreach (var o in seen)
             text.Append($"#{o["seq"]} {(DateTime.TryParse((string?)o["time"], null, System.Globalization.DateTimeStyles.RoundtripKind, out var at) ? at.ToLocalTime().ToString("HH:mm:ss") : "")} " +
@@ -271,20 +278,18 @@ internal static partial class Program
         string id = (t?.Game?.Id ?? "") + "\n" + key;
         string where = t != null ? " in " + t.Name : "";
         int ttl = Math.Clamp(IntArg(args, "ttl", 300), 5, 3600);
-        lock (Claims)
+        return TeamLocked(() =>
         {
-            bool held = Claims.TryGetValue(id, out var c) && c.Until > DateTime.UtcNow;
-            if (held && c.Holder != Me)
-                return Result($"'{key}'{where} is claimed by {Who(c.Holder)} for {(int)(c.Until - DateTime.UtcNow).TotalSeconds} more s. Pick another task or ask in team_post.", true);
-            if (!take)
-            {
-                if (!held) return Result($"'{key}'{where} was not claimed.");
-                Claims.Remove(id);
-                return Result($"Released '{key}'{where}.");
-            }
-            Claims[id] = (Me, DateTime.UtcNow.AddSeconds(ttl));
-        }
-        return Result($"You claimed '{key}'{where} for {ttl} s.");
+            var claims = LiveClaims();
+            var c = claims[id];
+            if (c != null && (string?)c["owner"] != HolderId())
+                return Result($"'{key}'{where} is claimed by {c["who"]} for {Left(c)} more s. Pick another task or ask in team_post.", true);
+            if (!take && c == null) return Result($"'{key}'{where} was not claimed.");
+            if (take) claims[id] = new JsonObject { ["owner"] = HolderId(), ["pid"] = Environment.ProcessId, ["who"] = Who(Me), ["until"] = DateTime.UtcNow.AddSeconds(ttl).ToString("O") };
+            else claims.Remove(id);
+            WritePrivate(ClaimsFile, claims.ToJsonString());
+            return Result(take ? $"You claimed '{key}'{where} for {ttl} s." : $"Released '{key}'{where}.");
+        });
     }
 
     // ---------------- copies ----------------

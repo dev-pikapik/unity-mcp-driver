@@ -37,7 +37,7 @@ internal static class Registry
     // ---------------- file access ----------------
 
     /// <summary>Serializes writers of all server processes; the lock is released when the process dies.</summary>
-    static T Locked<T>(string file, Func<T> work)
+    internal static T Locked<T>(string file, Func<T> work)
     {
         Program.PrivateDir(Path.GetDirectoryName(file)!);
         var opt = new FileStreamOptions { Mode = FileMode.OpenOrCreate, Access = FileAccess.ReadWrite, Share = FileShare.None };
