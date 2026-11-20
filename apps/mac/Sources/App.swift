@@ -61,6 +61,11 @@ enum Section: Int, CaseIterable {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         App.shared = self
+        // A downloaded app keeps macOS's quarantine mark, and macOS then kills the server when an agent starts it.
+        let x = Process()
+        x.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
+        x.arguments = ["-dr", "com.apple.quarantine", Bundle.main.bundlePath]
+        try? x.run()
         NSApp.mainMenu = menu()
         if let a = UserDefaults.standard.string(forKey: "appearance") { NSApp.appearance = NSAppearance(named: a == "dark" ? .darkAqua : .aqua) }
         content.view = NSView()

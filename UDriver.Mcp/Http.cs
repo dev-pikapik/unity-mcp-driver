@@ -437,11 +437,7 @@ internal static partial class HttpMode
 
     static async Task Register(HttpContext ctx)
     {
-        if (!CodeLive())
-        {
-            await OAuthError(ctx, 403, "access_denied", "a new agent can sign in only with a one-time code: on the computer that runs UDriver, open the panel and choose Add a remote agent");
-            return;
-        }
+        // Registering grants nothing: sign-in still needs the owner's one-time code or approval.
         JsonObject? req;
         using (var rd = new StreamReader(ctx.Request.Body, Encoding.UTF8))
             try { req = JsonNode.Parse(await rd.ReadToEndAsync()) as JsonObject; } catch { req = null; }
