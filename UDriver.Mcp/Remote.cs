@@ -239,7 +239,7 @@ internal static partial class HttpMode
                 ? $"The address {host} is already used by another record in Cloudflare. Choose another name."
                 : $"Could not link the address {host}: {Brief(route.Out)}");
         }
-        Program.WritePrivate(TunnelYml, $"tunnel: {id}\ncredentials-file: {cred}\ningress:\n  - hostname: {host}\n    service: http://127.0.0.1:{_port}\n  - service: http_status:404\n");
+        Program.WritePrivate(TunnelYml, $"tunnel: {id}\ncredentials-file: {cred}\n");
         SetSetting("UDRIVER_HTTP_PORT", _port.ToString());
         SetSetting("UDRIVER_PUBLIC_URL", "https://" + host);
     }
@@ -277,6 +277,9 @@ internal static partial class HttpMode
         lock (Gate) { if (_cf is { HasExited: false }) return; CfConns.Clear(); _onlineSince = default; _cfStarted = DateTime.UtcNow; }
         try
         {
+            // Everything the tunnel carries goes to this server: an address or port saved by another version or computer never ends in a 404.
+            var keep = File.ReadAllLines(TunnelYml).TakeWhile(l => !l.StartsWith("ingress:", StringComparison.Ordinal));
+            Program.WritePrivate(TunnelYml, string.Join("\n", keep) + $"\ningress:\n  - service: http://127.0.0.1:{_port}\n");
             var psi = new ProcessStartInfo(CfExe() ?? throw new Exception("cloudflared is not installed")) { UseShellExecute = false, RedirectStandardError = true, RedirectStandardOutput = true, RedirectStandardInput = true };
             foreach (var a in new[] { "tunnel", "--no-autoupdate", "--config", TunnelYml, "run", "udriver" }) psi.ArgumentList.Add(a);
             var p = Process.Start(psi)!;
