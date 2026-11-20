@@ -458,7 +458,7 @@ enum Section: Int, CaseIterable {
             return fixed(p, width: 236, height: 170)
         }
         let tiles = stack([
-            card("gamecontroller", .systemGreen, "Add a game", "Drop a built game or a Unity project. Nothing inside it changes."),
+            card("gamecontroller", .systemGreen, "Add a game", "Drop a built game or a Unity project. UDriver adds a small helper to it."),
             card("person.2", .systemBlue, "Connect an agent", "You approve each one. You decide what it may do in every game."),
             card("globe", violet, "Use from anywhere", "Optional. Off until you turn it on, and closed with one switch."),
         ], .horizontal, spacing: 16, align: .top)

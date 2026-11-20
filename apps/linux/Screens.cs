@@ -146,7 +146,7 @@ sealed class GamesScreen : Screen
         var empty = Adw.StatusPage.New();
         empty.IconName = "input-gaming-symbolic";
         empty.Title = "No games yet";
-        empty.Description = "Add a built game or a Unity project. Nothing inside it changes.";
+        empty.Description = "Add a built game or a Unity project. UDriver adds a small helper to it.";
         var first = Button("Add Game", () => Shell.ChooseGame(), "suggested-action");
         first.AddCssClass("pill");
         first.Halign = Gtk.Align.Center;

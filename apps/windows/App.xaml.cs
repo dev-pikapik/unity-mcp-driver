@@ -240,7 +240,7 @@ sealed partial class Shell : Window
         var games = (GamesScreen)screens["games"];
         var cards = new[]
         {
-            ("", "Add a game", "Drop a built game or a Unity project. Nothing inside it changes."),
+            ("", "Add a game", "Drop a built game or a Unity project. UDriver adds a small helper to it."),
             ("", "Connect an agent", "You approve each one. You decide what it may do in every game."),
             ("", "Use from anywhere", "Optional. Off until you turn it on, and closed with one switch."),
         }.Select(c =>

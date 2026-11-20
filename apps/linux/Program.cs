@@ -386,7 +386,7 @@ sealed class Shell
 
     public void ChooseGame()
     {
-        var d = Adw.AlertDialog.New("Add a game", "Choose a built game or a Unity project folder. Nothing inside it changes.");
+        var d = Adw.AlertDialog.New("Add a game", "Choose a built game or a Unity project folder. UDriver adds a small helper to it.");
         d.AddResponse("cancel", "Cancel");
         d.AddResponse("project", "Unity Project…");
         d.AddResponse("build", "Built Game…");
@@ -446,7 +446,7 @@ sealed class Shell
         cards.Homogeneous = true;
         foreach (var (icon, tint, title, text) in new[]
         {
-            ("input-gaming-symbolic", "green", "Add a game", "Drop a built game or a Unity project. Nothing inside it changes."),
+            ("input-gaming-symbolic", "green", "Add a game", "Drop a built game or a Unity project. UDriver adds a small helper to it."),
             ("system-users-symbolic", "blue", "Connect an agent", "You approve each one. You decide what it may do in every game."),
             ("network-workgroup-symbolic", "violet", "Use from anywhere", "Optional. Off until you turn it on, and closed with one switch."),
         })
