@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Reflection;
+using System.Reflection.Metadata;
+using System.Reflection.PortableExecutable;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -8,7 +10,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Emit;
 
-/// <summary>Puts the UDriver agent into a built Mono game that does not include the package, and takes it out again.</summary>
+/// <summary>Puts the UDriver agent into a built Mono game that does not include the package (or includes one from before 2.0), and takes it out again.</summary>
 static class Inject
 {
     internal const string Il2Cpp = "This game was built with IL2CPP. UDriver can control it only if the game includes the UDriver package.";
@@ -94,7 +96,7 @@ static class Inject
             if ((string?)manifest["stamp"] == Stamp) return null;
             Undo(exe);
         }
-        else if (File.Exists(list) && File.ReadAllText(list).Contains('"' + Dll + '"')) return null;
+        else if (File.Exists(list) && File.ReadAllText(list).Contains('"' + Dll + '"') && Pairs(Path.Combine(managed, Dll))) return null;
         string root = AppDir(exe) ?? Path.GetDirectoryName(exe)!;
         if (IsIl2Cpp(exe, data)) return Preload(exe, out lib);
         if (!File.Exists(list)) return "This game is missing " + list + ", so UDriver cannot be added to it.";
@@ -138,8 +140,10 @@ static class Inject
             File.WriteAllText(list, sa.ToJsonString());
 
             var rl = File.Exists(loads) ? JsonNode.Parse(File.ReadAllText(loads))! : new JsonObject { ["root"] = new JsonArray() };
-            rl["root"]!.AsArray().Insert(0, new JsonObject { ["assemblyName"] = "UDriver.Runtime", ["nameSpace"] = "UDriver", ["className"] = "Sandbox", ["methodName"] = "Early", ["loadTypes"] = 4, ["isUnityClass"] = false });
-            rl["root"]!.AsArray().Add(new JsonObject { ["assemblyName"] = "UDriver.Runtime", ["nameSpace"] = "UDriver", ["className"] = "Driver", ["methodName"] = "Boot", ["loadTypes"] = 1, ["isUnityClass"] = false });
+            var boot = rl["root"]!.AsArray();
+            foreach (var old in boot.Where(x => (string?)x?["assemblyName"] == "UDriver.Runtime").ToList()) boot.Remove(old);
+            boot.Insert(0, new JsonObject { ["assemblyName"] = "UDriver.Runtime", ["nameSpace"] = "UDriver", ["className"] = "Sandbox", ["methodName"] = "Early", ["loadTypes"] = 4, ["isUnityClass"] = false });
+            boot.Add(new JsonObject { ["assemblyName"] = "UDriver.Runtime", ["nameSpace"] = "UDriver", ["className"] = "Driver", ["methodName"] = "Boot", ["loadTypes"] = 1, ["isUnityClass"] = false });
             File.WriteAllText(loads, rl.ToJsonString());
 
             if (sign)
@@ -153,6 +157,19 @@ static class Inject
         catch (Exception e) { Undo(exe); return "UDriver could not be added to this game: " + e.Message; }
         Eval.Native(managed);
         return null;
+    }
+
+    /// <summary>False for a game built with a UDriver package from before 2.0: its agent cannot pair with this server, so it gets the current one.</summary>
+    static bool Pairs(string dll)
+    {
+        try
+        {
+            using var pe = new PEReader(File.OpenRead(dll));
+            var md = pe.GetMetadataReader();
+            return md.TypeDefinitions.Select(md.GetTypeDefinition).Any(t => md.GetString(t.Namespace) == "UDriver" && md.GetString(t.Name) == "Driver"
+                && t.GetMethods().Any(m => md.GetString(md.GetMethodDefinition(m).Name) == "Pair"));
+        }
+        catch { return true; }
     }
 
     static string? Preload(string exe, out string? lib)
