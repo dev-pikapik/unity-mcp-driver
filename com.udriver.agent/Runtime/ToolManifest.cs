@@ -80,7 +80,8 @@ namespace UDriver
 
             // ---- UI Toolkit: reading ----
             T("ui_tree", "Dump the live UI: UI Toolkit panels and uGUI canvases (what is really on screen, incl. elements created from code). One line per element: #id Type \"name\" .classes \"text\" =value [x,y,w,h] flags. '*' marks interactive elements. Coordinates are screen pixels (top-left origin).",
-                P("root", "string", "Only the subtree of this element: id, name, or uGUI path like /Canvas/Panel."),
+                P("root", "string", "Only the subtree of this element: id (#12 or 12), name, or uGUI path like /Canvas/Panel."),
+                P("id", "integer", "Only the subtree of the element with this id from ui_tree / ui_find (the number after #). Same as root=#id."),
                 P("depth", "integer", "Max depth (default 25)."),
                 P("maxNodes", "integer", "Max printed lines (default 300), shared equally between the UI panels and canvases."),
                 P("visibleOnly", "boolean", "Skip hidden elements (default true)."),

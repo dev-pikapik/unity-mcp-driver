@@ -60,6 +60,7 @@ namespace UDriver
         static VisualElement Need(int id)
         {
             var e = Get(id);
+            if (e == null && (id < 1 || id >= _nextId)) throw new ToolException("no element with id #" + id + " - call ui_tree / ui_find");
             if (e == null) throw new ToolException("element #" + id + " no longer exists (ids go stale when the UI is rebuilt) - call ui_tree / ui_find again");
             return e;
         }
@@ -302,6 +303,7 @@ namespace UDriver
                 else
                 {
                     go = Ugui.Get(id);
+                    if (go == null && !Ugui.Issued(id)) throw new ToolException("no element with id #" + id + " - call ui_tree / ui_find");
                     if (go == null) throw new ToolException("uGUI element #" + id + " no longer exists or is inactive - call ui_tree / ui_find again");
                 }
             }
@@ -404,15 +406,15 @@ namespace UDriver
             HookPanels();
             var c = new Ctx { Max = a.Int("maxNodes", 300), VisibleOnly = a.Bool("visibleOnly", true), InteractiveOnly = a.Bool("interactiveOnly"), Compact = a.Bool("compact", true) };
             int depth = a.Int("depth", 25);
-            if (a.Has("root"))
+            if (a.Has("root") || a.Has("id"))
             {
                 string root = a.Str("root");
                 VisualElement el = null;
                 GameObject rootGo = null;
-                if (int.TryParse(root, out int id))
+                if (a.Has("id") || int.TryParse(root.Trim().TrimStart('#'), out _))
                 {
-                    if (id < Ugui.IdBase) el = Need(id);
-                    else if ((rootGo = Ugui.Get(id)) == null) throw new ToolException("uGUI element #" + id + " not found");
+                    var t = Resolve(a.Has("id") ? a : new JObject { ["id"] = root });
+                    el = t.El; rootGo = t.Go;
                 }
                 else
                 {

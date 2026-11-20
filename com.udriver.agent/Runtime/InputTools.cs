@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
@@ -442,7 +443,7 @@ namespace UDriver
                 yield return null;
                 if (m == "input") Inj.SendMouse(t.Screen, _buttons, Vector2.zero);
                 yield return null;
-                r.Text("wheel (" + dx + "," + dy + ") " + Where(t) + " via " + m);
+                r.Text("wheel (" + dx.ToString(CultureInfo.InvariantCulture) + "," + dy.ToString(CultureInfo.InvariantCulture) + ") " + Where(t) + " via " + m);
                 yield break;
             }
             if (t.Go != null) { string res = Ugui.ScrollBy(t.Go, dx, dy); yield return null; r.Text(res); yield break; }
@@ -530,17 +531,20 @@ namespace UDriver
                 var sel = new JObject();
                 if (a.Has("id")) sel["id"] = a.Int("id"); else sel["name"] = a.Str("name");
                 var tt = UiTools.Resolve(sel);
-                if (tt.Go != null && m != "input") uguiTarget = tt.Go;
+                if (tt.Go != null && (m != "input" || Ugui.IsTextField(tt.Go))) uguiTarget = tt.Go;
                 else if (tt.El != null) { el = tt.El; el.Focus(); yield return null; yield return null; }
                 else if (tt.Go != null) { Ugui.Focus(tt.Go); yield return null; }
             }
             var focusedNow = Focused(out top);
-            if (uguiTarget == null && el == null && focusedNow == null && m != "input") uguiTarget = Ugui.Selected();
+            if (uguiTarget == null && el == null && focusedNow == null && (m != "input" || Ugui.IsTextField(Ugui.Selected()))) uguiTarget = Ugui.Selected();
             if (uguiTarget != null)
             {
+                if (m == "input") foreach (char c in text) Inj.SendText(c);
                 string res = Ugui.TypeText(uguiTarget, text, a.Bool("clear"), a.Bool("submit"));
                 yield return null;
-                r.Text("typed into " + Ugui.Desc(uguiTarget) + " (uGUI fields are filled by setting the text; onValueChanged fires): " + Util.OneLine(res, 200));
+                r.Text("typed into " + Ugui.Desc(uguiTarget) + (m == "input"
+                    ? " (uGUI fields do not read Input System text, so the text events went to the game's Input System listeners and the field was filled by setting the text; onValueChanged fires): "
+                    : " (uGUI fields are filled by setting the text; onValueChanged fires): ") + Util.OneLine(res, 200));
                 Feedback(r, seq, false);
                 yield break;
             }

@@ -333,6 +333,7 @@ internal static partial class Program
             req.Headers.TryAddWithoutValidation("X-UDriver-Client", Who(Me));
             req.Headers.TryAddWithoutValidation("X-UDriver-Holder", HolderId());
             req.Headers.TryAddWithoutValidation("X-UDriver-Call", call);
+            if (LevelOff(3) == null) req.Headers.TryAddWithoutValidation("X-UDriver-Computer", "1");
             if (json != null) req.Content = new StringContent(json, Encoding.UTF8, "application/json");
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(Cancel.Value);
             if (timeoutSec > 0) cts.CancelAfter(TimeSpan.FromSeconds(timeoutSec));

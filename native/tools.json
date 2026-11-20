@@ -1,0 +1,1681 @@
+[
+  {
+    "name": "status",
+    "description": "App overview: product/version, scene, screen size, fps, time scale, UI panels, available input methods, active probes, last event seq. Call first.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "ui_tree",
+    "description": "Dump the live UI: UI Toolkit panels and uGUI canvases (what is really on screen, incl. elements created from code). One line per element: #id Type \"name\" .classes \"text\" =value [x,y,w,h] flags. '*' marks interactive elements. Coordinates are screen pixels (top-left origin).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "description": "Only the subtree of this element id (#12 or 12).",
+          "type": "integer"
+        },
+        "id": {
+          "description": "Only the subtree of the element with this id from ui_tree / ui_find (the number after #). Same as root=#id.",
+          "type": "integer"
+        },
+        "depth": {
+          "description": "Max depth (default 25).",
+          "type": "integer"
+        },
+        "maxNodes": {
+          "description": "Max printed lines (default 300), shared equally between the UI panels and canvases.",
+          "type": "integer"
+        },
+        "visibleOnly": {
+          "description": "Skip hidden elements (default true).",
+          "type": "boolean"
+        },
+        "interactiveOnly": {
+          "description": "Only clickable/editable elements (default false).",
+          "type": "boolean"
+        },
+        "compact": {
+          "description": "Hide anonymous wrappers and control internals (default true).",
+          "type": "boolean"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "ui_find",
+    "description": "Search elements. All given filters must match.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Name substring (case-insensitive).",
+          "type": "string"
+        },
+        "text": {
+          "description": "Text/value substring.",
+          "type": "string"
+        },
+        "cls": {
+          "description": "USS class (exact).",
+          "type": "string"
+        },
+        "type": {
+          "description": "Type name, e.g. Button, TextField, ScrollView.",
+          "type": "string"
+        },
+        "visibleOnly": {
+          "description": "Default true.",
+          "type": "boolean"
+        },
+        "limit": {
+          "description": "Default 30.",
+          "type": "integer"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "ui_inspect",
+    "description": "Everything about one element: classes, enabled/visible state, value, layout, resolved style, ancestors, and a hit-test telling which element actually receives a click at its center (detects overlap).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Element id from ui_tree / ui_find (the number after #). Ids >= 1000000 are uGUI objects.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Element name (exact match preferred, then substring). Alternative to id.",
+          "type": "string"
+        },
+        "text": {
+          "description": "Visible text of the element (substring). Alternative to id.",
+          "type": "string"
+        },
+        "x": {
+          "description": "Screen X in pixels, origin top-left (same space as screenshots at scale 1). Alternative to id.",
+          "type": "number"
+        },
+        "y": {
+          "description": "Screen Y in pixels, origin top-left.",
+          "type": "number"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "ui_click",
+    "description": "Click an element or a screen point (move, press, release). Returns the UI events that resulted, so you can tell if the click registered.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Element id from ui_tree / ui_find (the number after #). Ids >= 1000000 are uGUI objects.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Element name (exact match preferred, then substring). Alternative to id.",
+          "type": "string"
+        },
+        "text": {
+          "description": "Visible text of the element (substring). Alternative to id.",
+          "type": "string"
+        },
+        "x": {
+          "description": "Screen X in pixels, origin top-left (same space as screenshots at scale 1). Alternative to id.",
+          "type": "number"
+        },
+        "y": {
+          "description": "Screen Y in pixels, origin top-left.",
+          "type": "number"
+        },
+        "button": {
+          "description": "left (default) | right | middle.",
+          "type": "string"
+        },
+        "count": {
+          "description": "1 = click, 2 = double click.",
+          "type": "integer"
+        },
+        "holdMs": {
+          "description": "Hold the button this long before release (long press).",
+          "type": "integer"
+        },
+        "modifiers": {
+          "description": "Held modifiers: any of shift, ctrl, alt, cmd.",
+          "type": "array",
+          "items": {}
+        },
+        "method": {
+          "description": "'event' (default): synthesize UI Toolkit events, deterministic, UI only. 'input': inject through the Input System virtual mouse/keyboard (also reaches uGUI and gameplay code).",
+          "type": "string"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "ui_hover",
+    "description": "Move the pointer over an element/point (hover states, tooltips).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Element id from ui_tree / ui_find (the number after #). Ids >= 1000000 are uGUI objects.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Element name (exact match preferred, then substring). Alternative to id.",
+          "type": "string"
+        },
+        "text": {
+          "description": "Visible text of the element (substring). Alternative to id.",
+          "type": "string"
+        },
+        "x": {
+          "description": "Screen X in pixels, origin top-left (same space as screenshots at scale 1). Alternative to id.",
+          "type": "number"
+        },
+        "y": {
+          "description": "Screen Y in pixels, origin top-left.",
+          "type": "number"
+        },
+        "method": {
+          "description": "'event' (default): synthesize UI Toolkit events, deterministic, UI only. 'input': inject through the Input System virtual mouse/keyboard (also reaches uGUI and gameplay code).",
+          "type": "string"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "ui_drag",
+    "description": "Press at the source, move in steps, release at the destination (sliders, drag & drop, swipe-scroll).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Element id from ui_tree / ui_find (the number after #). Ids >= 1000000 are uGUI objects.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Element name (exact match preferred, then substring). Alternative to id.",
+          "type": "string"
+        },
+        "text": {
+          "description": "Visible text of the element (substring). Alternative to id.",
+          "type": "string"
+        },
+        "x": {
+          "description": "Screen X in pixels, origin top-left (same space as screenshots at scale 1). Alternative to id.",
+          "type": "number"
+        },
+        "y": {
+          "description": "Screen Y in pixels, origin top-left.",
+          "type": "number"
+        },
+        "to_id": {
+          "description": "Element id from ui_tree / ui_find (the number after #). Ids >= 1000000 are uGUI objects.",
+          "type": "integer"
+        },
+        "to_name": {
+          "description": "Element name (exact match preferred, then substring). Alternative to id.",
+          "type": "string"
+        },
+        "to_text": {
+          "description": "Visible text of the element (substring). Alternative to id.",
+          "type": "string"
+        },
+        "to_x": {
+          "description": "Screen X in pixels, origin top-left (same space as screenshots at scale 1). Alternative to id.",
+          "type": "number"
+        },
+        "to_y": {
+          "description": "Screen Y in pixels, origin top-left.",
+          "type": "number"
+        },
+        "steps": {
+          "description": "Intermediate moves (default 12).",
+          "type": "integer"
+        },
+        "durationMs": {
+          "description": "Total move time (default 300).",
+          "type": "integer"
+        },
+        "holdMs": {
+          "description": "Pause after press before moving (default 0).",
+          "type": "integer"
+        },
+        "button": {
+          "description": "left (default) | right | middle.",
+          "type": "string"
+        },
+        "method": {
+          "description": "'event' (default): synthesize UI Toolkit events, deterministic, UI only. 'input': inject through the Input System virtual mouse/keyboard (also reaches uGUI and gameplay code).",
+          "type": "string"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "pointer",
+    "description": "Low-level pointer control for custom gestures and holding a button across several calls.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Element id from ui_tree / ui_find (the number after #). Ids >= 1000000 are uGUI objects.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Element name (exact match preferred, then substring). Alternative to id.",
+          "type": "string"
+        },
+        "text": {
+          "description": "Visible text of the element (substring). Alternative to id.",
+          "type": "string"
+        },
+        "x": {
+          "description": "Screen X in pixels, origin top-left (same space as screenshots at scale 1). Alternative to id.",
+          "type": "number"
+        },
+        "y": {
+          "description": "Screen Y in pixels, origin top-left.",
+          "type": "number"
+        },
+        "action": {
+          "description": "down | move | up.",
+          "type": "string"
+        },
+        "button": {
+          "description": "left (default) | right | middle.",
+          "type": "string"
+        },
+        "modifiers": {
+          "description": "Held modifiers: any of shift, ctrl, alt, cmd.",
+          "type": "array",
+          "items": {}
+        },
+        "method": {
+          "description": "'event' (default): synthesize UI Toolkit events, deterministic, UI only. 'input': inject through the Input System virtual mouse/keyboard (also reaches uGUI and gameplay code).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
+    "name": "ui_scroll",
+    "description": "Scroll. mode=offset (default) shifts the nearest ScrollView by pixels, deterministic. mode=wheel sends a mouse wheel event at the point.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Element id from ui_tree / ui_find (the number after #). Ids >= 1000000 are uGUI objects.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Element name (exact match preferred, then substring). Alternative to id.",
+          "type": "string"
+        },
+        "text": {
+          "description": "Visible text of the element (substring). Alternative to id.",
+          "type": "string"
+        },
+        "x": {
+          "description": "Screen X in pixels, origin top-left (same space as screenshots at scale 1). Alternative to id.",
+          "type": "number"
+        },
+        "y": {
+          "description": "Screen Y in pixels, origin top-left.",
+          "type": "number"
+        },
+        "dx": {
+          "description": "Horizontal amount (px in offset mode).",
+          "type": "number"
+        },
+        "dy": {
+          "description": "Vertical amount, positive = down.",
+          "type": "number"
+        },
+        "mode": {
+          "description": "offset | wheel.",
+          "type": "string"
+        },
+        "method": {
+          "description": "'event' (default): synthesize UI Toolkit events, deterministic, UI only. 'input': inject through the Input System virtual mouse/keyboard (also reaches uGUI and gameplay code).",
+          "type": "string"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "ui_scroll_to",
+    "description": "Scroll the enclosing ScrollView(s) so the element becomes visible. Long ListView/TreeView lists build rows only while they are on screen: pass the list (id or name) and index to bring an off-screen item into view, then click it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Element id from ui_tree / ui_find (the number after #). Ids >= 1000000 are uGUI objects.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Element name (exact match preferred, then substring). Alternative to id.",
+          "type": "string"
+        },
+        "text": {
+          "description": "Visible text of the element (substring). Alternative to id.",
+          "type": "string"
+        },
+        "x": {
+          "description": "Screen X in pixels, origin top-left (same space as screenshots at scale 1). Alternative to id.",
+          "type": "number"
+        },
+        "y": {
+          "description": "Screen Y in pixels, origin top-left.",
+          "type": "number"
+        },
+        "index": {
+          "description": "Item number in a ListView, TreeView or MultiColumnListView given by id/name.",
+          "type": "integer"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "ui_set_value",
+    "description": "Set a control's value directly (fires the normal ChangeEvent): TextField, Toggle, Slider, DropdownField, etc. 'property' lets you set another public property, e.g. index, selectedTabIndex, selectedIndex.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Element id from ui_tree / ui_find (the number after #). Ids >= 1000000 are uGUI objects.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Element name (exact match preferred, then substring). Alternative to id.",
+          "type": "string"
+        },
+        "text": {
+          "description": "Visible text of the element (substring). Alternative to id.",
+          "type": "string"
+        },
+        "x": {
+          "description": "Screen X in pixels, origin top-left (same space as screenshots at scale 1). Alternative to id.",
+          "type": "number"
+        },
+        "y": {
+          "description": "Screen Y in pixels, origin top-left.",
+          "type": "number"
+        },
+        "value": {
+          "description": "New value (string, number, bool, or JSON for structs)."
+        },
+        "property": {
+          "description": "Property name (default: value).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value"
+      ]
+    }
+  },
+  {
+    "name": "ui_focus",
+    "description": "Give keyboard focus to an element.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Element id from ui_tree / ui_find (the number after #). Ids >= 1000000 are uGUI objects.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Element name (exact match preferred, then substring). Alternative to id.",
+          "type": "string"
+        },
+        "text": {
+          "description": "Visible text of the element (substring). Alternative to id.",
+          "type": "string"
+        },
+        "x": {
+          "description": "Screen X in pixels, origin top-left (same space as screenshots at scale 1). Alternative to id.",
+          "type": "number"
+        },
+        "y": {
+          "description": "Screen Y in pixels, origin top-left.",
+          "type": "number"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "type_text",
+    "description": "Type text as keystrokes into the given (or currently focused) element. Falls back to setting the value directly if keystrokes had no effect.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Element id from ui_tree / ui_find (the number after #). Ids >= 1000000 are uGUI objects.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Element name (exact match preferred, then substring). Alternative to id.",
+          "type": "string"
+        },
+        "text": {
+          "description": "Text to type.",
+          "type": "string"
+        },
+        "x": {
+          "description": "Screen X in pixels, origin top-left (same space as screenshots at scale 1). Alternative to id.",
+          "type": "number"
+        },
+        "y": {
+          "description": "Screen Y in pixels, origin top-left.",
+          "type": "number"
+        },
+        "clear": {
+          "description": "Clear the field first.",
+          "type": "boolean"
+        },
+        "submit": {
+          "description": "Press Enter afterwards.",
+          "type": "boolean"
+        },
+        "method": {
+          "description": "event (default) | input | set.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    }
+  },
+  {
+    "name": "key",
+    "description": "Press, hold or release a key like a real keyboard. Key names are UnityEngine.KeyCode names (Return, Escape, Tab, Space, Backspace, LeftArrow, W, Alpha1, LeftShift, F5...; Enter and Digit1 work too). method=auto (default) picks the route: the focused UI Toolkit element; else the selected uGUI object (Return/Space submit, Escape cancels, arrows and Tab move the selection, a text field takes every key); else gameplay input, read by Input.GetKey or Input System actions.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "description": "Key name.",
+          "type": "string"
+        },
+        "action": {
+          "description": "press (default) | down | up.",
+          "type": "string"
+        },
+        "holdMs": {
+          "description": "For press: how long to hold.",
+          "type": "integer"
+        },
+        "modifiers": {
+          "description": "Held modifiers: any of shift, ctrl, alt, cmd.",
+          "type": "array",
+          "items": {}
+        },
+        "method": {
+          "description": "auto (default) | event: UI Toolkit events | input: Input System virtual keyboard (Input System Key names) | os: real key events posted to the game window (macOS and Windows builds), for gameplay code even while a UI object is selected.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ]
+    }
+  },
+  {
+    "name": "play",
+    "description": "Play the game for a stretch in one call: each step holds/taps keys, presses an Input System action, tilts the left stick or moves the mouse for its duration, frame by frame inside the game; use it for walking, jumping and looking around. Example: {\"steps\":[{\"hold\":[\"W\",\"LeftShift\"],\"ms\":800},{\"tap\":[\"Space\"],\"look\":[200,0],\"ms\":300}],\"observe\":[\"/Player:Transform.position\"]}.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "steps": {
+          "description": "Up to 100 steps, at most 60000 ms in total. Step fields (all optional): hold (Input System Key names held during the step: W, LeftShift, Space...), tap (keys pressed for one frame at the start), action (Input System action name or Map/Action; its keyboard or mouse-button binding is held during the step), move ([x,y] left gamepad stick, -1..1), look ([dx,dy] total mouse delta over the step, +y up), ms (duration; default one frame).",
+          "type": "array",
+          "items": {}
+        },
+        "observe": {
+          "description": "State paths (as in state_get) read after every step.",
+          "type": "array",
+          "items": {}
+        },
+        "stopWhen": {
+          "description": "{\"path\":\"<state path>\",\"equals\":\"<value>\"}: stop as soon as the value matches (checked every frame; without equals, when the path resolves).",
+          "type": "object"
+        },
+        "timeoutMs": {
+          "description": "Stop the whole call after this many ms, releasing the keys it holds (default: when the steps end).",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "steps"
+      ]
+    }
+  },
+  {
+    "name": "input_actions",
+    "description": "List the game's Input System controls: action maps, actions, their bindings and current values, from active PlayerInput components and enabled actions; call it before play to learn the action names. Example: {}.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "screenshot",
+    "description": "Capture the real framebuffer (exactly what is displayed). With annotate=true, interactive elements are outlined and labelled with their ids. With camera, renders only what that camera sees (no overlay UI).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "maxWidth": {
+          "description": "Downscale to this width (default 1024).",
+          "type": "integer"
+        },
+        "quality": {
+          "description": "JPEG quality (default 75).",
+          "type": "integer"
+        },
+        "annotate": {
+          "description": "Draw element boxes + ids (default false).",
+          "type": "boolean"
+        },
+        "camera": {
+          "description": "Camera name, GameObject path or #u id (see render_scene).",
+          "type": "string"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "frames_record",
+    "description": "Ring-buffer recording of frames for frame-by-frame analysis.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "start | stop | clear | status.",
+          "type": "string"
+        },
+        "fps": {
+          "description": "Capture rate (default 5; use 0 for every frame).",
+          "type": "number"
+        },
+        "maxWidth": {
+          "description": "Frame width (default 480).",
+          "type": "integer"
+        },
+        "seconds": {
+          "description": "Buffer length (default 20).",
+          "type": "number"
+        },
+        "onlyChanges": {
+          "description": "Skip frames identical to the previous one (default true).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
+    "name": "frames_get",
+    "description": "Fetch recorded frames as images (max 8 per call). Use frames_record status to see available indices.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "indices": {
+          "description": "Explicit frame indices.",
+          "type": "array",
+          "items": {}
+        },
+        "from": {
+          "description": "First index.",
+          "type": "integer"
+        },
+        "to": {
+          "description": "Last index.",
+          "type": "integer"
+        },
+        "step": {
+          "description": "Take every Nth (default 1).",
+          "type": "integer"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "time_control",
+    "description": "Pause / resume / step the game via Time.timeScale.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "pause | resume | step | scale | status.",
+          "type": "string"
+        },
+        "frames": {
+          "description": "For step: frames to advance (default 1).",
+          "type": "integer"
+        },
+        "scale": {
+          "description": "For scale: new Time.timeScale.",
+          "type": "number"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
+    "name": "events_query",
+    "description": "Read the unified event log. Categories: log.log/log.warning/log.error/log.exception, ui.click/ui.down/ui.up/ui.change/ui.focus/ui.blur/ui.keydown/ui.wheel/ui.submit/ui.move, trace, watch, trigger, scene, custom. A category prefix (e.g. 'ui', 'log') matches all sub-categories.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sinceSeq": {
+          "description": "Only events after this seq. Omit to get the most recent ones.",
+          "type": "integer"
+        },
+        "categories": {
+          "description": "Category filters.",
+          "type": "array",
+          "items": {}
+        },
+        "contains": {
+          "description": "Substring filter (case-insensitive).",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Default 50.",
+          "type": "integer"
+        },
+        "detail": {
+          "description": "Include detail/stack traces (default false).",
+          "type": "boolean"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "events_config",
+    "description": "Enable/disable event categories (ui.move is off by default), clear the log, view per-category counts, or capture every thrown exception (even caught ones). Example: firstChance=true firstChanceMax=500, then events_query categories=[\"exception.firstchance\"] detail=true.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "enable": {
+          "description": "Categories to enable.",
+          "type": "array",
+          "items": {}
+        },
+        "disable": {
+          "description": "Categories to disable.",
+          "type": "array",
+          "items": {}
+        },
+        "clear": {
+          "description": "Drop all stored events and error groups.",
+          "type": "boolean"
+        },
+        "firstChance": {
+          "description": "Turn first-chance exception capture on or off (Mono only).",
+          "type": "boolean"
+        },
+        "firstChanceMax": {
+          "description": "Stop capturing after this many exceptions (default 1000).",
+          "type": "integer"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "errors",
+    "description": "Errors and exceptions logged since start, grouped by type and top stack frame with counts and first/last time; start here when something went wrong. Example: full=true limit=5 contains=\"NullReference\".",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "full": {
+          "description": "Include the whole stack of the latest occurrence of each group.",
+          "type": "boolean"
+        },
+        "contains": {
+          "description": "Filter by text in type, message or stack.",
+          "type": "string"
+        },
+        "offset": {
+          "description": "Skip this many groups.",
+          "type": "integer"
+        },
+        "limit": {
+          "description": "Groups to show (default 20).",
+          "type": "integer"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "wait_for",
+    "description": "Block until a condition is met or timeout. Any ONE of the given conditions ends the wait. Returns MATCHED/TIMEOUT plus a summary of everything that happened meanwhile. Pass sinceSeq from the preceding action so fast events are not missed.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "event": {
+          "description": "Event category to wait for.",
+          "type": "string"
+        },
+        "contains": {
+          "description": "Substring the event text must contain.",
+          "type": "string"
+        },
+        "ui_name": {
+          "description": "Wait for an element with this name.",
+          "type": "string"
+        },
+        "ui_text": {
+          "description": "Wait for an element with this text.",
+          "type": "string"
+        },
+        "gone": {
+          "description": "Invert the UI condition: wait until the element disappears.",
+          "type": "boolean"
+        },
+        "state": {
+          "description": "State path (see state_get) to poll.",
+          "type": "string"
+        },
+        "equals": {
+          "description": "Expected formatted value of the state path. Omit to wait until the path resolves.",
+          "type": "string"
+        },
+        "sinceSeq": {
+          "description": "Start of the window (default: now).",
+          "type": "integer"
+        },
+        "frames": {
+          "description": "Just wait this many frames (no other condition needed).",
+          "type": "integer"
+        },
+        "ms": {
+          "description": "Just wait this many milliseconds (no other condition needed).",
+          "type": "integer"
+        },
+        "timeoutMs": {
+          "description": "Default 10000.",
+          "type": "integer"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "scene_tree",
+    "description": "GameObject hierarchy of all loaded scenes (incl. DontDestroyOnLoad) with component names.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "description": "GameObject path like /Root/Child to start from.",
+          "type": "string"
+        },
+        "depth": {
+          "description": "Default 3.",
+          "type": "integer"
+        },
+        "maxNodes": {
+          "description": "Default 200.",
+          "type": "integer"
+        },
+        "activeOnly": {
+          "description": "Default true.",
+          "type": "boolean"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "state_get",
+    "description": "Read any value via reflection (private members included), page through big objects and collections, and get ids (#u.. Unity objects, #o.. other objects) that work as paths in every state tool. Example: path=\"/Game:Inventory.items\" offset=30 limit=10 fields=[\"id\",\"owner.name\"] depth=2; path syntax '/Go/Path:Component.field.sub[0]', '@Namespace.Type.staticMember', '#u123:Rigidbody.velocity', '#o7.items[2]', '#12.text' (UI element).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "State path.",
+          "type": "string"
+        },
+        "depth": {
+          "description": "How deep to expand objects (default 1, max 4).",
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Skip this many top-level entries (collection items or members).",
+          "type": "integer"
+        },
+        "limit": {
+          "description": "Entries per level (default 30).",
+          "type": "integer"
+        },
+        "fields": {
+          "description": "Only these members of the object (or of each item of a collection); paths like 'owner.name' work.",
+          "type": "array",
+          "items": {}
+        },
+        "filter": {
+          "description": "Keep top-level entries whose name or value contains this text.",
+          "type": "string"
+        },
+        "members": {
+          "description": "all (default, private included) | public | serialized (what Unity saves: public or [SerializeField], not [NonSerialized]).",
+          "type": "string"
+        },
+        "props": {
+          "description": "Also evaluate public properties (default false; getters may have side effects).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    }
+  },
+  {
+    "name": "state_query",
+    "description": "Search, sort, group and summarize a large collection (100k items stay responsive: the scan is spread over frames); use it instead of paging state_get when looking for specific items. Example: path=\"/Game:Units.all\" where=[{\"field\":\"hp\",\"op\":\"<\",\"value\":10}] select=[\"name\",\"hp\"] sort=\"-hp\" limit=20, or group=\"team\" stats=true.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "State path of a list, array, set or dictionary (dictionary items have Key and Value).",
+          "type": "string"
+        },
+        "where": {
+          "description": "Conditions, all must hold: {field, op, value}; op is == != < <= > >= contains; field '.' is the item itself. Numbers compare as numbers, text ignores case.",
+          "type": "array",
+          "items": {}
+        },
+        "select": {
+          "description": "Fields to show per item (default: a one-line summary).",
+          "type": "array",
+          "items": {}
+        },
+        "sort": {
+          "description": "Field to sort by; '-field' for descending.",
+          "type": "string"
+        },
+        "offset": {
+          "description": "Skip this many matches.",
+          "type": "integer"
+        },
+        "limit": {
+          "description": "Matches to show (default 20).",
+          "type": "integer"
+        },
+        "group": {
+          "description": "Field to count items by.",
+          "type": "string"
+        },
+        "stats": {
+          "description": "Count, item types, min/max/avg of numbers and unique count of text (for select fields, or for the items themselves).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    }
+  },
+  {
+    "name": "state_export",
+    "description": "Write a whole collection to a JSONL file (one item per line) for offline analysis when it is too big to read through the tools. Example: path=\"/Game:Orders.history\" depth=2; the file goes to ~/.udriver/exports (owner-only, max 200 MB per file; the folder keeps 2 GB by default and deletes its oldest files first) and the reply gives its path, line count, size and the first 3 lines.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "State path of a collection.",
+          "type": "string"
+        },
+        "depth": {
+          "description": "How deep to serialize each item (default 2, max 4); Unity objects become {\"$ref\":\"#u..\"}.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    }
+  },
+  {
+    "name": "state_set",
+    "description": "Write a field/property via reflection.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "State path ending in a member or index.",
+          "type": "string"
+        },
+        "value": {
+          "description": "New value."
+        }
+      },
+      "required": [
+        "path",
+        "value"
+      ]
+    }
+  },
+  {
+    "name": "state_call",
+    "description": "Invoke a method via reflection on the object at 'path' (or a static method if path is '@Type'); the overload is picked by the argument types. Example: path=\"@System.Math\" method=\"Max\" args=[1.5,2]; when several overloads fit equally, the error lists them and types=[\"double\",\"double\"] picks one.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "State path of the target object, or '@Namespace.Type'.",
+          "type": "string"
+        },
+        "method": {
+          "description": "Method name.",
+          "type": "string"
+        },
+        "args": {
+          "description": "Arguments.",
+          "type": "array",
+          "items": {}
+        },
+        "types": {
+          "description": "Parameter type names that select the overload, e.g. [\"string\"].",
+          "type": "array",
+          "items": {}
+        }
+      },
+      "required": [
+        "path",
+        "method"
+      ]
+    }
+  },
+  {
+    "name": "types_find",
+    "description": "Search loaded game types by name ('*' wildcards allowed). Use this to discover the code before placing probes.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "description": "e.g. *Order* or Game.Trading.*",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Default 40.",
+          "type": "integer"
+        },
+        "includeEngine": {
+          "description": "Also search Unity/System assemblies (default false).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "pattern"
+      ]
+    }
+  },
+  {
+    "name": "type_members",
+    "description": "List fields, properties and methods of a type.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "Type name (full or short).",
+          "type": "string"
+        },
+        "contains": {
+          "description": "Member name filter.",
+          "type": "string"
+        },
+        "inherited": {
+          "description": "Include inherited members (default false).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    }
+  },
+  {
+    "name": "watch_add",
+    "description": "Probe: poll a state path every frame and emit a 'watch' event whenever its value changes.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "State path.",
+          "type": "string"
+        },
+        "label": {
+          "description": "Short label for the events.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    }
+  },
+  {
+    "name": "trace_add",
+    "description": "Probe: record calls of the matching methods as hits, optionally only when a condition holds, with captured values and stacks, or pause the game on a hit (needs 0Harmony.dll in the project; Mono only). Example: pattern=\"Game.Bank.Withdraw\" when={\"field\":\"amount\",\"op\":\">\",\"value\":1000} capture=[\"this.balance\",\"account.owner\"] stack=true maxHits=5, then probe_list id=<probe>.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "description": "Namespace.Type.Method with '*' wildcards, e.g. Game.Orders.OrderService.* or *Algorithm*.Start",
+          "type": "string"
+        },
+        "args": {
+          "description": "Log argument values (default true).",
+          "type": "boolean"
+        },
+        "result": {
+          "description": "Log return values (default false).",
+          "type": "boolean"
+        },
+        "capture": {
+          "description": "Values to record per hit: paths starting with this, a parameter name or argN, e.g. this.hp, order.items[0].price.",
+          "type": "array",
+          "items": {}
+        },
+        "when": {
+          "description": "One condition {field, op, value} (field as in capture; op == != < <= > >= contains); calls that fail it are only counted.",
+          "type": "object"
+        },
+        "stack": {
+          "description": "Record the stack trace of each hit (default false).",
+          "type": "boolean"
+        },
+        "pause": {
+          "description": "Pause on each hit: editor pause in the editor (resume with editor_play action=resume), timeScale=0 in a build (time_control action=resume).",
+          "type": "boolean"
+        },
+        "maxHits": {
+          "description": "Record at most this many hits (default 2000; calls are still counted).",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pattern"
+      ]
+    }
+  },
+  {
+    "name": "trigger_add",
+    "description": "Probe: when a matching event occurs, run an action: pause (freeze time), capture_frame (store a frame in the frame buffer), mark (just emit a 'trigger' event). Optionally snapshot a state path at that moment.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "event": {
+          "description": "Event category to match.",
+          "type": "string"
+        },
+        "contains": {
+          "description": "Substring to match.",
+          "type": "string"
+        },
+        "action": {
+          "description": "pause | capture_frame | mark.",
+          "type": "string"
+        },
+        "state": {
+          "description": "State path to snapshot into the trigger event.",
+          "type": "string"
+        },
+        "once": {
+          "description": "Remove after first hit (default true).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
+    "name": "probe_list",
+    "description": "List active probes (watches, traces, triggers) with hit counts, or read one trace probe's recorded hits page by page. Example: id=3 offset=0 limit=20.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Probe whose hits to read.",
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Skip this many hits.",
+          "type": "integer"
+        },
+        "limit": {
+          "description": "Hits per page (default 20).",
+          "type": "integer"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "probe_remove",
+    "description": "Remove a probe. Probes set by other agents stay unless force=true.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Probe id.",
+          "type": "integer"
+        },
+        "all": {
+          "description": "Remove all your probes.",
+          "type": "boolean"
+        },
+        "force": {
+          "description": "Also remove probes set by other agents.",
+          "type": "boolean"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "profiler_get",
+    "description": "Current performance counters: frame time/fps, memory, GC, draw calls. 'add' registers extra counters (\"Category/Name\", see profiler_list).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "add": {
+          "description": "Extra counters as \"Category/Name\" strings.",
+          "type": "array",
+          "items": {}
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "profiler_list",
+    "description": "List available profiler counters/markers in this build.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "contains": {
+          "description": "Name filter.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Default 60.",
+          "type": "integer"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "memory_summary",
+    "description": "Memory at a glance, instantly: Unity used/reserved, managed heap, graphics, textures/meshes/materials/animations/RenderTextures/audio (count and bytes), object counts, GC allocations per frame. Start of a leak hunt: memory_summary -> memory_snapshot take -> play -> memory_snapshot diff -> memory_refs.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "memory_top",
+    "description": "Heaviest loaded Unity objects with id, bytes, size/format for textures, vertices/triangles for meshes; runtime=true marks objects made by code (not assets), unused=true runtime textures/meshes/materials no scene renderer or material uses. group=true totals by type. Example: type=Texture2D runtime=true limit=10.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "UnityEngine.Object type name: Texture, Texture2D, RenderTexture, Mesh, AudioClip, Material, Shader, AnimationClip, GameObject... (default: all objects).",
+          "type": "string"
+        },
+        "name": {
+          "description": "Name substring filter.",
+          "type": "string"
+        },
+        "runtime": {
+          "description": "Only objects created while running.",
+          "type": "boolean"
+        },
+        "group": {
+          "description": "Totals per type instead of single objects.",
+          "type": "boolean"
+        },
+        "offset": {
+          "description": "Skip this many entries.",
+          "type": "integer"
+        },
+        "limit": {
+          "description": "Entries to show (default 15).",
+          "type": "integer"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "memory_snapshot",
+    "description": "Light snapshots of all Unity objects (count and bytes per type plus object ids), kept per agent (max 5), and diffs between them: what was added or grew, with the new objects listed by id. Example: action=take name=before, play, then action=diff from=before (compares with now).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "take (default) | diff | list | drop.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Snapshot name for take/drop (default s1, s2...).",
+          "type": "string"
+        },
+        "from": {
+          "description": "For diff: base snapshot (default your latest).",
+          "type": "string"
+        },
+        "to": {
+          "description": "For diff: second snapshot (default: now).",
+          "type": "string"
+        },
+        "offset": {
+          "description": "Skip this many new objects.",
+          "type": "integer"
+        },
+        "limit": {
+          "description": "Types and new objects to show (default 15).",
+          "type": "integer"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "memory_watch",
+    "description": "Sample memory several times while the game runs and report the trend per object type: bytes/s, count/s and whether it rises monotonically; finds what grows over a long session. Example: samples=10 intervalMs=1000.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "samples": {
+          "description": "Number of samples (default 10, max 120).",
+          "type": "integer"
+        },
+        "intervalMs": {
+          "description": "Time between samples (default 1000).",
+          "type": "integer"
+        },
+        "limit": {
+          "description": "Growing types to show (default 10).",
+          "type": "integer"
+        },
+        "timeoutMs": {
+          "description": "Allow samples x intervalMs beyond 100 s (up to 600000).",
+          "type": "integer"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "memory_refs",
+    "description": "Who keeps an object alive: shortest reference paths from static fields of game code, scene components and DontDestroyOnLoad to it, as state paths like @Game.Cache.items[3]. The same walk finds destroyed Unity objects still referenced from code and the biggest collections. Example: id=\"#u-4242\" (from memory_top or memory_snapshot diff), or find=all.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Object id #u.. or #o.. to find holders of.",
+          "type": "string"
+        },
+        "find": {
+          "description": "holders (default with id) | destroyed | collections | all (default without id).",
+          "type": "string"
+        },
+        "from": {
+          "description": "Walk only from this state path instead of all roots.",
+          "type": "string"
+        },
+        "maxDepth": {
+          "description": "Longest path (default 16).",
+          "type": "integer"
+        },
+        "maxNodes": {
+          "description": "Objects to visit at most (default 2000000).",
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Skip this many entries of the destroyed/collections lists.",
+          "type": "integer"
+        },
+        "limit": {
+          "description": "Paths or entries to show (default 5 paths, 20 entries).",
+          "type": "integer"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "memory_capture",
+    "description": "Write a full memory snapshot (.snap for the Unity Memory Profiler package) to ~/.udriver/exports (owner-only; the folder keeps 2 GB by default and deletes its oldest files first) and return its path and size; editor or Development Build only. Use it when memory_snapshot and memory_refs are not detailed enough.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "render_stats",
+    "description": "Measure rendering over N frames: frame time min/avg/p95/max and spikes, CPU main/render thread and GPU time, what bounds the frame, draw calls, batches, SetPass calls, triangles, vertices, shadow casters, RenderTexture count and memory. Start here when the frame is slow, then render_scene.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "frames": {
+          "description": "Frames to measure (default 60, max 600).",
+          "type": "integer"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "render_scene",
+    "description": "What is drawn and why it costs: render pipeline, quality, vsync, screen; cameras (order, target, culling mask, clear flags, size); visible renderers sorted by triangles or materials with shaders; lights and shadows; hints on what breaks batching. Example: camera=\"Main Camera\" sort=materials limit=10.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "camera": {
+          "description": "Only this camera (name, GameObject path or #u id).",
+          "type": "string"
+        },
+        "sort": {
+          "description": "tris (default) | materials.",
+          "type": "string"
+        },
+        "offset": {
+          "description": "Skip this many renderers.",
+          "type": "integer"
+        },
+        "limit": {
+          "description": "Renderers to show (default 20).",
+          "type": "integer"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "screen_pick",
+    "description": "What is under a screen point: UI Toolkit element, uGUI raycast hits, and scene objects whose renderer bounds the camera ray crosses.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "description": "Screen X (top-left origin).",
+          "type": "number"
+        },
+        "y": {
+          "description": "Screen Y.",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ]
+    }
+  },
+  {
+    "name": "locate",
+    "description": "Where a GameObject is on screen (to click 3D/2D world objects with x,y + method=input).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "GameObject path like /Root/Child.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    }
+  },
+  {
+    "name": "batch",
+    "description": "Run several tools in one round trip, in order. Output of each call is concatenated.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "calls": {
+          "description": "Items: {\"tool\":\"ui_click\",\"args\":{...}}, optionally with \"target\" (next to tool or inside args) and \"quiet\":true (drop this call's output unless it fails) (max 50). Steps may mix games, editor_*, app_* and targets.",
+          "type": "array",
+          "items": {}
+        },
+        "stopOnError": {
+          "description": "Stop at the first failing call (default true).",
+          "type": "boolean"
+        },
+        "output": {
+          "description": "all (default) | last (only the last call's output) | errors (only failing calls). Failing calls are always shown.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "calls"
+      ]
+    }
+  },
+  {
+    "name": "self_test",
+    "description": "Driver diagnostics: builds a temporary UI and verifies that every core capability really works in this project/build (tree, click, typing, keys, drag, scroll, value setting, screenshots, events, reflection, watches, input injection, uGUI, memory, rendering). Run once after installing; report the output if something fails.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "editor_status",
+    "description": "Editor state: Unity version, project, Play Mode, compiling, compile errors, open scenes, last test run and build.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "editor_play",
+    "description": "Control Play Mode. Entering/leaving Play Mode reloads scripts, so the driver is briefly unreachable; then use app_connect.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "play | stop | pause | resume | step (true single-frame step).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
+    "name": "editor_compile",
+    "description": "Script compilation: current state and the list of compiler errors with file and line. action=refresh re-imports assets and recompiles.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "status (default) | refresh.",
+          "type": "string"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "editor_tests",
+    "description": "Unity Test Framework. action=run starts EditMode or PlayMode tests (optionally filtered), status shows progress, results lists outcomes with messages and stack traces.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "run | status | results.",
+          "type": "string"
+        },
+        "mode": {
+          "description": "EditMode (default) | PlayMode.",
+          "type": "string"
+        },
+        "names": {
+          "description": "Full test names to run.",
+          "type": "array",
+          "items": {}
+        },
+        "groups": {
+          "description": "Regex groups (e.g. namespace or fixture names).",
+          "type": "array",
+          "items": {}
+        },
+        "categories": {
+          "description": "NUnit categories.",
+          "type": "array",
+          "items": {}
+        },
+        "assemblies": {
+          "description": "Test assembly names.",
+          "type": "array",
+          "items": {}
+        },
+        "onlyFailed": {
+          "description": "For results: only failed tests (default true).",
+          "type": "boolean"
+        },
+        "limit": {
+          "description": "For results: max tests listed (default 30).",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
+    "name": "editor_build",
+    "description": "Build a player from the editor (Development Build by default so the driver is active). The editor is blocked while building; poll with action=status.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "build | status.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Absolute output path inside an approved build folder: Game.exe on Windows, Game.app on macOS, Game.x86_64 on Linux, e.g. C:/Builds/QA/Game.exe.",
+          "type": "string"
+        },
+        "development": {
+          "description": "Default true.",
+          "type": "boolean"
+        },
+        "scenes": {
+          "description": "Scene paths (default: enabled scenes from Build Settings).",
+          "type": "array",
+          "items": {}
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
+    "name": "editor_scene",
+    "description": "Scenes in the editor: list (open scenes + Build Settings), open a scene by asset path, or save open scenes.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "list | open | save.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Scene asset path for open.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
+    "name": "editor_assets",
+    "description": "Search project assets (AssetDatabase.FindAssets syntax, e.g. 't:VisualTreeAsset order', 't:Scene', 't:Script Trade').",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "description": "Search filter.",
+          "type": "string"
+        },
+        "folder": {
+          "description": "Limit to a folder, e.g. Assets/UI.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Default 50.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "filter"
+      ]
+    }
+  },
+  {
+    "name": "editor_menu",
+    "description": "Execute an editor menu item by path, e.g. 'Assets/Refresh' or a project's custom menu.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Menu path.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    }
+  }
+]

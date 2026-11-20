@@ -44,6 +44,8 @@ namespace UDriver
             return ById.TryGetValue(id, out go) && go != null && go.activeInHierarchy ? go : null;
         }
 
+        public static bool Issued(int id) { return id > IdBase && id <= _next; }
+
         static List<Canvas> Canvases()
         {
             var list = new List<Canvas>();
@@ -446,6 +448,9 @@ namespace UDriver
 
         public static void Focus(GameObject go) { Es().SetSelectedGameObject(go); }
 
+        /// <summary>InputField / TMP_InputField: they read typed characters from the OS event queue, not from the Input System.</summary>
+        public static bool IsTextField(GameObject go) { var s = go != null ? go.GetComponent<Selectable>() : null; return s != null && s.GetType().Name.Contains("InputField"); }
+
         public static string TypeText(GameObject go, string text, bool clear, bool submit)
         {
             PropertyInfo p;
@@ -468,7 +473,7 @@ namespace UDriver
                 ExecuteEvents.Execute(go, new BaseEventData(Es()), ExecuteEvents.submitHandler);
                 EventStore.Emit("ui.submit", "submit " + Desc(go));
             }
-            return "text = " + now;
+            return "text = " + p.GetValue(c);
         }
 
         /// <summary>A key for the selected uGUI object: a text field being edited takes every key, other controls submit / cancel / navigate. Returns false if nothing takes it.</summary>
@@ -558,6 +563,7 @@ namespace UDriver
         public static bool Pressed { get { return false; } }
         public static int Id(GameObject go) { return 0; }
         public static GameObject Get(int id) { return null; }
+        public static bool Issued(int id) { return false; }
         public static Rect ScreenRect(GameObject go) { return new Rect(0, 0, 0, 0); }
         public static bool Interactive(GameObject go) { return false; }
         public static string Desc(GameObject go) { return "(uGUI not available)"; }
@@ -578,6 +584,7 @@ namespace UDriver
         public static string SetValue(GameObject go, string prop, JToken value) { return ""; }
         public static GameObject Selected() { return null; }
         public static void Focus(GameObject go) { }
+        public static bool IsTextField(GameObject go) { return false; }
         public static string TypeText(GameObject go, string text, bool clear, bool submit) { return ""; }
         public static bool Key(KeyCode code, EventModifiers mods) { return false; }
         public static void Inspect(GameObject go, ToolResponse r) { }
