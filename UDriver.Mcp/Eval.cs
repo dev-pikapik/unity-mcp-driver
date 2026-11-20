@@ -57,7 +57,8 @@ static class Eval
             File.WriteAllBytes(Path.Combine(Program.HomeDir, "0Harmony.dll"), global::Inject.Resource("0Harmony.dll"));
             Registry.SetMark(t.Game.Id, t.Game.Mark = mark);
         }
-        return change && !walled
+        // A game inside the computer shell is held by the operating system, with or without these guards.
+        return change && !walled && !t.Shell
             ? Program.Result("Not done: this game cannot keep the computer closed after a change (" + (r == null ? "it did not answer" : Text(r).Replace("ERROR: ", "")) + "). Looking and playing still work; changing it needs computer access.", true) : null;
     }
 

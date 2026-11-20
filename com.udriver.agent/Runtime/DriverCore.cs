@@ -153,6 +153,8 @@ namespace UDriver
             Environment.SetEnvironmentVariable("UDRIVER_SHELL", null);
             if (!string.IsNullOrEmpty(shell))
                 try { Sandbox.Own(() => Directory.GetFileSystemEntries(shell)); } catch (UnauthorizedAccessException) { Shelled = true; } catch (Exception) { }
+            // UDriver wrote the discovery file for a game it walled off.
+            if (Shelled) return;
             try
             {
                 var info = new JObject

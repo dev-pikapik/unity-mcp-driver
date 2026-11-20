@@ -6,8 +6,8 @@ using UDriver;
 /// <summary>
 /// The operating system's wall around a game UDriver starts while Computer access is off: writes only to the game folder,
 /// its saves, logs and temp folders and UDriver's exports; reads only those plus system and font files and UDriver's list of
-/// games; no other programs; network only on this computer's loopback, never UDriver's own ports. macOS: sandbox-exec. Linux: Landlock, set by this program just before it
-/// becomes the game. Windows has none: an AppContainer cannot accept UDriver's loopback connection without an administrator.
+/// games; no other programs; network only on this computer's loopback, never UDriver's own ports. macOS: a Seatbelt profile; Linux: Landlock. Both are set by this program
+/// just before it becomes the game. Windows has none: an AppContainer cannot accept UDriver's loopback connection without an administrator.
 /// </summary>
 static class Shell
 {
@@ -85,25 +85,33 @@ static class Shell
           (global-name "com.apple.security.cloudkeychainproxy3") (global-name "com.apple.security.octagon") (global-name "com.apple.keychainsharingmessagingd"))
         (deny file-write*)
         (allow file-write*
-          (subpath (param "GAME")) (subpath (param "SAVE")) (subpath (param "LOGS")) (subpath (param "TEMP")) (subpath (param "CACHE"))
+          (subpath (param "GAME")) (subpath (param "SAVE")) (subpath (param "LOGS")) (subpath (param "TEMP")) (subpath (param "CACHE")) (subpath (param "CACHES"))
           (subpath (param "EXPORTS")) (literal (param "LOG")) (literal "/dev/null") (literal "/dev/dtracehelper") (regex #"^/dev/tty") (regex #"^/private/tmp/mm-exhelper\.dylib\."))
         (deny file-read*)
         (allow file-read*
-          (subpath (param "GAME")) (subpath (param "SAVE")) (subpath (param "LOGS")) (subpath (param "TEMP")) (subpath (param "CACHE"))
+          (subpath (param "GAME")) (subpath (param "SAVE")) (subpath (param "LOGS")) (subpath (param "TEMP")) (subpath (param "CACHE")) (subpath (param "CACHES")) (subpath (param "SERVER"))
           (subpath (param "EXPORTS")) (literal (param "TARGETS")) (literal (param "LOG")) (literal (param "HARMONY")) (regex #"^/private/tmp/mm-exhelper\.dylib\.") (literal "/") (subpath "/System") (subpath "/usr/lib") (subpath "/usr/share") (subpath "/Library/Fonts")
           (subpath "/Library/Apple/System") (subpath "/private/var/db/timezone") (subpath "/private/etc") (subpath "/dev")
           (subpath (param "METAL")) (subpath (string-append (param "HOME") "/Library/Fonts"))
           (subpath (string-append (param "HOME") "/Library/Keyboard Layouts")) (subpath (string-append (param "HOME") "/Library/Input Methods")))
         (allow file-read-metadata)
         (deny file-read-metadata (subpath (param "HOME")))
-        (allow file-read-metadata (literal (param "HOME")) (subpath (param "EXPORTS")) (literal (param "TARGETS")) (subpath (param "SAVE")) (subpath (param "LOGS")) (literal (param "LOG")) (literal (param "SAVEUP")) (literal (param "LOGSUP"))
+        (allow file-read-metadata (literal (param "HOME")) (subpath (param "SERVER")) (subpath (param "EXPORTS")) (literal (param "TARGETS")) (subpath (param "SAVE")) (subpath (param "LOGS")) (literal (param "LOG")) (literal (param "SAVEUP")) (literal (param "LOGSUP"))
           (literal (string-append (param "HOME") "/Library")) (literal (string-append (param "HOME") "/Library/Application Support"))
-          (literal (string-append (param "HOME") "/Library/Logs")) (subpath (string-append (param "HOME") "/Library/Fonts")))
+          (literal (string-append (param "HOME") "/Library/Logs")) (literal (string-append (param "HOME") "/Library/Caches")) (subpath (param "CACHES")) (subpath (string-append (param "HOME") "/Library/Fonts")))
         """;
 
+    // Not /usr/bin/sandbox-exec: macOS strips DYLD_INSERT_LIBRARIES from its own programs, so an IL2CPP game would lose its agent.
     static Process? Mac(ProcessStartInfo psi, string exe, string log)
     {
-        if (!File.Exists("/usr/bin/sandbox-exec")) return null;
+        if (MacDirs(exe, log) is not { } dirs) return null;
+        foreach (var k in new[] { "SAVE", "LOGS", "TEMP", "CACHE", "CACHES" }) Directory.CreateDirectory(dirs[k]);
+        return Helper(psi, exe, log);
+    }
+
+    /// <summary>The folders the profile opens to the game; null when the game has no company, product or bundle id to name them.</summary>
+    static Dictionary<string, string>? MacDirs(string exe, string log)
+    {
         string app = Real(Path.Combine(exe, "..", "..", ".."));
         var (company, product) = Names(Path.Combine(app, "Contents", "Resources", "Data"));
         var id = Regex.Match(File.ReadAllText(Path.Combine(app, "Contents", "Info.plist")), @"<key>CFBundleIdentifier</key>\s*<string>([^<]+)</string>").Groups[1].Value;
@@ -111,24 +119,21 @@ static class Shell
         // Unity takes the home folder from the user database, not from HOME.
         string home = Real(Marshal.PtrToStringUTF8(Marshal.ReadIntPtr(getpwuid(getuid()), 48))!);
         string temp = Real(Path.GetTempPath()), cache = Path.Combine(Path.GetDirectoryName(temp)!, "C");
-        var dirs = new Dictionary<string, string>
+        return new Dictionary<string, string>
         {
             ["GAME"] = app, ["HOME"] = home, ["EXE"] = Real(exe), ["LOG"] = Real(log), ["HARMONY"] = Path.Combine(Real(Program.HomeDir), "0Harmony.dll"),
             ["EXPORTS"] = Path.Combine(Real(Program.HomeDir), "exports"), ["TARGETS"] = Path.Combine(Real(Program.HomeDir), "targets.json"),
+            ["SERVER"] = Real(AppContext.BaseDirectory),
             ["SAVE"] = Path.Combine(home, "Library", "Application Support", company, product),
             ["LOGS"] = Path.Combine(home, "Library", "Logs", company, product),
             ["SAVEUP"] = Path.Combine(home, "Library", "Application Support", company), ["LOGSUP"] = Path.Combine(home, "Library", "Logs", company),
             ["TEMP"] = Path.Combine(temp, company, product), ["CACHE"] = Path.Combine(cache, id), ["METAL"] = Path.Combine(cache, "com.apple.metal"),
+            // Unity's asset bundle cache (Caching) and the system's URL cache.
+            ["CACHES"] = Path.Combine(home, "Library", "Caches", id),
         };
-        foreach (var k in new[] { "SAVE", "LOGS", "TEMP", "CACHE" }) Directory.CreateDirectory(dirs[k]);
-        var args = new List<string> { "-p", MacProfile.Replace("{CLOSED}", string.Join("\n", Closed().Select(p => $"(deny network-outbound (remote tcp \"localhost:{p}\"))"))) };
-        foreach (var (k, v) in dirs) { args.Add("-D"); args.Add(k + "=" + v); }
-        args.Add(exe);
-        for (int i = 0; i < args.Count; i++) psi.ArgumentList.Insert(i, args[i]);
-        psi.FileName = "/usr/bin/sandbox-exec";
-        return Process.Start(psi);
     }
 
+    [DllImport("libsandbox.1.dylib")] static extern int sandbox_init_with_parameters(string profile, ulong flags, string?[] parameters, out IntPtr error);
     [DllImport("libc")] static extern IntPtr getpwuid(uint uid);
     [DllImport("libc")] static extern uint getuid();
     [DllImport("libc", EntryPoint = "sandbox_check")]
@@ -158,6 +163,15 @@ static class Shell
     static Process? Linux(ProcessStartInfo psi, string exe, string log)
     {
         if (Abi() < 4) return null;
+        return Helper(psi, exe, log);
+    }
+
+    /// <summary>Starts this program as shell-exec, which closes itself in and becomes the game.</summary>
+    static Process? Helper(ProcessStartInfo psi, string exe, string log)
+    {
+        // The IL2CPP agent goes to the game only, not into this program on the way.
+        foreach (var v in new[] { "DYLD_INSERT_LIBRARIES", "LD_PRELOAD" })
+            if (psi.Environment.TryGetValue(v, out var lib) && lib != null) { psi.Environment.Remove(v); psi.Environment["UDRIVER_PRELOAD"] = lib; }
         string self = Environment.ProcessPath!;
         var pre = new List<string>();
         if (Path.GetFileNameWithoutExtension(self) == "dotnet") pre.Add(typeof(Shell).Assembly.Location);
@@ -172,11 +186,28 @@ static class Shell
     {
         var closed = a[1].Split(',').Select(int.Parse).ToHashSet();
         string log = a[2], exe = Path.GetFullPath(a[3]), dir = Path.GetDirectoryName(exe)!;
+        if (Environment.GetEnvironmentVariable("UDRIVER_PRELOAD") is { Length: > 0 } lib)
+            Environment.SetEnvironmentVariable(OperatingSystem.IsMacOS() ? "DYLD_INSERT_LIBRARIES" : "LD_PRELOAD", lib);
+        Environment.SetEnvironmentVariable("UDRIVER_PRELOAD", null);
+        if (OperatingSystem.IsMacOS())
+        {
+            if (MacDirs(exe, log) is not { } dirs) return Fail("no company, product or bundle id in the game");
+            // Temporary files of the game's libraries go to its own temp folder, the one place under the system's temp it may write.
+            Environment.SetEnvironmentVariable("TMPDIR", dirs["TEMP"] + "/");
+            string profile = MacProfile.Replace("{CLOSED}", string.Join("\n", closed.Select(p => $"(deny network-outbound (remote tcp \"localhost:{p}\"))")));
+            var macArgv = a.Skip(3).Append(null).ToArray();
+            var macEnvp = Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>().Select(e => e.Key + "=" + e.Value).Append(null).ToArray();
+            if (sandbox_init_with_parameters(profile, 0, dirs.SelectMany(d => new string?[] { d.Key, d.Value }).Append(null).ToArray(), out var err) != 0)
+                return Fail("sandbox " + (err != IntPtr.Zero ? Marshal.PtrToStringUTF8(err) : ""));
+            execve(exe, macArgv, macEnvp);
+            return Fail("exec " + Marshal.GetLastPInvokeError());
+        }
         var (company, product) = Names(Path.ChangeExtension(exe, null) + "_Data");
         string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         string save = Path.Combine(home, ".config", "unity3d", company, product), temp = Path.Combine(Path.GetTempPath(), company, product);
         if (company.Length == 0) return Fail("no company and product in the game's app.info");
         Directory.CreateDirectory(save); Directory.CreateDirectory(temp);
+        Environment.SetEnvironmentVariable("TMPDIR", temp);
 
         var attr = Marshal.AllocHGlobal(16);
         Marshal.WriteInt64(attr, (long)AllFs); Marshal.WriteInt64(attr, 8, (long)ConnectTcp);

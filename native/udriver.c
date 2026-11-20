@@ -28,6 +28,7 @@ typedef SOCKET sock_t;
 #define SHUT_WR SD_SEND
 #else
 #include <arpa/inet.h>
+#include <dirent.h>
 #include <dlfcn.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -475,7 +476,7 @@ static void pump(int phase) {
 
 static int port;
 static char token[128];
-static int allowUnsafe;
+static int allowUnsafe, shelled;
 static atomic_llong lastTick;
 static long long now_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1000LL + t.tv_nsec / 1000000; }
 static void publish(void);
@@ -812,7 +813,7 @@ static void publish(void) {
     cJSON_AddNumberToObject(o, "port", port);
     char *js = cJSON_PrintUnformatted(o); cJSON_Delete(o);
     snprintf(pubJson, sizeof pubJson, "%s", dir_file(port, ".json"));
-    write_private(pubJson, js);
+    if (!shelled) write_private(pubJson, js);  // UDriver wrote it for a game in the shell
     free(js);
     atexit(unpublish);
 #ifndef _WIN32
@@ -868,6 +869,12 @@ static void *boot(void *_) {
     if (!ok) { L("no free port"); return NULL; }
     pair(getenv("UDRIVER_TOKEN"));
     allowUnsafe = getenv("UDRIVER_UNSAFE") && !strcmp(getenv("UDRIVER_UNSAFE"), "1");
+#ifndef _WIN32
+    // The operating system keeps a game UDriver started in the computer shell from UDriver's folder named here.
+    const char *sh = getenv("UDRIVER_SHELL");
+    if (sh && *sh) { DIR *d = opendir(sh); shelled = !d && (errno == EPERM || errno == EACCES); if (d) closedir(d); }
+    unsetenv("UDRIVER_SHELL");
+#endif
     build_tools_json();
     pthread_t t; pthread_create(&t, NULL, accept_loop, NULL); pthread_detach(t);
     // The player loop array type is cached late in startup; a loaded scene means scripting is fully set up.

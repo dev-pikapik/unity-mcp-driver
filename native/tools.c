@@ -1147,9 +1147,10 @@ static int t_status(void) {
 #endif
     Text("ui panels: 0 | input methods: event (%s)%s", HasInputSystem() ? "method=input: type_text into uGUI fields only - the native agent cannot send Input System events" : "Input System not active: method=input unavailable", os);
     Text("agent: native, injected into an IL2CPP build");
+    if (shelled) Text("computer: walled off by the operating system (files, programs and network outside the game are closed)");
     Text("safety: %s", allowUnsafe ? "UNSAFE - state_set/state_call may reach any .NET API (UDRIVER_UNSAFE=1)"
                                    : "restricted - state_set/state_call limited to game code, UnityEngine and basic types; access token required; loopback only");
-    Text("computer access: %s", J->computer ? "on" : "off - state_set, state_call and ui_set_value are refused; looking and playing work");
+    Text("computer access: %s", J->computer ? "on" : shelled ? "off - changes work, the operating system keeps them inside the game" : "off - state_set, state_call and ui_set_value are refused; looking and playing work");
     Text("probes: 0 | recording frames: False (0 stored) | last event seq: %lld", (long long)LastSeq());
     return 0;
 }
@@ -2140,7 +2141,8 @@ static int t_batch(void) {
 }
 
 // No Harmony in IL2CPP, so nothing holds the game's own code back once an agent changed the game (a path, URL or command
-// written into a field). While computer access is off only looking and playing are offered; typing is play, like a player's.
+// written into a field). While computer access is off only looking and playing are offered, unless the operating system walls the
+// game off (shelled); typing is play, like a player's.
 static int t_no_computer(void) {
     Error(F("Not done: '%s' changes the game, and Computer access is off. In an IL2CPP game UDriver cannot stop the game's own code "
             "from carrying such a change to your files, programs or network. Looking, clicking, keys and typing still work. "
@@ -2156,6 +2158,6 @@ static const struct { const char *name; Step fn; int change; } Tools[] = {
     {"batch", t_batch}, {"errors", t_errors},
 };
 static Step find_tool(const char *name, int computer) {
-    for (size_t i = 0; i < sizeof Tools / sizeof *Tools; i++) if (!strcmp(Tools[i].name, name)) return Tools[i].change && !computer ? t_no_computer : Tools[i].fn;
+    for (size_t i = 0; i < sizeof Tools / sizeof *Tools; i++) if (!strcmp(Tools[i].name, name)) return Tools[i].change && !computer && !shelled ? t_no_computer : Tools[i].fn;
     return NULL;
 }
