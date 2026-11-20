@@ -605,11 +605,18 @@ internal static partial class Program
         var map = await CallUnity("app_map", new JsonObject { ["section"] = "assemblies" }, want);
         if ((bool?)map["isError"] == true) return map;
         var t = (await Targets()).FirstOrDefault(x => x.Name == Me.LastTarget);
-        string path = t?.Game?.Path is { Length: > 0 } gp ? gp : t?.Path ?? "";
-        if (path.Length == 0) return Result("The game's folder is unknown, so its code cannot be read.", true);
-        string root = Directory.Exists(path) ? path : Path.GetDirectoryName(path)!;
+        if (t?.Game is not { Path.Length: > 0 } g) return Result("This game is not in the owner's list, so its code cannot be read.", true);
+        string root = t.Kind == "editor" ? g.Path : ManagedDir(g.Path);
         string lines = string.Join("\n", (map["content"] as JsonArray ?? new()).Select(c => (string?)c?["text"]));
         return Result(CodeRead.Read(lines, root, (string?)args["type"], (string?)args["method"], (string?)args["assembly"]));
+    }
+
+    /// <summary>Only a build's own assemblies are read, never other files in the folder it sits in.</summary>
+    static string ManagedDir(string build)
+    {
+        if (build.EndsWith(".app", StringComparison.OrdinalIgnoreCase)) return Path.Combine(build, "Contents", "Resources", "Data", "Managed");
+        if (Directory.Exists(build) && GameFile(build) is string exe) build = exe;
+        return Path.Combine(Path.ChangeExtension(build, null) + "_Data", "Managed");
     }
 
     // ---------------- tool list ----------------

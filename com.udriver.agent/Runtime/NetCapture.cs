@@ -98,7 +98,7 @@ namespace UDriver
             foreach (var m in h.GetMethods(BindingFlags.Public | BindingFlags.Instance))
                 if (m.Name == "Patch" && m.GetParameters().Length >= 3 && m.GetParameters()[0].ParameterType == typeof(MethodBase)) patch = m;
             if (patch == null) throw new ToolException("unsupported Harmony version (Harmony.Patch not found)");
-            _harmony = Activator.CreateInstance(h, Id);
+            Sandbox.Own(() => _harmony = Activator.CreateInstance(h, Id));
             var failed = new List<string>();
             foreach (var t in Targets())
             {
@@ -109,7 +109,7 @@ namespace UDriver
                     var argv = new object[patch.GetParameters().Length];
                     argv[0] = t.Key;
                     for (int i = 0; i < 2; i++) if (t.Value[i] != null) argv[i + 1] = ProbeTools.HMethod(typeof(NetCapture).GetMethod(t.Value[i], BindingFlags.NonPublic | BindingFlags.Static));
-                    patch.Invoke(_harmony, argv);
+                    Sandbox.Own(() => patch.Invoke(_harmony, argv));
                     if (!Patched.Contains(name)) Patched.Add(name);
                 }
                 catch (Exception e) { failed.Add(name + " (" + (e.InnerException ?? e).Message + ")"); }
@@ -122,7 +122,7 @@ namespace UDriver
         static void Stop()
         {
             if (_harmony == null) return;
-            try { _harmony.GetType().GetMethod("UnpatchAll", new[] { typeof(string) }).Invoke(_harmony, new object[] { Id }); }
+            try { Sandbox.Own(() => _harmony.GetType().GetMethod("UnpatchAll", new[] { typeof(string) }).Invoke(_harmony, new object[] { Id })); }
             finally { _harmony = null; Patched.Clear(); }
         }
 
@@ -283,13 +283,19 @@ namespace UDriver
         /// <summary>Replaces a Task&lt;T&gt; or ValueTask&lt;T&gt; result with one that records the entry when the original finishes, then hands the same result to the app.</summary>
         static void Wrap(MethodBase m, ref object result, Entry e, Func<Entry, object, Task> done)
         {
-            var t = ((MethodInfo)m).ReturnType;
-            if (!t.IsGenericType) return;
+            object res = result;
+            Sandbox.Own(() => res = Wrapped(((MethodInfo)m).ReturnType, res, e, done));
+            result = res;
+        }
+
+        static object Wrapped(Type t, object result, Entry e, Func<Entry, object, Task> done)
+        {
+            if (!t.IsGenericType) return result;
             bool value = t.GetGenericTypeDefinition() == typeof(ValueTask<>);
             var task = value ? t.GetMethod("AsTask").Invoke(result, null) : result;
-            if (!(task is Task)) return;
+            if (!(task is Task)) return result;
             var wrapped = typeof(NetCapture).GetMethod("Wait", BindingFlags.NonPublic | BindingFlags.Static).MakeGenericMethod(t.GetGenericArguments()[0]).Invoke(null, new[] { task, e, done });
-            result = value ? Activator.CreateInstance(t, wrapped) : wrapped;
+            return value ? Activator.CreateInstance(t, wrapped) : wrapped;
         }
 
         static async Task<T> Wait<T>(Task<T> task, Entry e, Func<Entry, object, Task> done)

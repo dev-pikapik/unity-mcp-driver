@@ -17,6 +17,7 @@ import io
 import json
 import os
 import platform
+import plistlib
 import re
 import shutil
 import socket
@@ -147,9 +148,21 @@ class App:
             exe = os.path.join(macos, os.listdir(macos)[0])
         else:
             exe = os.path.join(root, next(f for f in os.listdir(root) if f.endswith((".x86_64", ".exe")) and not f.startswith("UnityCrash")))
+        # An agent's change while Computer access is off marks the build's saves, and Unity keeps those in the real profile on
+        # macOS and Windows; a mark left by a past run would wall the demo's own feed, so each run starts and ends unmarked.
+        if OS == "macOS":
+            with open(os.path.join(macos, "..", "Info.plist"), "rb") as f:
+                self.mark = os.path.expanduser("~/Library/Application Support/%s/UDriver" % plistlib.load(f)["CFBundleIdentifier"])
+        else:
+            with open(os.path.splitext(exe)[0] + "_Data/app.info") as f:
+                company, product = f.read().splitlines()[:2]
+            self.mark = os.path.expanduser("~/AppData/LocalLow/%s/%s/UDriver" % (company, product)) if OS == "Windows" else None
+        self.clear_mark()
         self.s, self.port = s, port
         self.p = subprocess.Popen([exe, "-udriver-port", str(port), "-screen-fullscreen", "0", "-screen-width", "1280", "-screen-height", "720",
-                                   "-logFile", os.path.join(s.home, folder + ".log"), *extra],
+                                   "-logFile", os.path.join(s.home, folder + ".log"), *extra,
+                                   # a build stopped by a past run must not open on macOS's "reopen windows?" prompt
+                                   *(["-ApplePersistenceIgnoreState", "YES"] if OS == "macOS" else [])],
                                   env=dict(os.environ, HOME=s.home, USERPROFILE=s.home), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         info = os.path.join(s.udir, "%d.json" % port)
         for _ in range(240):
@@ -163,7 +176,7 @@ class App:
 
     def __call__(self, tool, /, **args):
         if self.s.mcp:
-            return self.s.mcp.call(tool, target=self.name, **args)
+            return self.s.mcp.call(tool, instance=self.name, **args)
         return self.http.call(tool, **args)
 
     def text(self, tool, /, **args):
@@ -182,6 +195,12 @@ class App:
             self.p.wait(10)
         except subprocess.TimeoutExpired:
             self.p.kill()
+        self.p.wait()
+        self.clear_mark()
+
+    def clear_mark(self):
+        if self.mark:
+            shutil.rmtree(self.mark, ignore_errors=True)
 
 
 class Session:
