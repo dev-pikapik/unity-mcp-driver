@@ -338,7 +338,7 @@ namespace UDriver
 
         static object harmony;
         static List<string> missing;
-        static string[] roots, writeRoots, personal;
+        static string[] writeRoots, reads;
         static readonly HashSet<int> ports = new HashSet<int>();
         static readonly string[] CodeExt = { ".dll", ".exe", ".so", ".dylib", ".bundle", ".x86_64", ".x86", ".cs", ".asmdef", ".asmref", ".rsp", ".jslib", ".jspre", ".mm", ".m", ".c", ".cpp", ".h", ".java", ".kt", ".jar", ".aar", ".pdb", ".mdb", ".config", ".plist", ".sh", ".command", ".bat", ".cmd", ".ps1", ".app" };
         static readonly string[] Protected = { "UDriver", "HarmonyLib", "MonoMod", "Mono", "Microsoft.Win32", "System.Runtime.InteropServices", "System.Reflection.Emit", "System.Runtime.Loader", "System.IO.Pipes", "System.IO.MemoryMappedFiles", "Unity.Collections", "Unity.Jobs", "Unity.Burst", "UnityEditor", "UnityEngine.Windows", "System.Runtime.CompilerServices.Unsafe" };
@@ -352,15 +352,20 @@ namespace UDriver
             missing = new List<string>();
             harmony = Activator.CreateInstance(h, "udriver.sandbox");
             string project = Path.GetDirectoryName(Application.dataPath);
-            roots = new[] { project, Application.dataPath, Application.persistentDataPath, Application.temporaryCachePath }.Select(Real).ToArray();
+            var roots = new[] { project, Application.dataPath, Application.persistentDataPath, Application.temporaryCachePath }.Select(Real).ToArray();
             writeRoots = Application.isEditor ? new[] { Application.dataPath, Application.persistentDataPath, Application.temporaryCachePath }.Select(Real).ToArray() : roots;
             string logDir = Application.isEditor || string.IsNullOrEmpty(Application.consoleLogPath) ? null : Path.GetDirectoryName(Application.consoleLogPath);
             if (!string.IsNullOrEmpty(logDir)) writeRoots = roots = roots.Append(Real(logDir)).ToArray();
-            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             markReal = Real(MarkDir);
             if (!Application.isEditor) install = Real(Application.platform == RuntimePlatform.OSXPlayer ? project : Application.dataPath);
             saves = new[] { Application.persistentDataPath, Application.temporaryCachePath }.Select(Real).ToArray();
-            personal = new[] { string.IsNullOrEmpty(home) ? null : Path.GetDirectoryName(Real(home)), "/Volumes", "/media", "/mnt", "/run/media" }.Where(d => !string.IsNullOrEmpty(d)).ToArray();
+            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), runtime = Path.GetDirectoryName(typeof(object).Assembly.Location);
+            for (string d = runtime; !string.IsNullOrEmpty(d); d = Path.GetDirectoryName(d)) if (Path.GetFileName(d) == "MonoBleedingEdge") { runtime = Path.GetDirectoryName(d); break; }
+            var system = Application.platform == RuntimePlatform.OSXPlayer || Application.platform == RuntimePlatform.OSXEditor ? new[] { "/System/Library/Fonts", "/Library/Fonts", Path.Combine(home, "Library", "Fonts"), "/usr/share/zoneinfo" }
+                : Application.platform == RuntimePlatform.WindowsPlayer || Application.platform == RuntimePlatform.WindowsEditor ? new[] { Path.Combine(Environment.GetEnvironmentVariable("WINDIR") ?? "", "Fonts"), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft", "Windows", "Fonts") }
+                : new[] { "/usr/share/fonts", "/usr/local/share/fonts", Path.Combine(home, ".fonts"), Path.Combine(home, ".local", "share", "fonts"), "/etc/fonts", "/usr/share/zoneinfo" };
+            reads = roots.Concat(system.Append(Application.streamingAssetsPath).Append(runtime).Where(Path.IsPathRooted).Select(Real)).ToArray();
+            TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow);
             busy = true;
             try
             {
@@ -411,6 +416,7 @@ namespace UDriver
                 Patch(Type.GetType("UnityEngine.Networking.UnityWebRequest, UnityEngine.UnityWebRequestModule")?.GetMethod("SendWebRequest"), "Web", null, false);
                 foreach (var m in Methods(Type.GetType("UnityEngine.ScreenCapture, UnityEngine.ScreenCaptureModule"), false).Where(m => m.Name == "CaptureScreenshot")) Patch(m, "PathArgs");
                 foreach (var m in Methods(Type.GetType("UnityEngine.AssetBundle, UnityEngine.AssetBundleModule"), false).Where(m => m.Name.StartsWith("LoadFromFile") || m.Name.StartsWith("Recompress"))) Patch(m, "PathArgs");
+                foreach (var m in Methods(Type.GetType("Unity.IO.LowLevel.Unsafe.AsyncReadManager, UnityEngine.CoreModule"), false).Where(m => m.GetParameters().Any(p => p.ParameterType == typeof(string)))) Patch(m, "PathArgs");
                 // Unity natives that write a file at a caller's path without managed IO.
                 foreach (var c in Type.GetType("UnityEngine.Networking.DownloadHandlerFile, UnityEngine.UnityWebRequestModule")?.GetConstructors() ?? new ConstructorInfo[0]) Patch(c, "PathArgs");
                 Patch(typeof(UnityEngine.Profiling.Profiler).GetProperty("logFile")?.GetSetMethod(), "PathArgs");
@@ -516,9 +522,19 @@ namespace UDriver
         [DllImport("libc", EntryPoint = "free")] static extern void free(IntPtr p);
 
         /// <summary>Resolves symlinks of the deepest existing ancestor, so a link inside an allowed folder cannot point outside it.</summary>
-        static string Real(string path)
+        static string Real(string path) { return Resolve(Path.GetFullPath(path)); }
+
+        /// <summary>The path as the system walks it: a ".." after a symlink leaves the link's target, not the folder holding the link.</summary>
+        static string Walked(string path)
         {
-            string full = Path.GetFullPath(path).TrimEnd('/', '\\'), rest = "";
+            string w = Resolve(Path.IsPathRooted(path) ? path : Path.Combine(Environment.CurrentDirectory, path));
+            return w.Length == 0 ? "/" : Path.GetFullPath(w);
+        }
+
+        static string Resolve(string full)
+        {
+            string rest = "";
+            full = full.TrimEnd('/', '\\');
             if (Application.platform == RuntimePlatform.WindowsPlayer || Application.platform == RuntimePlatform.WindowsEditor) return full;
             for (string c = full; !string.IsNullOrEmpty(c); c = Path.GetDirectoryName(c))
             {
@@ -564,7 +580,8 @@ namespace UDriver
             try
             {
                 string p = Real(s);
-                bool ok = Under(p, write ? writeRoots : roots) || !write && !InAgent && !Under(p, personal);
+                var allowed = write ? writeRoots : reads;
+                bool ok = Under(p, allowed) && Under(Walked(s), allowed);
                 if (ok && write && (InAgent || !Under(p, saves)))
                 {
                     string ext = Path.GetExtension(p).ToLowerInvariant();
@@ -596,7 +613,7 @@ namespace UDriver
                 if (__args[i] is string s && ps[i].Name.IndexOf("xpression", StringComparison.Ordinal) < 0)
                 {
                     if (ps[i].Name == "pathWithPattern") s = Path.GetDirectoryName(s);
-                    else if (ps[i].Name.IndexOf("attern", StringComparison.Ordinal) >= 0) continue;
+                    else if (ps[i].Name.IndexOf("attern", StringComparison.Ordinal) >= 0 || ps[i].Name == "assetName") continue;
                     CheckPath(s, write, __originalMethod);
                 }
         }
@@ -669,7 +686,7 @@ namespace UDriver
             Deny(Sig(__originalMethod) + " " + string.Join(",", __args.Select(x => x?.ToString())));
         }
 
-        static void Web(object __instance)
+        static void Web(object __instance, MethodBase __originalMethod)
         {
             bool agent = Walled;
             if (!agent && !GameCode) return;
@@ -680,6 +697,13 @@ namespace UDriver
             bool local = (u.Scheme == "http" || u.Scheme == "https") && loop && GamePort(u.Port);
             string key = "web:" + u.Scheme + "://" + (loop ? u.Authority : u.Host);
             if (!agent && !tainted) { Known(key, true); return; }
+            if (u.IsFile)
+            {
+                string raw = (string)t.GetProperty("url").GetValue(__instance);
+                if (u.IsUnc || raw.Contains("..") || raw.IndexOf("%2e", StringComparison.OrdinalIgnoreCase) >= 0) Deny("UnityWebRequest " + raw);
+                CheckPath(u.LocalPath, false, __originalMethod);
+                return;
+            }
             if (!local && (agent || !Known(key, false))) Deny("UnityWebRequest " + u);
             t.GetProperty("redirectLimit").SetValue(__instance, 0);
         }
