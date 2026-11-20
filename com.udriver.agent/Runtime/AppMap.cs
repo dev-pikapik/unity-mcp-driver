@@ -276,7 +276,8 @@ namespace UDriver
         internal static string Role(VisualElement e)
         {
             var t = e.GetType();
-            if (Is(t, "Tab") || (e is Button && Util.Contains(e.name, "tab"))) return "tab";
+            if (e.ClassListContains("unity-tab__header") || (e is Button && Util.Contains(e.name, "tab"))) return "tab";
+            if (Is(t, "Tab")) return null;
             if (e is Button) return "button";
             if (e is BaseVerticalCollectionView || e is ScrollView) return "list";
             if (Is(t, "Toggle") || Is(t, "RadioButton")) return "toggle";
@@ -433,8 +434,10 @@ namespace UDriver
         static string PanelTitle(VisualElement panel)
         {
             foreach (var l in panel.Query<Label>().ToList())
-                if ((Util.Contains(l.name, "title") || Util.Contains(l.name, "header") || l.ClassListContains("title")) && !string.IsNullOrEmpty(l.text)) return Util.OneLine(l.text, 40);
-            return !string.IsNullOrEmpty(panel.name) ? Human(panel.name) : panel.GetType().Name;
+                if ((Util.Contains(l.name, "title") || Util.Contains(l.name, "header") || l.ClassListContains("title")) && !l.ClassListContains("unity-tab__header-label") && !string.IsNullOrEmpty(l.text)) return Util.OneLine(l.text, 40);
+            if (!string.IsNullOrEmpty(panel.name)) return Human(panel.name);
+            var first = panel.Q<Label>();
+            return first != null && !string.IsNullOrEmpty(first.text) ? Util.OneLine(first.text, 40) : panel.GetType().Name;
         }
 
         static Dictionary<VisualElement, string> Documents()
@@ -476,6 +479,7 @@ namespace UDriver
             if (cv != null) it.Rows = cv.itemsSource != null ? cv.itemsSource.Count : 0;
             else if (e is ScrollView) it.Rows = ((ScrollView)e).contentContainer.childCount;
             string own = role == "list" ? null : UiTools.OwnText(e);
+            if (string.IsNullOrEmpty(own) && role == "tab") own = e.Q<Label>()?.text;
             Labels(it, own, role == "text" ? null : NearestLabel(e), Human(e.name), e.name, e.GetType().Name);
             if (role != "text") it.Wires = WiresOf(e);
             into.Add(it);
@@ -527,7 +531,7 @@ namespace UDriver
 
         static void Map(JObject a, ToolResponse r)
         {
-            string section = a.Str("section", "overview"), target = a.Str("target");
+            string section = a.Str("section", "overview"), target = a.Str("focus");
             int limit = Math.Max(1, a.Int("limit", 40));
             if (target != null) { Target(target, limit, r); return; }
             switch (section)
@@ -558,7 +562,7 @@ namespace UDriver
             Ui(false, limit, r);
             Scripts(limit, false, r);
             Data(limit, false, r);
-            r.Text("next: app_map section=ui|scripts|events|data, app_map target=<Type or /Object/Path>, query select=\"<Type>.<list>[*]\", chart_data, form_fill");
+            r.Text("next: app_map section=ui|scripts|events|data, app_map focus=<Type or /Object/Path>, query select=\"<Type>.<list>[*]\", chart_data, form_fill");
         }
 
         static void Ui(bool full, int limit, ToolResponse r)
@@ -623,7 +627,7 @@ namespace UDriver
                 if (!byType.TryGetValue(m.GetType(), out l)) { byType[m.GetType()] = l = new List<MonoBehaviour>(); order.Add(m.GetType()); }
                 l.Add(m);
             }
-            r.Text("scripts (game code; app_map target=<Type> for fields and methods):");
+            r.Text("scripts (game code; app_map focus=<Type> for fields and methods):");
             var line = new List<string>();
             int shown = 0;
             foreach (var t in order)
@@ -893,7 +897,7 @@ namespace UDriver
             r.Text(StateTools.PathOf(go) + " " + StateTools.IdOf(go) + (go.activeInHierarchy ? "" : " (inactive)") + " scene " + go.scene.name);
             var comps = new List<string>();
             foreach (var c in go.GetComponents<Component>()) if (c != null) comps.Add(c.GetType().Name + (Game(c.GetType()) ? "*" : ""));
-            r.Text("components: " + string.Join(", ", comps) + " (* = game code; app_map target=<Type>)");
+            r.Text("components: " + string.Join(", ", comps) + " (* = game code; app_map focus=<Type>)");
             Component main;
             string role = Role(go, out main);
             if (role != null)

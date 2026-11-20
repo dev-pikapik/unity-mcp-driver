@@ -508,6 +508,11 @@ namespace UDriver
 
         static IEnumerator Trace(Entry e, ToolResponse r)
         {
+            var newest = e;
+            lock (Log) foreach (var x in Log) if (x.Seq > newest.Seq && x.Kind == e.Kind && x.Method == e.Method && x.Url == e.Url && x.ResBody != null) newest = x;
+            if (newest != e) r.Text("#" + e.Seq + " was followed by #" + newest.Seq + " from the same address, which replaces its values in the app; tracing #" + newest.Seq);
+            e = newest;
+            yield return null;
             string text = Decode(e.ResBody);
             if (text == null) throw new ToolException("entry #" + e.Seq + " has no text response to trace" + (e.ResBody == null ? (_bodies ? "" : " (bodies were off when it was recorded)") : " (binary body)"));
             var want = new List<KeyValuePair<string, object>>();

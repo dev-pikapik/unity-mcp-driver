@@ -555,12 +555,15 @@ namespace UDriver
             }
             else
             {
-                var sb = new StringBuilder("id");
-                foreach (var col in cols) sb.Append(',').Append(Csv(col == "." ? "value" : col));
+                bool ids = fields == null;
+                var head = cols.ConvertAll(col => Csv(col == "." ? "value" : col));
+                if (ids) head.Insert(0, "id");
+                var sb = new StringBuilder(string.Join(",", head));
                 foreach (var n in page)
                 {
-                    sb.Append('\n').Append(Csv(n.Id() ?? ""));
-                    foreach (var t in toks) sb.Append(',').Append(Csv(Cell(Val(n.V, t))));
+                    var row = toks.ConvertAll(t => Csv(Cell(Val(n.V, t))));
+                    if (ids) row.Insert(0, Csv(n.Id() ?? ""));
+                    sb.Append('\n').Append(string.Join(",", row));
                 }
                 r.Text(sb.ToString());
             }

@@ -240,10 +240,10 @@ namespace UDriver
             // ---- Understanding any app: structure, data, network ----
             T("app_map", "Explain the app in one call: scenes and screens, UI with human labels (what each button, field, list and chart is and which method it calls), the scripts that drive it (components, ScriptableObjects, static managers), event wiring and data models (classes holding collections of records). Compact by default; drill down with section or target. Call this first in an unfamiliar app.",
                 P("section", "string", "overview (default) | ui | scripts | events | data | assemblies."),
-                P("target", "string", "Drill down into one type name or object path (e.g. TradingService or /Canvas/OrderPanel)."),
+                P("focus", "string", "Drill down into one type name or object path (e.g. TradingService or /Canvas/OrderPanel)."),
                 P("limit", "integer", "Max entries per list (default 40).")),
             T("query", "Pick exactly the pieces you need from the live app with a selector and get them as JSON, CSV or lines. Roots: a state path (/Go:Comp.f, @Ns.Type.static, #u12), a type name with * wildcards (every live instance, incl. singletons). Steps: .member, [*] items, [n], [a:b], [?.field op value && ...] with op == != < <= > >= ~= (contains), ..name (search deeper). Example: select=\"Contact[?.company ~= 'acme']\" fields=[\"name\",\"email\"] format=csv.",
-                P("select", "string", "Selector.", true), P("fields", "array", "Only these members of each result (paths like 'owner.name')."),
+                P("select", "string", "Selector.", true), P("fields", "array", "Only these members of each result (paths like 'owner.name'); csv then has exactly these columns."),
                 P("format", "string", "lines (default) | json | csv."), P("offset", "integer", "Skip this many results."), P("limit", "integer", "Results to show (default 50, csv/json up to 10000).")),
             T("chart_data", "Charts and graphs in the app: without id lists every chart found (line renderers, chart components, arrays behind a graph); with id returns its series points and the field the data comes from.",
                 P("id", "string", "Chart id from the list."), P("last", "integer", "Only the last N points."), P("format", "string", "lines (default) | json | csv.")),
