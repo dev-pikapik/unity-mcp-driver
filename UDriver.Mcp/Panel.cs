@@ -1113,7 +1113,7 @@ internal static partial class HttpMode
         <header class="head">{Back}<h1 class="title">Remote access</h1><p class="subtitle">Use UDriver from another device or a web agent. Two steps, no terminal.</p></header>
         <section id="r-install" hidden><h2 class="step-h">First, get cloudflared</h2>
         <div class="group"><div class="row"><div class="k"><span class="name">cloudflared is not installed</span><span class="sub" id="r-inst-text">Cloudflare's free app that runs the tunnel on this computer.</span></div></div>
-        <button type="button" class="act" id="r-inst" hidden>Install cloudflared</button><a class="act" id="r-dl" target="_blank" rel="noopener" hidden>Download from Cloudflare</a></div>
+        <button type="button" class="act" id="r-inst">Install cloudflared</button></div>
         <p class="foot" id="r-inst-foot">After installing it, this page notices it on its own.</p></section>
         <section><h2 class="step-h">1. Sign in to Cloudflare</h2>
         <div class="group"><div class="row">
@@ -1348,9 +1348,9 @@ internal static partial class HttpMode
         }
         async function remote(){
           const r=await get("/panel/api/remote"); R=r;
-          show("r-install",!r.cloudflared); show("r-inst",!r.cloudflared&&!!r.installer); show("r-dl",!r.cloudflared&&!r.installer);
-          $("r-dl").href=r.downloads; $("r-inst").disabled=r.state==="installing"; $("r-inst").textContent=r.state==="installing"?"Installing…":"Install cloudflared";
-          if(r.installer) $("r-inst-text").textContent="Cloudflare's free app that runs the tunnel. UDriver installs it with "+(r.installer==="brew"?"Homebrew":"winget")+".";
+          show("r-install",!r.cloudflared);
+          $("r-inst").disabled=r.state==="installing"; $("r-inst").textContent=r.state==="installing"?"Installing…":"Install cloudflared";
+          if(r.installer) $("r-inst-text").textContent="Cloudflare's free app that runs the tunnel. UDriver "+(r.installer==="winget"?"installs it with winget.":"downloads it for you.");
           show("r-yes",r.signedIn); show("r-no",!r.signedIn);
           $("r-cf-t").textContent=r.signedIn?"Signed in":"Not signed in";
           $("r-cf-sub").textContent=r.signedIn?(r.domain?"Domain "+r.domain:"Domain: the one you picked in Cloudflare"):"Sign in and pick the domain to use.";

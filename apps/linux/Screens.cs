@@ -626,7 +626,7 @@ sealed class AccessScreen : ListScreen
             if (r.B("saved")) { Shell.Act("/panel/api/remote/on", timeout: 120); return; }
             if (r.B("signedIn"))
             {
-                Shell.Ask("Choose an address", $"Type a name under {(r.S("domain") is { Length: > 0 } d ? d : "your domain")}, for example games.", "Name", "Turn On",
+                Shell.Ask("Choose an address", "Type the full address on your Cloudflare domain, for example games.example.com.", "Address", "Turn On",
                     host => Shell.Act("/panel/api/remote/on", new() { ["host"] = host }, timeout: 120), Undo);
                 return;
             }

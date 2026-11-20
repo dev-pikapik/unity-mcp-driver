@@ -681,9 +681,9 @@ final class Toggle: NSSwitch {
             if r["signedIn"] as? Bool == true {
                 let a = NSAlert()
                 a.messageText = "Choose an address"
-                a.informativeText = "Type a name under \(r.s("domain").nilIfEmpty ?? "your domain"), for example games."
+                a.informativeText = "Type the full address on your Cloudflare domain, for example games.example.com."
                 let f = NSTextField(frame: .init(x: 0, y: 0, width: 260, height: 24))
-                f.placeholderString = "games"
+                f.placeholderString = "games.example.com"
                 a.accessoryView = f
                 a.addButton(withTitle: "Turn On")
                 a.addButton(withTitle: "Cancel")

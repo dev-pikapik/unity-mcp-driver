@@ -1,4 +1,7 @@
 using System.Diagnostics;
+using System.Formats.Tar;
+using System.IO.Compression;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -13,7 +16,7 @@ internal static partial class HttpMode
     static string OwnCert => Path.Combine(CfHome, ".cloudflared", "cert.pem");
     static string SharedCfDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cloudflared");
     static string? Cert => File.Exists(OwnCert) ? OwnCert : File.Exists(Path.Combine(SharedCfDir, "cert.pem")) ? Path.Combine(SharedCfDir, "cert.pem") : null;
-    const string CfDownloads = "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/";
+    const string CfRelease = "https://github.com/cloudflare/cloudflared/releases/latest/download/";
 
     static readonly Regex NameRx = new("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", RegexOptions.Compiled);
     static readonly Regex DomainRx = new(@"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$", RegexOptions.Compiled);
@@ -85,8 +88,7 @@ internal static partial class HttpMode
         }.FirstOrDefault(p => Path.IsPathFullyQualified(p) && File.Exists(p));
     }
 
-    static string? Installer() => OperatingSystem.IsMacOS() ? new[] { "/opt/homebrew/bin/brew", "/usr/local/bin/brew" }.FirstOrDefault(File.Exists)
-        : OperatingSystem.IsWindows() ? OnPath("winget.exe") : null;
+    static string? Winget() => OperatingSystem.IsWindows() ? OnPath("winget.exe") : null;
 
     static Task<(int Code, string Out)> Cf(params string[] args) =>
         RunTool(CfExe() ?? throw new Exception("cloudflared is not installed."), TimeSpan.FromSeconds(90), args);
@@ -130,11 +132,38 @@ internal static partial class HttpMode
 
     static async Task Install()
     {
-        string tool = Installer() ?? throw new Exception("No package manager was found. Download cloudflared from Cloudflare: " + CfDownloads);
-        var r = OperatingSystem.IsWindows()
-            ? await RunTool(tool, TimeSpan.FromMinutes(15), "install", "--id", "Cloudflare.cloudflared", "--exact", "--silent", "--accept-source-agreements", "--accept-package-agreements", "--disable-interactivity")
-            : await RunTool(tool, TimeSpan.FromMinutes(15), "install", "cloudflared");
-        if (CfExe() == null) throw new Exception("cloudflared was not installed: " + Brief(r.Out));
+        if (Winget() is { } winget)
+        {
+            var r = await RunTool(winget, TimeSpan.FromMinutes(15), "install", "--id", "Cloudflare.cloudflared", "--exact", "--silent", "--accept-source-agreements", "--accept-package-agreements", "--disable-interactivity");
+            if (CfExe() == null) throw new Exception("cloudflared was not installed: " + Brief(r.Out));
+            return;
+        }
+        string arch = RuntimeInformation.OSArchitecture switch { Architecture.Arm64 => "arm64", Architecture.Arm => "arm", Architecture.X86 => "386", _ => "amd64" };
+        string file = OperatingSystem.IsMacOS() ? $"cloudflared-darwin-{arch}.tgz" : OperatingSystem.IsWindows() ? $"cloudflared-windows-{(arch == "386" ? arch : "amd64")}.exe" : "cloudflared-linux-" + arch;
+        string dir = Path.Combine(Program.HomeDir, "bin"), exe = Path.Combine(dir, OperatingSystem.IsWindows() ? "cloudflared.exe" : "cloudflared"), part = exe + ".part";
+        Directory.CreateDirectory(dir);
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(15) };
+            await using var from = await http.GetStreamAsync((Env("UDRIVER_CLOUDFLARED_RELEASE") is { Length: > 0 } u ? u : CfRelease) + file);
+            await using var to = File.Create(part);
+            Stream? data = from;
+            if (file.EndsWith(".tgz"))
+            {
+                var tar = new TarReader(new GZipStream(from, CompressionMode.Decompress));
+                TarEntry? entry;
+                do entry = await tar.GetNextEntryAsync(); while (entry != null && entry.Name != "cloudflared");
+                data = entry?.DataStream;
+            }
+            await (data ?? throw new IOException("empty download")).CopyToAsync(to);
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException or InvalidDataException)
+        {
+            File.Delete(part);
+            throw new Exception("Could not download cloudflared. Check the internet connection and try again.");
+        }
+        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(part, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        File.Move(part, exe, true);
     }
 
     static async Task Login()
@@ -300,7 +329,7 @@ internal static partial class HttpMode
         return new JsonObject
         {
             ["state"] = state, ["on"] = on, ["error"] = _remoteError.Length > 0 ? _remoteError : on && !(alive && conns > 0) ? _cfNote : "",
-            ["cloudflared"] = installed, ["installer"] = installed ? null : Installer() == null ? null : OperatingSystem.IsWindows() ? "winget" : "brew", ["downloads"] = CfDownloads,
+            ["cloudflared"] = installed, ["installer"] = installed ? null : Winget() != null ? "winget" : "download",
             ["signedIn"] = Cert != null, ["ownSignIn"] = File.Exists(OwnCert), ["saved"] = saved,
             ["host"] = host, ["domain"] = host.Contains('.') ? host[(host.IndexOf('.') + 1)..] : "", ["address"] = host.Length > 0 ? "https://" + host + "/mcp" : "",
             ["onlineSec"] = since == default ? null : (int)(DateTime.UtcNow - since).TotalSeconds,
@@ -330,7 +359,7 @@ internal static partial class HttpMode
                 else { KillTunnel(); StartTunnel(); reply = ok; }
                 break;
             case "/panel/api/remote/install" when local:
-                error = CfExe() != null ? "cloudflared is already installed." : Installer() == null ? "Download cloudflared from Cloudflare: " + CfDownloads : Busy("installing", Install) ? null : busy;
+                error = CfExe() != null ? "cloudflared is already installed." : Busy("installing", Install) ? null : busy;
                 break;
             case "/panel/api/remote/login" when local:
                 error = CfExe() == null ? "Install cloudflared first." : Busy("signing-in", Login) ? null : busy;

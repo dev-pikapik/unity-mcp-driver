@@ -647,9 +647,8 @@ sealed class AccessScreen : Screen
             if (r.B("saved")) { await Shell.Main.Act("remote/on"); return; }
             if (r.B("signedIn"))
             {
-                var box = new TextBox { PlaceholderText = "games" };
-                var domain = r.S("domain") is { Length: > 0 } d ? d : "your domain";
-                if (await Shell.Main.Confirm("Choose an address", $"Type a name under {domain}, for example games.", "Turn on", extra: box))
+                var box = new TextBox { PlaceholderText = "games.example.com" };
+                if (await Shell.Main.Confirm("Choose an address", "Type the full address on your Cloudflare domain, for example games.example.com.", "Turn on", extra: box))
                 {
                     await Shell.Main.Act("remote/on", ("host", box.Text.Trim()));
                     return;
