@@ -39,10 +39,16 @@ jobs:
           printf %s "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
           # macOS reads only the older .p12 format, so a file exported by OpenSSL 3 is repacked first.
           OSSL="$(brew --prefix openssl@3)/bin/openssl"; [ -x "$OSSL" ] || brew install -q openssl@3
-          "$OSSL" pkcs12 -legacy -in "$RUNNER_TEMP/cert.p12" -passin env:P12_PASSWORD -nodes -out "$RUNNER_TEMP/cert.pem"
-          "$OSSL" pkcs12 -export -legacy -in "$RUNNER_TEMP/cert.pem" -passout env:P12_PASSWORD -out "$RUNNER_TEMP/cert.p12"
+          # A password pasted with a line break or spaces at the ends, or a file exported without a password, still opens.
+          OK=; export PW KP
+          for PW in "$P12_PASSWORD" "$(printf %s "$P12_PASSWORD" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -d '\r\n')" ""; do
+            "$OSSL" pkcs12 -legacy -in "$RUNNER_TEMP/cert.p12" -passin env:PW -nodes -out "$RUNNER_TEMP/cert.pem" 2>/dev/null && OK=1 && break
+          done
+          [ -n "$OK" ] || { echo "MAC_CERT_PASSWORD does not open the certificate in MAC_CERT_P12. Set the password the .p12 was exported with."; exit 1; }
+          [ "$PW" = "$P12_PASSWORD" ] || echo "MAC_CERT_PASSWORD has extra spaces or line breaks, or the .p12 has no password; it opened anyway."
+          "$OSSL" pkcs12 -export -legacy -in "$RUNNER_TEMP/cert.pem" -passout env:KP -out "$RUNNER_TEMP/cert.p12"
           rm -f "$RUNNER_TEMP/cert.pem"
-          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign >/dev/null
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$KP" -T /usr/bin/codesign >/dev/null
           rm -f "$RUNNER_TEMP/cert.p12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KP" "$KC" >/dev/null
           security list-keychains -d user -s "$KC" $(security list-keychains -d user | xargs)
