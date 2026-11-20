@@ -9,5 +9,6 @@ OUT="$D/build/linux"
 rm -rf "$OUT" && mkdir -p "$OUT"
 dotnet publish "$D/../UDriver.Mcp" -c Release -r "$RID" --self-contained -p:Version="$V" -o "$OUT" -v q -nologo
 dotnet publish "$D/../apps/linux" -c Release -r "$RID" --self-contained -p:Version="$V" -o "$OUT" -v q -nologo
+sh "$D/../native/build.sh" && cp "$D/../native/libudriver-il2cpp.so" "$OUT/"
 command -v "${VPK:-vpk}" >/dev/null || dotnet tool install -g vpk
 "${VPK:-vpk}" "[linux]" pack -u UDriver -v "$V" -p "$OUT" -e UDriver -r "$RID" --packTitle UDriver -i "$D/udriver.png" --categories Development -o "${RELEASES:-$D/releases}"

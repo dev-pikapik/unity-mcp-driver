@@ -1069,7 +1069,7 @@ internal static partial class Program
             g = Registry.ForPath(real);
         }
         if (!byOwner && Denied("app_launch", args, null, g) is string no) return Result(no, true);
-        if (Inject.Ensure(real) is string cannot) return Result(cannot, true);
+        if (Inject.Ensure(real, out string? agentLib) is string cannot) return Result(cannot, true);
         if (args["args"] is JsonArray given)
         {
             string? prev = null;
@@ -1120,6 +1120,8 @@ internal static partial class Program
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
         };
         foreach (var key in psi.Environment.Keys.Where(k => k.StartsWith("UDRIVER_", StringComparison.OrdinalIgnoreCase)).ToList()) psi.Environment.Remove(key);
+        // Only the game gets the variable; the agent removes it before the game starts anything else.
+        if (agentLib != null) psi.Environment[OperatingSystem.IsMacOS() ? "DYLD_INSERT_LIBRARIES" : "LD_PRELOAD"] = agentLib;
         if (Environment.GetEnvironmentVariable("UDRIVER_EXPORTS_MAX_MB") is { Length: > 0 } exportsMax) psi.Environment["UDRIVER_EXPORTS_MAX_MB"] = exportsMax;
         // Through the environment, not the command line, which other users can see.
         string token = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
@@ -1193,8 +1195,9 @@ internal static partial class Program
             }
             await Task.Delay(400);
         }
-        return Result($"The game started (pid {proc.Id}) but its driver did not answer on port {lp} within {waitSec}s. " +
-                      "Check that this is a Development Build containing the UDriver package (the driver stays off in release builds), then retry app_connect.", true);
+        return Result($"The game started (pid {proc.Id}) but its driver did not answer on port {lp} within {waitSec}s. " + (agentLib != null
+            ? "UDriver's agent for IL2CPP games did not start inside it; the game may block added libraries. Check its log: " + log
+            : "Check that this is a Development Build containing the UDriver package (the driver stays off in release builds), then retry app_connect."), true);
     }
 
     static readonly Regex RecId = new("^rec-[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$");

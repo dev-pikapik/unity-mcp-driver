@@ -1,5 +1,5 @@
 #!/bin/sh
-# ./build.sh                       -> udriver-il2cpp.dylib (macOS arm64)
+# ./build.sh                       -> udriver-il2cpp.dylib (macOS arm64 + x86_64)
 # needs clang 19+ (#embed); on Linux the .so must be x86_64: add --target=x86_64-linux-gnu on an arm64 host
 # ./build.sh tools ToolManifest.cs -> regenerate tools.json from the managed tool list
 set -e
@@ -37,7 +37,7 @@ EOF
 fi
 
 case "$(uname -s)" in
-Darwin) clang -O2 -arch arm64 -dynamiclib -std=c2x -Wall -Wno-unused-function -o udriver-il2cpp.dylib udriver.c cJSON.c \
+Darwin) clang -O2 -arch arm64 -arch x86_64 -dynamiclib -std=c2x -Wall -Wno-unused-function -o udriver-il2cpp.dylib udriver.c cJSON.c \
             -framework ApplicationServices -framework AppKit -lobjc -lpthread ;;
 Linux)  clang -O2 -shared -fPIC -std=c2x -Wall -Wno-unused-function -o libudriver-il2cpp.so udriver.c cJSON.c -lpthread -ldl -lm ;;
 *)      clang --target=x86_64-w64-mingw32 -O2 -shared -std=c2x -o udriver-il2cpp.dll udriver.c cJSON.c -lws2_32 ;;

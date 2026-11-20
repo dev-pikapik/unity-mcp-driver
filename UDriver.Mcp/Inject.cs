@@ -80,9 +80,11 @@ static class Inject
         catch (Exception e) { return "its code cannot be read: " + e.Message; }
     }
 
-    /// <summary>Makes sure the game at this game file has the agent; an error text when it cannot.</summary>
-    internal static string? Ensure(string exe)
+    /// <summary>Makes sure the game at this game file has the agent; an error text when it cannot.
+    /// An IL2CPP game is not changed: lib is the native agent to load into it at launch.</summary>
+    internal static string? Ensure(string exe, out string? lib)
     {
+        lib = null;
         string data = DataDir(exe), managed = Path.Combine(data, "Managed"), bak = BackupDir(data);
         string list = Path.Combine(data, "ScriptingAssemblies.json");
         var manifest = File.Exists(Path.Combine(bak, "manifest.json")) ? JsonNode.Parse(File.ReadAllText(Path.Combine(bak, "manifest.json"))) : null;
@@ -93,7 +95,7 @@ static class Inject
         }
         else if (File.Exists(list) && File.ReadAllText(list).Contains('"' + Dll + '"')) return null;
         string root = AppDir(exe) ?? Path.GetDirectoryName(exe)!;
-        if (IsIl2Cpp(exe, data)) return Il2Cpp;
+        if (IsIl2Cpp(exe, data)) return Preload(exe, out lib);
         if (!File.Exists(list)) return "This game is missing " + list + ", so UDriver cannot be added to it.";
 
         bool ownJson = !File.Exists(Path.Combine(managed, Json));
@@ -148,6 +150,37 @@ static class Inject
         catch (Exception e) { Undo(exe); return "UDriver could not be added to this game: " + e.Message; }
         Eval.Native(managed);
         return null;
+    }
+
+    static string? Preload(string exe, out string? lib)
+    {
+        lib = null;
+        if (OperatingSystem.IsWindows()) return Il2Cpp;
+        string file = OperatingSystem.IsMacOS() ? "udriver-il2cpp.dylib" : "libudriver-il2cpp.so";
+        // Installed next to the server; in a development run, in the repository's native folder.
+        string? found = new[] { AppContext.BaseDirectory, Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "native") }
+            .Select(d => Path.GetFullPath(Path.Combine(d, file))).FirstOrDefault(File.Exists);
+        if (found == null) return $"This game was built with IL2CPP. UDriver needs its agent for such games ({file}), but it is missing from {AppContext.BaseDirectory}. Reinstall UDriver.";
+        if (OperatingSystem.IsMacOS() && Hardened(AppDir(exe) ?? exe))
+            return "This game was built with IL2CPP and signed with Apple's hardened runtime, which does not let UDriver load its agent into it. " +
+                   "Build the game again without hardened runtime (Unity's own builds are fine), or include the UDriver package in the game.";
+        lib = found;
+        return null;
+    }
+
+    /// <summary>True when macOS will drop DYLD_INSERT_LIBRARIES or refuse an ad-hoc signed library for this program.</summary>
+    static bool Hardened(string path)
+    {
+        try
+        {
+            using var p = Process.Start(new ProcessStartInfo("/usr/bin/codesign", new[] { "-d", "--verbose=1", "--entitlements", "-", "--xml", path }) { RedirectStandardError = true, RedirectStandardOutput = true })!;
+            var err = p.StandardError.ReadToEndAsync();
+            string xml = p.StandardOutput.ReadToEnd();
+            p.WaitForExit();
+            bool On(string key) => Regex.IsMatch(xml, @"<key>com\.apple\.security\.cs\." + key + @"</key>\s*<true\s*/>");
+            return Regex.IsMatch(err.Result, @"flags=0x[0-9a-f]+\([^)]*\bruntime\b") && !(On("allow-dyld-environment-variables") && On("disable-library-validation"));
+        }
+        catch (Exception) { return false; }
     }
 
     /// <summary>Puts back every file that Ensure changed, byte for byte.</summary>
@@ -222,8 +255,8 @@ static class Inject
     {
         if (cmd == "restore" && path == "--all") return RestoreAll();
         string exe = GameExe(path);
-        string msg = cmd == "restore" ? Undo(exe) : Ensure(exe) ?? "UDriver is in this game now. Launch it from UDriver to control it.";
+        string msg = cmd == "restore" ? Undo(exe) : Ensure(exe, out var lib) ?? (lib != null ? "This IL2CPP game stays as it is: UDriver loads its agent into it when it launches the game." : "UDriver is in this game now. Launch it from UDriver to control it.");
         Console.WriteLine(msg);
-        return cmd == "restore" || msg.StartsWith("UDriver is in") ? 0 : 1;
+        return cmd == "restore" || msg.StartsWith("UDriver is in") || msg.StartsWith("This IL2CPP game stays") ? 0 : 1;
     }
 }

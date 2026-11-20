@@ -888,6 +888,9 @@ static void *boot(void *_) {
 __attribute__((constructor)) static void init(void) {
 #ifdef _WIN32
     WSADATA w; WSAStartup(MAKEWORD(2, 2), &w);
+#else
+    unsetenv("DYLD_INSERT_LIBRARIES");  // UDriver's launch put the agent here; programs the game starts must not get it
+    unsetenv("LD_PRELOAD");
 #endif
     pthread_t t; pthread_create(&t, NULL, boot, NULL); pthread_detach(t);
 }

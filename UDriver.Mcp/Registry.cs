@@ -279,7 +279,7 @@ internal static class Registry
         added = null;
         if (access != null && Valid(access) == null) return "Access must be watch, play or full.";
         if (Classify(path, out string kind, out string real, out string name) is string err) return err;
-        if (kind == "build" && Inject.Ensure(Inject.GameExe(real)) is string cannot) return cannot;
+        if (kind == "build" && Inject.Ensure(Inject.GameExe(real), out _) is string cannot) return cannot;
         added = Change(d =>
         {
             var same = Match(d.Games, real, 0);

@@ -12,6 +12,7 @@ cp -R "$D/../apps/mac/UDriver.app" "$OUT/"
 S="$OUT/UDriver.app/Contents/MacOS/server"
 dotnet publish "$D/../UDriver.Mcp" -c Release -r "osx-$(uname -m | sed s/x86_64/x64/)" --self-contained -p:Version="$V" -o "$S" -v q -nologo
 cp "$D/udriver" "$S/"
+sh "$D/../native/build.sh" && cp "$D/../native/udriver-il2cpp.dylib" "$S/"
 [ -n "$SIGN_APP" ] || codesign --force --deep --sign - "$OUT/UDriver.app"
 command -v "${VPK:-vpk}" >/dev/null || dotnet tool install -g vpk
 "${VPK:-vpk}" pack -u UDriver -v "$V" -p "$OUT/UDriver.app" -e UDriver --packTitle UDriver -o "$D/releases" \
