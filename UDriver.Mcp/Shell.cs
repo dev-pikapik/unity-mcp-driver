@@ -6,7 +6,7 @@ using UDriver;
 /// <summary>
 /// The operating system's wall around a game UDriver starts while Computer access is off: writes only to the game folder,
 /// its saves, logs and temp folders and UDriver's exports; reads only those plus system and font files and UDriver's list of
-/// games; no other programs; network only on this computer's loopback, never UDriver's own ports. macOS: a Seatbelt profile; Linux: Landlock. Both are set by this program
+/// games; no other programs; network open except UDriver's own ports. macOS: a Seatbelt profile; Linux: Landlock. Both are set by this program
 /// just before it becomes the game. Windows has none: an AppContainer cannot accept UDriver's loopback connection without an administrator.
 /// </summary>
 static class Shell
@@ -70,8 +70,6 @@ static class Shell
     const string MacProfile = """
         (version 1)
         (allow default)
-        (deny network-outbound)
-        (allow network-outbound (remote tcp "localhost:*") (remote udp "localhost:*"))
         {CLOSED}
         (deny process-exec*)
         (allow process-exec (literal (param "EXE")))
@@ -240,7 +238,7 @@ static class Shell
         // Interpreters of foreign binaries (Rosetta, qemu) that run the game.
         foreach (var f in Directory.Exists("/proc/sys/fs/binfmt_misc") ? Directory.GetFiles("/proc/sys/fs/binfmt_misc").Where(f => Path.GetFileName(f) is not ("register" or "status")) : [])
             foreach (var l in File.ReadLines(f).Where(l => l.StartsWith("interpreter ", StringComparison.Ordinal))) Allow(l[12..], Execute | ReadFile, true);
-        for (int port = 1024; port <= 65535; port++)
+        for (int port = 1; port <= 65535; port++)
         {
             if (closed.Contains(port)) continue;
             Marshal.WriteInt64(rule, (long)ConnectTcp); Marshal.WriteInt64(rule, 8, port);

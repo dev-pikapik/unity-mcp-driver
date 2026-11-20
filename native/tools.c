@@ -1147,7 +1147,7 @@ static int t_status(void) {
 #endif
     Text("ui panels: 0 | input methods: event (%s)%s", HasInputSystem() ? "method=input: type_text into uGUI fields only - the native agent cannot send Input System events" : "Input System not active: method=input unavailable", os);
     Text("agent: native, injected into an IL2CPP build");
-    if (shelled) Text("computer: walled off by the operating system (files, programs and network outside the game are closed)");
+    if (shelled) Text("computer: walled off by the operating system (files and programs outside the game are closed; the internet stays open)");
     Text("safety: %s", allowUnsafe ? "UNSAFE - state_set/state_call may reach any .NET API (UDRIVER_UNSAFE=1)"
                                    : "restricted - state_set/state_call limited to game code, UnityEngine and basic types; access token required; loopback only");
     Text("computer access: %s", J->computer ? "on" : shelled ? "off - changes work, the operating system keeps them inside the game" : "off - state_set, state_call and ui_set_value are refused; looking and playing work");

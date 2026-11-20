@@ -662,7 +662,7 @@ namespace UDriver
             r.Text("app: " + Application.productName + " " + Application.version + " | unity " + Application.unityVersion + " | " + Application.platform
                    + (Application.isEditor ? " (editor play mode)" : Debug.isDebugBuild ? " (development build)" : " (release build)"));
             r.Text("scenes: " + string.Join(", ", scenes));
-            if (Shelled) r.Text("computer: walled off by the operating system (files, programs and network outside the game are closed)");
+            if (Shelled) r.Text("computer: walled off by the operating system (files and programs outside the game are closed; the internet stays open)");
             if (Slots.Slot > 0) r.Text("copy slot " + Slots.Slot + ": " + (Slots.Problem == null ? "saves and PlayerPrefs in " + Slots.Folder : "saves are shared with other copies (" + Slots.Problem + ")"));
             r.Text("input: " + InputTools.Controls(Current));
             r.Text("screen: " + Screen.width + "x" + Screen.height + " | focused: " + Application.isFocused + " | frame: " + Time.frameCount
