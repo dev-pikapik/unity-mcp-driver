@@ -284,6 +284,9 @@ internal static class Registry
         {
             var same = Match(d.Games, real, 0);
             if (same != null && same.Path.Equals(real, PathCmp)) { same.Access = access ?? same.Access; return same; }
+            // The same game moved or rebuilt elsewhere takes over its old record instead of becoming "name-2".
+            var moved = d.Games.FirstOrDefault(g => g.Kind == kind && g.Name.Equals(name, StringComparison.OrdinalIgnoreCase) && !File.Exists(g.Path) && !Directory.Exists(g.Path));
+            if (moved != null) { moved.Path = real; moved.Access = access ?? moved.Access; return moved; }
             return AddTo(d, kind, real, name, access);
         });
         return null;
