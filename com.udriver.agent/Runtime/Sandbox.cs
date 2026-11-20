@@ -271,7 +271,9 @@ namespace UDriver
             {
                 Directory.CreateDirectory(MarkDir);
                 File.WriteAllText(Path.Combine(MarkDir, "changed"), "An agent changed this game while Computer access was off, so its own code cannot reach the computer. The owner clears this in the UDriver panel.\n");
-                if (harmonyBytes != null) File.WriteAllBytes(Path.Combine(MarkDir, "0Harmony.dll"), harmonyBytes);
+                string copy = Path.Combine(MarkDir, "0Harmony.dll"), loaded = ProbeTools.FindHarmony() != null ? ProbeTools.FindHarmony().Assembly.Location : null;
+                if (harmonyBytes != null) File.WriteAllBytes(copy, harmonyBytes);
+                else if (!string.IsNullOrEmpty(loaded)) File.Copy(loaded, copy, true);
             });
         }
 
