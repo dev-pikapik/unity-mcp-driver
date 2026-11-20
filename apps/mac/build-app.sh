@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds UDriver.app next to this script.
+# Builds UDriver.app next to this script, with the server inside.
 set -e
 cd "$(dirname "$0")"
 VERSION="${VERSION:-1.0.1}"
@@ -19,6 +19,10 @@ for s in 16 32 128 256 512; do
 done
 iconutil -c icns "$TMP/UDriver.iconset" -o "$APP/Contents/Resources/UDriver.icns"
 rm -rf "$TMP"
+S="$APP/Contents/MacOS/server"
+dotnet publish ../../UDriver.Mcp -c Release -r "osx-$(uname -m | sed s/x86_64/x64/)" --self-contained -p:Version="$VERSION" -o "$S" -v q -nologo
+cp ../../packaging/udriver "$S/"
+sh ../../native/build.sh && cp ../../native/udriver-il2cpp.dylib "$S/"
 
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -40,5 +44,5 @@ cat > "$APP/Contents/Info.plist" <<EOF
 </dict>
 </plist>
 EOF
-codesign --force --sign - "$APP" >/dev/null 2>&1 || true
+codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 echo "Built $(pwd)/$APP"
