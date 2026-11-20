@@ -1,4 +1,7 @@
 using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
+using System.Reflection;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -12,7 +15,8 @@ static class Api
 {
     static readonly HttpClient Http = new() { Timeout = Timeout.InfiniteTimeSpan };
     public static readonly string Home = Environment.GetEnvironmentVariable("HOME") ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-    public static readonly int Port = int.TryParse(Environment.GetEnvironmentVariable("UDRIVER_HTTP_PORT"), out int p) ? p : 8787;
+    public static int Port = int.TryParse(Environment.GetEnvironmentVariable("UDRIVER_HTTP_PORT"), out int p) ? p : 8787;
+    static readonly Version Own = Version.TryParse(Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0], out var v) ? v : new();
     static string Base => $"http://127.0.0.1:{Port}";
     public static string Dll => Environment.GetEnvironmentVariable("UDRIVER_SERVER_DLL") ?? Home + "/.udriver/server/udriver-mcp.dll";
     public static string Bundled => Path.Combine(AppContext.BaseDirectory, "udriver-mcp");
@@ -49,10 +53,30 @@ static class Api
         return j;
     }
 
-    public static async Task<bool> Running()
+    public static async Task<bool> Running() => await ServerVersion() != null;
+
+    /// The version the server on the port reports: null when nothing answers, "" when it is not UDriver 2.0.2 or newer.
+    static async Task<string?> ServerVersion()
     {
-        try { using var c = new CancellationTokenSource(1000); using var _ = await Http.GetAsync(Base + "/panel", c.Token); return true; }
-        catch { return false; }
+        try
+        {
+            using var c = new CancellationTokenSource(1000);
+            using var r = await Http.GetAsync(Base + "/panel", c.Token);
+            return r.Headers.TryGetValues("X-UDriver-Version", out var v) ? v.First() : "";
+        }
+        catch { return null; }
+    }
+
+    /// True when the server on the port is UDriver of this app's version or newer, not an older install.
+    static async Task<bool> Ours() => Version.TryParse(await ServerVersion(), out var v) && v >= Own;
+
+    static int FreePort()
+    {
+        var l = new TcpListener(IPAddress.Loopback, 0);
+        l.Start();
+        int port = ((IPEndPoint)l.LocalEndpoint).Port;
+        l.Stop();
+        return port;
     }
 
     /// The server as a command line: the copy inside this app, or .NET with the installed server.
@@ -65,10 +89,19 @@ static class Api
         return candidates.FirstOrDefault(File.Exists) is { } dotnet ? (dotnet, [Dll]) : null;
     }
 
-    /// Starts the server when nothing answers on the port; returns an error to show, or null once it answers.
+    /// Starts the server unless this app's UDriver already answers; returns an error to show, or null once it answers.
+    /// Another program or an older UDriver on the port is left alone: the server then starts on a free port.
     public static async Task<string?> EnsureServer()
     {
-        if (await Running()) return null;
+        if (await Ours()) return null;
+        int first = Port;
+        if (int.TryParse(Read("panel.port"), out int saved) && saved != Port)
+        {
+            Port = saved;
+            if (await Ours()) return null;
+            Port = first;
+        }
+        if (started is not { HasExited: false } && await Running()) Port = FreePort();
         if (started is not { HasExited: false } && Start() is { } error) return error;
         for (int i = 0; i < 100; i++)
         {

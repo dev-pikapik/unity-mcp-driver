@@ -1,19 +1,23 @@
 using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
+using System.Reflection;
 using System.Text.Json.Nodes;
 
 namespace UDriver;
 
 static class Api
 {
-    public static readonly int Port = int.TryParse(Environment.GetEnvironmentVariable("UDRIVER_HTTP_PORT"), out var p) ? p : 8787;
+    public static int Port = int.TryParse(Environment.GetEnvironmentVariable("UDRIVER_HTTP_PORT"), out var p) ? p : 8787;
+    static readonly Version Own = Version.TryParse(Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0], out var v) ? v : new();
     public static readonly string Home = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".udriver");
     static readonly string KeyPath = Path.Combine(Home, "app.key");
     static readonly string Log = Path.Combine(Home, "logs", "server.log");
-    static readonly HttpClient Http = new() { BaseAddress = new($"http://127.0.0.1:{Port}"), Timeout = Timeout.InfiniteTimeSpan };
+    static readonly HttpClient Http = new() { Timeout = Timeout.InfiniteTimeSpan };
 
     static async Task<HttpResponseMessage> Send(string path, Dictionary<string, string>? form, int seconds)
     {
-        var req = new HttpRequestMessage(form == null ? HttpMethod.Get : HttpMethod.Post, path);
+        var req = new HttpRequestMessage(form == null ? HttpMethod.Get : HttpMethod.Post, $"http://127.0.0.1:{Port}{path}");
         if (File.Exists(KeyPath)) req.Headers.Authorization = new("Bearer", File.ReadAllText(KeyPath).Trim());
         if (form != null) req.Content = new FormUrlEncodedContent(form);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(seconds));
@@ -43,10 +47,30 @@ static class Api
         catch { return null; }
     }
 
-    static async Task<bool> Running()
+    static async Task<bool> Running() => await ServerVersion() != null;
+
+    /// The version the server on the port reports: null when nothing answers, "" when it is not UDriver 2.0.2 or newer.
+    static async Task<string?> ServerVersion()
     {
-        try { using var cts = new CancellationTokenSource(1000); using var r = await Http.GetAsync("/panel", cts.Token); return true; }
-        catch { return false; }
+        try
+        {
+            using var cts = new CancellationTokenSource(1000);
+            using var r = await Http.GetAsync($"http://127.0.0.1:{Port}/panel", cts.Token);
+            return r.Headers.TryGetValues("X-UDriver-Version", out var v) ? v.First() : "";
+        }
+        catch { return null; }
+    }
+
+    /// True when the server on the port is UDriver of this app's version or newer, not an older install.
+    static async Task<bool> Ours() => Version.TryParse(await ServerVersion(), out var v) && v >= Own;
+
+    static int FreePort()
+    {
+        var l = new TcpListener(IPAddress.Loopback, 0);
+        l.Start();
+        int port = ((IPEndPoint)l.LocalEndpoint).Port;
+        l.Stop();
+        return port;
     }
 
     public static (string File, string[] Args)? Server()
@@ -63,11 +87,20 @@ static class Api
 
     public static async Task<string?> Ensure()
     {
-        if (await Running())
+        // Another program or an older UDriver on the port is left alone: the server then starts on a free port.
+        if (await Ours())
         {
             for (int i = 0; i < 50 && !File.Exists(KeyPath); i++) await Task.Delay(200);
-            return File.Exists(KeyPath) ? null : $"Another program uses port {Port}. Close it, then open UDriver again.";
+            return File.Exists(KeyPath) ? null : "UDriver is taking too long to start.";
         }
+        int first = Port;
+        if (int.TryParse(File.Exists(Path.Combine(Home, "panel.port")) ? File.ReadAllText(Path.Combine(Home, "panel.port")).Trim() : "", out int saved) && saved != Port)
+        {
+            Port = saved;
+            if (await Ours()) return null;
+            Port = first;
+        }
+        if (await Running()) Port = FreePort();
         if (Server() is not { } s) return "UDriver is not fully installed on this computer. Run the UDriver installer once, then open this app again.";
         Directory.CreateDirectory(Path.GetDirectoryName(Log)!);
         var psi = new ProcessStartInfo(s.File) { CreateNoWindow = true, UseShellExecute = false };

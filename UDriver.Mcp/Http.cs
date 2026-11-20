@@ -91,6 +91,8 @@ internal static partial class HttpMode
         });
         app.Run(async ctx =>
         {
+            // The apps use their own server only when it says it is this version or newer.
+            ctx.Response.Headers["X-UDriver-Version"] = UDriver.ToolManifest.Version;
             try { await Handle(ctx, secretMode); }
             catch (Exception e) { try { if (!ctx.Response.HasStarted) await Write(ctx, 500, "application/json", new JsonObject { ["error"] = e.GetType().Name }.ToJsonString()); } catch { } }
         });

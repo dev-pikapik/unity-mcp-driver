@@ -14,6 +14,7 @@ struct ServerError: LocalizedError {
     let env = ProcessInfo.processInfo.environment
     lazy var home = env["HOME"] ?? NSHomeDirectory()
     lazy var port = Int(env["UDRIVER_HTTP_PORT"] ?? "") ?? 8787
+    let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
     var base: String { "http://127.0.0.1:\(port)" }
     var dll: String { env["UDRIVER_SERVER_DLL"] ?? home + "/.udriver/server/udriver-mcp.dll" }
 
@@ -71,10 +72,32 @@ struct ServerError: LocalizedError {
         return j
     }
 
-    func running() async -> Bool {
+    func running() async -> Bool { await serverVersion() != nil }
+
+    /// The version the server on the port reports: nil when nothing answers, "" when it is not UDriver 2.0.2 or newer.
+    func serverVersion() async -> String? {
         var r = URLRequest(url: URL(string: base + "/panel")!)
         r.timeoutInterval = 1
-        return (try? await session.data(for: r)) != nil
+        guard let (_, resp) = try? await session.data(for: r) else { return nil }
+        return (resp as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-UDriver-Version") ?? ""
+    }
+
+    /// True when the server on the port is UDriver of this app's version or newer, not an older install.
+    func ours() async -> Bool {
+        guard let v = await serverVersion(), !v.isEmpty else { return false }
+        return v.compare(version, options: .numeric) != .orderedAscending
+    }
+
+    /// A port nothing listens on.
+    func freePort() -> Int {
+        let s = socket(AF_INET, SOCK_STREAM, 0)
+        defer { close(s) }
+        var a = sockaddr_in()
+        a.sin_family = sa_family_t(AF_INET)
+        a.sin_addr.s_addr = inet_addr("127.0.0.1")
+        var n = socklen_t(MemoryLayout<sockaddr_in>.size)
+        withUnsafeMutablePointer(to: &a) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { _ = bind(s, $0, n); _ = getsockname(s, $0, &n) } }
+        return Int(UInt16(bigEndian: a.sin_port))
     }
 
     /// How to run the server: the one inside the app, else the installed one with .NET 10.
@@ -88,9 +111,17 @@ struct ServerError: LocalizedError {
         return candidates.compactMap({ $0 }).first(where: fm.isExecutableFile).map { ($0, [dll]) }
     }
 
-    /// Starts the server when nothing answers on the port; returns an error to show, or nil once it answers.
+    /// Starts the server unless this app's UDriver already answers; returns an error to show, or nil once it answers.
+    /// Another program or an older UDriver on the port is left alone: the server then starts on a free port.
     func ensureServer() async -> String? {
-        if await running() { return nil }
+        if await ours() { return nil }
+        let first = port
+        if let saved = read("panel.port").flatMap({ Int($0) }), saved != port {
+            port = saved
+            if await ours() { return nil }
+            port = first
+        }
+        if await running() { port = freePort() }
         let fm = FileManager.default
         guard let (file, args) = command() else {
             return fm.fileExists(atPath: dll) ? "UDriver needs .NET 10. Run the UDriver installer once, then open this app again."

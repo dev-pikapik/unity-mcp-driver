@@ -17,7 +17,7 @@ namespace UDriver
 
     public static class ToolManifest
     {
-        public const string Version = "2.0.1";
+        public const string Version = "2.0.2";
 
         /// <summary>Game drivers take 17890, then 17911-17930; editor bridges 17891-17910.</summary>
         public const int GamePort = 17890, EditorPort = 17891, EditorPortLast = 17910, GamePortLast = 17930;
