@@ -211,7 +211,9 @@ let levelHints = [
         inspector.arrangedSubviews.forEach { $0.removeFromSuperview() }
         actions.arrangedSubviews.forEach { $0.removeFromSuperview() }
         guard let g = current else {
-            inspector.addArrangedSubview(wrapping("Add a built game or a Unity project to let agents see and play it.", size: 13))
+            let empty = wrapping("Add a built game or a Unity project to let agents see and play it.", size: 13)
+            empty.preferredMaxLayoutWidth = 300
+            inspector.addArrangedSubview(empty)
             return
         }
         let img = NSImageView(image: picture(g))
@@ -680,24 +682,29 @@ final class Toggle: NSSwitch {
     }
 
     func setup(_ r: J) -> [NSView] {
+        let state = r.s("state")
         if r["cloudflared"] as? Bool == false {
+            if state == "installing" { return [box(wrapping("Downloading the helper for the private link…", size: 13))] }
             return [box(stack([wrapping("To reach your games from other devices, UDriver first downloads a small helper for the private link.", size: 13), spacer(),
                                  Button("Download Helper", primary: true) { App.shared.act("/panel/api/remote/install") }], .horizontal, spacing: 12))]
         }
         if r["saved"] as? Bool != true && r["signedIn"] as? Bool != true {
             let url = r.s("loginUrl")
-            return [box(stack([wrapping("Sign in to Cloudflare once to create your private link. It is free.", size: 13), spacer(),
+            let text = state == "signing-in" ? "Finish signing in on the Cloudflare page in your browser. This screen moves on by itself."
+                : "Sign in to Cloudflare once to create your private link. It is free."
+            return [box(stack([wrapping(text, size: 13), spacer(),
                                  Button(url.isEmpty ? "Sign In" : "Open Sign-In Page", primary: true) {
                                      if let u = URL(string: url), !url.isEmpty { NSWorkspace.shared.open(u) } else { App.shared.act("/panel/api/remote/login") }
                                  }], .horizontal, spacing: 12))]
         }
+        if r["saved"] as? Bool != true { return [box(wrapping("Signed in to Cloudflare. Turn on the switch above and choose the address for your games.", size: 13))] }
         return []
     }
 
     func flip(_ v: Bool, _ r: J) {
         guard let w = view.window else { return }
         if v {
-            if r["saved"] as? Bool == true { App.shared.act("/panel/api/remote/on"); return }
+            if r["saved"] as? Bool == true { last = ""; App.shared.act("/panel/api/remote/on"); return }
             if r["signedIn"] as? Bool == true {
                 let a = NSAlert()
                 a.messageText = "Choose an address"
@@ -709,7 +716,8 @@ final class Toggle: NSSwitch {
                 a.addButton(withTitle: "Cancel")
                 a.window.initialFirstResponder = f
                 a.beginSheetModal(for: w) { res in
-                    if res == .alertFirstButtonReturn { App.shared.act("/panel/api/remote/on", ["host": f.stringValue]) } else { self.last = "" }
+                    self.last = ""
+                    if res == .alertFirstButtonReturn { App.shared.act("/panel/api/remote/on", ["host": f.stringValue]) } else { self.show(App.shared.model) }
                 }
                 return
             }
@@ -724,7 +732,8 @@ final class Toggle: NSSwitch {
         a.addButton(withTitle: "Turn Off").hasDestructiveAction = true
         a.addButton(withTitle: "Cancel")
         a.beginSheetModal(for: w) { res in
-            if res == .alertFirstButtonReturn { App.shared.act("/panel/api/remote/off") } else { self.last = ""; self.show(App.shared.model) }
+            self.last = ""
+            if res == .alertFirstButtonReturn { App.shared.act("/panel/api/remote/off") } else { self.show(App.shared.model) }
         }
     }
 

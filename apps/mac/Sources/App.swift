@@ -65,7 +65,7 @@ enum Section: Int, CaseIterable {
         if let a = UserDefaults.standard.string(forKey: "appearance") { NSApp.appearance = NSAppearance(named: a == "dark" ? .darkAqua : .aqua) }
         content.view = NSView()
         let side = NSSplitViewItem(sidebarWithViewController: sidebar)
-        side.minimumThickness = 240
+        side.minimumThickness = 256
         side.maximumThickness = 280
         split.addSplitViewItem(side)
         let main = NSSplitViewItem(viewController: content)
@@ -199,6 +199,7 @@ enum Section: Int, CaseIterable {
 
     func addGame(_ url: URL, done: (() -> Void)? = nil) {
         act("/panel/api/games/add", ["path": url.path]) { j in
+            if let g = self.screens[Section.games.rawValue] as? GamesScreen { g.selected = j.s("id"); g.last = "" }
             if let w = j["warning"] as? String, !w.isEmpty { alert("Game added", w, in: self.window) }
             done?()
         }
@@ -367,6 +368,7 @@ enum Section: Int, CaseIterable {
         img.contentTintColor = .controlAccentColor
         let name = label(s.title)
         let n = label(counts[row], size: 12, color: .secondaryLabelColor)
+        n.setContentCompressionResistancePriority(.required, for: .horizontal)
         let row = stack([fixed(img, width: 20), name, spacer(), n], .horizontal, spacing: 6)
         cell.addSubview(row)
         cell.textField = name
