@@ -8,6 +8,7 @@ app_map / net_log / chart_data / query output. Exit code 0 = every step passed.
   python3 tests/apps-check.py                      # both apps, builds for this OS
   python3 tests/apps-check.py --only crm --shots /tmp/shots
   python3 tests/apps-check.py --transport http     # call the in-app driver directly (no .NET on this machine)
+  UDRIVER_MCP=/path/to/udriver-mcp python3 tests/apps-check.py   # use an installed or published server
 """
 import argparse
 import base64
@@ -64,7 +65,8 @@ class Mcp:
         if dotnet == mine:
             env = dict(env, DOTNET_ROOT=os.path.dirname(mine))
         dll = os.path.join(REPO, "UDriver.Mcp", "bin", "Debug", "net10.0", "udriver-mcp.dll")
-        self.p = subprocess.Popen([dotnet, dll], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        cmd = [os.environ["UDRIVER_MCP"]] if os.environ.get("UDRIVER_MCP") else [dotnet, dll]
+        self.p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=open(os.path.join(home, "mcp.log"), "ab"), env=env, text=True, encoding="utf-8")
         self.n = 0
         self.lock = threading.Lock()
@@ -188,6 +190,8 @@ class Session:
         os.makedirs(os.path.join(self.home, ".udriver"), mode=0o700)
         # A Windows game finds the profile through the shell, not USERPROFILE, so its driver files land in the real one.
         self.udir = os.path.join(os.path.expanduser("~") if OS == "Windows" else self.home, ".udriver")
+        self.grants = os.path.join(self.udir, "targets.json")
+        self.saved = open(self.grants, "rb").read() if OS == "Windows" and os.path.exists(self.grants) else None
         self.shots = shots
         os.makedirs(shots, exist_ok=True)
         self.transport, self.mcp, self.procs = transport, None, []
@@ -200,13 +204,12 @@ class Session:
                                            UDRIVER_PORT=str(free_port(17931)), UDRIVER_EDITOR_PORT=str(free_port(17941))))
         self.mcp.call("targets")
         # The owner's step: a game that just showed up gets no access until it is granted in the panel.
-        tj = os.path.join(self.home, ".udriver", "targets.json")
-        d = json.load(open(tj))
+        d = json.load(open(self.grants))
         for g in d["games"]:
             g["access"] = "full"
         d["toolsOff"] = []
         time.sleep(1.1)
-        json.dump(d, open(tj, "w"))
+        json.dump(d, open(self.grants, "w"))
         names = self.mcp.call("targets")[0]
         missing = [a.name for a in apps if a.name not in names]
         if missing:
@@ -223,6 +226,12 @@ class Session:
                         os.remove(os.path.join(self.udir, "%d%s" % (p.port, ext)))
                     except OSError:
                         pass
+        if OS == "Windows" and self.mcp:
+            # the server keeps its grants in the real profile too: put the owner's back
+            if self.saved is not None:
+                open(self.grants, "wb").write(self.saved)
+            elif os.path.exists(self.grants):
+                os.remove(self.grants)
         shutil.rmtree(self.home, ignore_errors=True)
 
 
