@@ -14,6 +14,7 @@ enum Section: Int, CaseIterable {
     var clients: [J] = []
     var remote: J = [:]
     var tools: [J] = []
+    var levels: [J] = []
     var problems: [J] = []
     var up = false
     var problem: String?
@@ -122,7 +123,7 @@ enum Section: Int, CaseIterable {
             let p = try await api.json("/panel/api/problems")
             model.games = g.list("games"); model.agents = a.list("agents")
             model.clients = c.list("clients")
-            model.remote = r; model.tools = t.list("tools"); model.problems = p.list("problems")
+            model.remote = r; model.tools = t.list("tools"); model.levels = t.list("levels"); model.problems = p.list("problems")
             model.up = true; model.problem = nil
         } catch {
             model.up = await api.running()
@@ -139,6 +140,19 @@ enum Section: Int, CaseIterable {
             do { let j = try await api.json(path, form); then?(j) }
             catch { alert(error.localizedDescription, in: window) }
             await refresh()
+        }
+    }
+
+    /// Computer access for agents on this Mac; turning it on asks first, as the web panel does. cancelled runs when the owner says no.
+    func computer(_ on: Bool, cancelled: @escaping () -> Void = {}) {
+        guard on else { return act("/panel/api/levels/set", ["level": "3", "enabled": "false"]) }
+        let a = NSAlert()
+        a.messageText = "Turn on computer access?"
+        a.informativeText = "Agents on this Mac can then run any game code and editor menu commands, which can reach the files, programs and network of this computer. Only for agents you trust. Never over the internet."
+        a.addButton(withTitle: "Turn On").hasDestructiveAction = true
+        a.addButton(withTitle: "Cancel")
+        a.beginSheetModal(for: window) { r in
+            if r == .alertFirstButtonReturn { self.act("/panel/api/levels/set", ["level": "3", "enabled": "true"]) } else { cancelled() }
         }
     }
 

@@ -271,7 +271,7 @@ let levelHints = [
         if g.s("native").nilIfEmpty != nil, g["exists"] as? Bool != false {
             let note = wrapping("This game calls code on the computer directly, so while Computer access is off agents can only look and play in it.", color: .systemOrange)
             note.preferredMaxLayoutWidth = 300
-            views += [note, Button("Turn On Computer Access", symbol: "lock.open") { App.shared.act("/panel/api/levels/set", ["level": "3", "enabled": "true"]) }]
+            views += [note, Button("Turn On Computer Access", symbol: "lock.open") { App.shared.computer(true) }]
         }
         views.forEach(inspector.addArrangedSubview)
         for v in views.dropFirst() { v.widthAnchor.constraint(equalTo: inspector.widthAnchor, constant: -36).isActive = true }
@@ -544,8 +544,9 @@ final class Card: NSCollectionViewItem {
         let who = client
         let tools = m.tools
         let on = { (t: J) -> Bool in (t["enabled"] as? Bool ?? true) && (who.isEmpty || !((t["offFor"] as? [String]) ?? []).contains(who)) }
-        fill(key([who, tools.map { [$0.s("name"), on($0)] }])) {
-            @MainActor func group(_ title: String, _ icon: String, _ tint: NSColor, _ level: String) -> NSView {
+        let computerOn = m.levels.first { $0["level"] as? Int == 3 }?["local"] as? Bool ?? false
+        fill(key([who, computerOn, tools.map { [$0.s("name"), on($0)] }])) {
+            @MainActor func group(_ title: String, _ icon: String, _ tint: NSColor, _ level: String, lead: [NSView] = []) -> NSView {
                 let mine = tools.filter { $0.s("group").nilIfEmpty.map { $0 == title } ?? ($0.s("access") == level) }
                 var features: [(name: String, tools: [J])] = []
                 for t in mine {
@@ -574,15 +575,23 @@ final class Card: NSCollectionViewItem {
                     text.toolTip = desc
                     return stack([text, spacer(), sw], .horizontal, spacing: 10)
                 }
-                return stack([stack([tile(icon, tint, side: 24), label(title, size: 13, weight: .bold), spacer()], .horizontal, spacing: 8), list(rows)], spacing: 8, align: .width)
+                return stack([stack([tile(icon, tint, side: 24), label(title, size: 13, weight: .bold), spacer()], .horizontal, spacing: 8), list(lead + rows)], spacing: 8, align: .width)
             }
             let hint = wrapping(who.isEmpty
                 ? "A switched-off feature is closed for every agent, including over the internet. A switch shows on while any of its tools is on."
                 : "These switches apply only to \(m.clients.first { $0.s("id") == who }?.s("name") ?? "this agent").", size: 13)
             let left = group("Look", "eye", .systemBlue, "watch")
             let play = group("Play", "gamecontroller", .systemGreen, "play"), change = group("Change", "wrench.adjustable", .systemOrange, "full")
-            let right = stack([play, change], spacing: 20, align: .width)
-            for g in [play, change] { g.widthAnchor.constraint(equalTo: right.widthAnchor).isActive = true }
+            let sw = Toggle { [weak self] v in App.shared.computer(v) { self?.last = ""; self?.show(App.shared.model) } }
+            sw.state = computerOn ? .on : .off
+            sw.isEnabled = who.isEmpty
+            sw.setAccessibilityLabel("Computer access")
+            let text = stack([label("Computer access", weight: .semibold),
+                              wrapping("Lets agents on this Mac run any game code and editor menu commands, which can reach your files and programs. Never over the internet.")], spacing: 2)
+            text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            let computer = group("Computer", "desktopcomputer", .systemRed, "computer", lead: [stack([text, spacer(), sw], .horizontal, spacing: 10)])
+            let right = stack([play, change, computer], spacing: 20, align: .width)
+            for g in [play, change, computer] { g.widthAnchor.constraint(equalTo: right.widthAnchor).isActive = true }
             let cols = stack([left, right], .horizontal, spacing: 20, align: .top)
             cols.distribution = .fillEqually
             left.widthAnchor.constraint(equalTo: right.widthAnchor).isActive = true
