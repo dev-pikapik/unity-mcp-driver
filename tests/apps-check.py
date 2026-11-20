@@ -92,7 +92,7 @@ class Mcp:
     def tools(self):
         return [t["name"] for t in self.rpc("tools/list", {})["tools"]]
 
-    def call(self, name, **args):
+    def call(self, name, /, **args):
         r = self.rpc("tools/call", {"name": name, "arguments": args})
         text = "\n\n".join(c.get("text", "") for c in r.get("content", []) if c.get("type") == "text")
         images = [base64.b64decode(c["data"]) for c in r.get("content", []) if c.get("type") == "image"]
@@ -117,7 +117,7 @@ class Http:
     def tools(self):
         return None
 
-    def call(self, name, **args):
+    def call(self, name, /, **args):
         token = open(os.path.join(self.home, ".udriver", "%d.token" % self.port)).read().strip()
         req = urllib.request.Request("http://127.0.0.1:%d/call" % self.port, data=json.dumps({"tool": name, "args": args}).encode(),
                                      headers={"Content-Type": "application/json", "X-UDriver-Token": token})
@@ -157,12 +157,12 @@ class App:
         self.name = json.load(open(info))["name"]
         self.http = Http(s.home, port)
 
-    def __call__(self, tool, **args):
+    def __call__(self, tool, /, **args):
         if self.s.mcp:
             return self.s.mcp.call(tool, target=self.name, **args)
         return self.http.call(tool, **args)
 
-    def text(self, tool, **args):
+    def text(self, tool, /, **args):
         return self(tool, **args)[0]
 
     def shot(self, name, what):
@@ -348,28 +348,51 @@ def terminal(s, feed_url):
         r = rows(t.text("query", select=positions + "[*]", fields=["quantity"], format="csv", limit=1000))
         return sum(num(x["quantity"]) or 0 for x in r)
 
-    # 4. trigger: buy when the price crosses its moving average (client-side loop, rule engine stand-in)
-    ma_id = next((i for i in series if "ma" in i.lower() or "average" in i.lower()), series[0] if series else None)
-
-    def gap():
-        p = live(price_path)
-        ma = rows(t.text("chart_data", id=ma_id, last=1, format="csv"))
-        v = num(list(ma[-1].values())[-1]) if ma else None
-        return None if p is None or v is None else p - v
-
-    before, fired, prev, t0 = held() if positions else None, None, None, time.time()
-    while ma_id and positions and time.time() - t0 < 120:
-        g = gap()
-        if prev is not None and g is not None and (prev <= 0) != (g <= 0):
-            t("ui_click", id=buy_id)
-            fired = "%s after %.0fs (gap %.3f -> %.3f)" % ("up" if g > 0 else "down", time.time() - t0, prev, g)
-            break
-        prev = g if g is not None else prev
+    # 4. trigger: buy when the price crosses above its moving average
+    before = held() if positions else None
+    try:
+        t("rule_list")
+        engine = True
+    except ToolError:
+        engine = False
+    if engine:
+        owner = re.search(r"([\w.]+\.\w+) -> %s\b" % otype, ov)
+        rule = "buy-ma-cross"
+        t("rule_add", name=rule, values={"price": price_path}, when="crosses_above(price, ma(price, 10))", every=30, max=1,
+          do=[{"tool": "state_call", "args": {"path": "@" + owner.group(1), "method": ometh, "args": ["Buy", 10, 0]}}])
+        t0, stats = time.time(), ""
+        while time.time() - t0 < 120 and not re.search(r"fires [1-9]", stats):
+            time.sleep(1)
+            stats = t.text("rule_list")
         time.sleep(0.5)
-    time.sleep(1)
-    after = held() if positions else None
-    step("terminal 4 trigger: price crosses its MA -> Buy -> position grows (client loop stand-in)",
-         fired and after is not None and after > before, "%s; held %s -> %s via %s" % (fired, before, after, positions))
+        after = held() if positions else None
+        t("rule_remove", name=rule)
+        fired = re.search(r"when .*", stats)
+        step("terminal 4 trigger: in-game rule crosses_above(price, ma(price,10)) -> %s.%s -> position grows" % (otype, ometh),
+             re.search(r"fires [1-9]", stats) and after is not None and after > before,
+             "%s; held %s -> %s" % (fired and fired.group(0)[:160], before, after))
+    else:
+        ma_id = next((i for i in series if "ma" in i.lower() or "average" in i.lower()), series[0] if series else None)
+
+        def gap():
+            p = live(price_path)
+            ma = rows(t.text("chart_data", id=ma_id, last=1, format="csv"))
+            v = num(list(ma[-1].values())[-1]) if ma else None
+            return None if p is None or v is None else p - v
+
+        fired, prev, t0 = None, None, time.time()
+        while ma_id and positions and time.time() - t0 < 120:
+            g = gap()
+            if prev is not None and g is not None and (prev <= 0) != (g <= 0):
+                t("ui_click", id=buy_id)
+                fired = "%s after %.0fs (gap %.3f -> %.3f)" % ("up" if g > 0 else "down", time.time() - t0, prev, g)
+                break
+            prev = g if g is not None else prev
+            time.sleep(0.5)
+        time.sleep(1)
+        after = held() if positions else None
+        step("terminal 4 trigger: price crosses its MA -> Buy -> position grows (NO rule engine in this app: client-side loop)",
+             fired and after is not None and after > before, "%s; held %s -> %s via %s" % (fired, before, after, positions))
 
     # 5. limit order, then cancel it
     def open_orders():
