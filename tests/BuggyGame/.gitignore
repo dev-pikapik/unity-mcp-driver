@@ -1,0 +1,12 @@
+Library/
+Temp/
+Logs/
+UserSettings/
+Builds/
+obj/
+*.csproj
+*.sln
+Assets/Resources/BillingMode.json*
+Assets/Resources.meta
+Assets/Scenes/
+Assets/Scenes.meta

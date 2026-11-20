@@ -9,3 +9,4 @@ remote.env
 *.user
 packaging/build/
 packaging/releases/
+com.udriver.agent/**/*.meta

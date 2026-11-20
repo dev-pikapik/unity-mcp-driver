@@ -758,3 +758,36 @@ final class Toggle: NSSwitch {
         return [home + "/.udriver/dotnet/dotnet", "/usr/local/share/dotnet/dotnet", "/opt/homebrew/bin/dotnet"].first(where: FileManager.default.isExecutableFile) ?? "dotnet"
     }
 }
+
+// MARK: - Problems
+
+@MainActor final class ProblemsScreen: Page {
+    override var column: CGFloat? { 720 }
+
+    override func show(_ m: Model) {
+        loadViewIfNeeded()
+        fill(key(m.problems.map { [$0.s("id"), $0.s("count"), $0.s("lastSeen")] })) {
+            let foot = wrapping("When UDriver itself lets an agent down, a short note appears here. Nothing is sent on its own: Send to developer opens a filled-in page on GitHub, and you decide whether to press Submit there. Passwords, keys and your user name are removed first.")
+            guard !m.problems.isEmpty else { return [box(wrapping("No problems found.", size: 13)), foot] }
+            return [list(m.problems.map { p in
+                let what = p.s("title").nilIfEmpty ?? p.s("what")
+                let n = p["count"] as? Int ?? 1
+                var sub = n > 1 ? "\(n) times" : "Once"
+                if let d = ISO8601DateFormatter().date(from: String(p.s("lastSeen").prefix(19)) + "Z") {
+                    sub += " · last " + d.formatted(.dateTime.day().month(.abbreviated).hour().minute().locale(Locale(identifier: "en_GB")))
+                }
+                let id = p.s("id"), url = p.s("issueUrl")
+                let send = Button("Send to developer") { if let u = URL(string: url) { NSWorkspace.shared.open(u) } }
+                let dismiss = Button("Dismiss") { App.shared.act("/panel/api/problems/dismiss", ["id": id]) }
+                dismiss.setAccessibilityLabel("Dismiss: \(what)")
+                let text = wrapping(what, size: 13, color: .labelColor)
+                let r = stack([stack([text, label(sub, size: 11, color: .secondaryLabelColor)], spacing: 2), spacer(), send, dismiss], .horizontal, spacing: 10)
+                text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+                r.setAccessibilityElement(true)
+                r.setAccessibilityRole(.group)
+                r.setAccessibilityLabel("\(what), \(sub)")
+                return r
+            }), foot]
+        }
+    }
+}

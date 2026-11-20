@@ -33,7 +33,7 @@ namespace UDriver
         // ---------------- grabbing ----------------
 
         /// <summary>Reads the current framebuffer. Must be called at end of frame. Pixels are bottom-up (row 0 = bottom).</summary>
-        static Color32[] Grab(int maxWidth, out int w, out int h)
+        internal static Color32[] Grab(int maxWidth, out int w, out int h)
         {
             var src = ScreenCapture.CaptureScreenshotAsTexture();
             try
@@ -58,7 +58,7 @@ namespace UDriver
             finally { UnityEngine.Object.Destroy(src); }
         }
 
-        static byte[] Encode(Color32[] px, int w, int h, int quality)
+        internal static byte[] Encode(Color32[] px, int w, int h, int quality)
         {
             var tex = new Texture2D(w, h, TextureFormat.RGBA32, false);
             tex.SetPixels32(px);

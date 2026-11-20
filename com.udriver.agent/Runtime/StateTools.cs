@@ -140,7 +140,7 @@ namespace UDriver
             return false;
         }
 
-        static Type[] TypesOf(Assembly asm)
+        internal static Type[] TypesOf(Assembly asm)
         {
             try { return asm.GetTypes(); }
             catch (ReflectionTypeLoadException e) { var l = new List<Type>(); foreach (var t in e.Types) if (t != null) l.Add(t); return l.ToArray(); }

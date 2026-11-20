@@ -339,6 +339,7 @@ internal static partial class HttpMode
         if (path == "/panel/api/clients" && verb == "GET") { await Json(ctx, 200, new JsonObject { ["clients"] = ClientsJson() }); return; }
         if (path == "/panel/api/tools" && verb == "GET") { await Json(ctx, 200, ToolsJson()); return; }
         if (path == "/panel/api/update" && verb == "GET") { await Json(ctx, 200, await UpdateJson()); return; }
+        if (path == "/panel/api/problems" && verb == "GET") { await Json(ctx, 200, new JsonObject { ["problems"] = ProblemsJson() }); return; }
         if (verb != "POST") { await Write(ctx, 404, "text/plain", "not found"); return; }
 
         var form = await Form(ctx);
@@ -470,6 +471,10 @@ internal static partial class HttpMode
                 if (key.Length > 0) Program.Keep(kp, key); else key = await Program.TokenFor(kp);
                 await Json(ctx, key.Length > 0 ? 200 : 404, key.Length > 0 ? new JsonObject { ["ok"] = true, ["key"] = key } : Fail("This game is not connected."));
                 return;
+            case "/panel/api/problems/dismiss" when local:
+                bool dismissed = Program.DismissProblem(form.GetValueOrDefault("id", ""));
+                await Json(ctx, dismissed ? 200 : 400, dismissed ? new JsonObject { ["ok"] = true } : Fail("This problem is no longer in the list."));
+                return;
             case "/panel/api/devices/disconnect":
                 bool off = DisconnectDevice(form.GetValueOrDefault("id", "-"));
                 await Json(ctx, off ? 200 : 400, off ? new JsonObject { ["ok"] = true } : Fail("This device is no longer connected."));
@@ -574,6 +579,9 @@ internal static partial class HttpMode
         ["editor_build"] = "Build the game", ["editor_scene"] = "Open or save scenes", ["editor_assets"] = "Find project assets", ["editor_menu"] = "Run an editor menu command",
         ["list_instances"] = "List running copies", ["use_instance"] = "Switch to a copy", ["where_was_i"] = "Recall earlier work", ["take_controls"] = "Take the controls",
         ["team_post"] = "Post to the team", ["team_read"] = "Read team posts", ["claim"] = "Claim a task", ["release"] = "Give back a task", ["launch_game"] = "Start game copies",
+        ["qa_findings"] = "Read found problems", ["qa_risk"] = "Find risky code", ["qa_watch"] = "Watch for problems", ["qa_crawl"] = "Explore every screen",
+        ["qa_isolate"] = "Narrow a problem down", ["qa_visual"] = "Check how screens look", ["qa_report"] = "Write a bug report", ["qa_scenario"] = "Save and rerun checks",
+        ["qa_parallel"] = "Test several copies at once", ["report_problem"] = "Let agents report UDriver problems",
         ["perceive"] = "See around the player", ["rule_add"] = "Add a play rule", ["rule_list"] = "List play rules", ["rule_remove"] = "Remove play rules",
         ["move"] = "Move the player",
     };
@@ -588,9 +596,11 @@ internal static partial class HttpMode
         new[] { "Memory", "memory_summary", "memory_top", "memory_snapshot", "memory_watch", "memory_refs", "leak_check" },
         new[] { "Game code", "types_find", "type_members", "probe_list" },
         new[] { "Editor checks and builds", "editor_status", "editor_compile", "editor_tests", "editor_build", "editor_assets" },
+        new[] { "Testing: watch for problems", "qa_watch", "qa_findings", "qa_risk" },
         new[] { "Press, tap and type", "ui_click", "key", "type_text", "ui_focus", "play", "take_controls" },
         new[] { "Switch game copies and share work with other agents", "use_instance", "team_post", "claim", "release" },
         new[] { "Drag, hover and scroll", "ui_drag", "ui_hover", "pointer", "ui_scroll", "ui_scroll_to" },
+        new[] { "Testing: explore, narrow down and report", "qa_crawl", "qa_isolate", "qa_visual", "qa_report", "qa_scenario", "qa_parallel" },
         new[] { "Play by rules", "rule_add", "rule_remove", "move" },
         new[] { "Start and stop games", "app_launch", "launch_game", "app_kill", "editor_play" },
         new[] { "Watch values and react", "watch_add", "trigger_add", "probe_remove", "events_config" },
@@ -643,6 +653,19 @@ internal static partial class HttpMode
         }).ToArray());
         return new JsonObject { ["tools"] = new JsonArray(sorted), ["clients"] = ClientsJson(), ["levels"] = levels };
     }
+
+    static JsonArray ProblemsJson() => new(Program.Problems().Select(p =>
+    {
+        string tool = (string?)p["tool"] ?? "", title = ToolTitles.GetValueOrDefault(tool, tool);
+        p["title"] = (string?)p["kind"] switch
+        {
+            "agent" => "An agent could not do something it needed: " + p["what"],
+            "timeout" => $"“{title}” took too long and gave up",
+            "exception" => $"“{title}” stopped because of an error inside UDriver",
+            _ => $"“{title}” kept failing the same way",
+        };
+        return (JsonNode)p;
+    }).ToArray());
 
     static bool DisconnectAgent(int slot)
     {
@@ -1049,6 +1072,9 @@ internal static partial class HttpMode
         <section><h2 class="sec-h" id="agents-h">Connected agents</h2>
         <div class="group" id="agents"><button type="button" class="act" id="copycmd">Copy command to connect an agent</button></div>
         <p class="foot">On this computer, add UDriver to your agent as an MCP server (the standard way agents plug in tools) with this command.</p></section>
+        <section><h2 class="sec-h" id="problems-h">Problems</h2>
+        <div class="group" id="problems"></div>
+        <p class="foot">When UDriver itself lets an agent down, a short note appears here. Nothing is sent on its own: Send to developer opens a filled-in page on GitHub, and you decide whether to press Submit there. Passwords, keys and your user name are removed first.</p></section>
         <section id="before-s" hidden><h2 class="sec-h">Allowed before</h2>
         <div class="group" id="before"></div>
         <p class="foot">These agents may come back without asking again. Remove one to make it ask next time.</p></section>
@@ -1240,7 +1266,7 @@ internal static partial class HttpMode
         }
         let R={}, who="";
         async function panel(){
-          const [g,a,r,t]=await Promise.all([get("/panel/api/games"),get("/panel/api/agents"),get("/panel/api/remote"),get("/panel/api/tools")]); R=r;
+          const [g,a,r,t,p]=await Promise.all([get("/panel/api/games"),get("/panel/api/agents"),get("/panel/api/remote"),get("/panel/api/tools"),get("/panel/api/problems")]); R=r;
           $("games").replaceChildren(...gameRows(g.games,true),addRow);
           const agents=a.agents.filter(x=>!x.disconnected), name=x=>(t.clients.find(c=>c.id===x.client)||{}).name||x.label||"Agent";
           const from=f=>f==="remote"?"From anywhere":"On this computer";
@@ -1251,6 +1277,14 @@ internal static partial class HttpMode
             row.append(k,button("link danger","Disconnect",b=>act(b,()=>post("/panel/api/agents/disconnect",{id:x.id}))));
             return row;
           }):[emptyRow("No agent is connected right now.")]),connectRow);
+          $("problems-h").textContent=p.problems.length?"Problems · "+p.problems.length:"Problems";
+          $("problems").replaceChildren(...(p.problems.length?p.problems.map(x=>{
+            const row=el("div","row"), k=el("div","k");
+            k.append(el("span","name clamp",x.title),el("span","sub",(x.count>1?x.count+" times":"Once")+" · last "+new Date(x.lastSeen).toLocaleString(undefined,{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})));
+            row.append(k,button("link","Send to developer",()=>window.open(x.issueUrl,"_blank","noopener")));
+            if(local) row.append(button("link","Dismiss",b=>act(b,()=>post("/panel/api/problems/dismiss",{id:x.id}))));
+            return row;
+          }):[emptyRow("No problems found.")]));
           const before=[];
           for(const c of t.clients) if(c.kind!=="stdio"&&c.status==="allowed"&&!agents.some(x=>x.client===c.id||name(x)===c.name)){
             const b=before.find(x=>x.name===c.name); if(b) b.ids.push(c.id); else before.push({name:c.name,kind:c.kind,ids:[c.id]}); }

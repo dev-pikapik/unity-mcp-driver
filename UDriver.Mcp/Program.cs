@@ -21,7 +21,10 @@ internal static partial class Program
         "watch_add / trace_add / trigger_add to set up your own probes, frames_record + frames_get for frame-by-frame, time_control to pause/step. Memory: memory_summary -> memory_snapshot take -> play -> memory_snapshot diff -> memory_refs (who holds it); memory_watch for slow growth. Slow frames: render_stats -> render_scene -> screenshot camera=... " +
         "Element ids (#N) come from ui_tree / ui_find and go stale when the UI is rebuilt; ids >= 1000000 are uGUI objects, smaller ones UI Toolkit. Always back a verdict with evidence (events, state values, screenshots). " +
         "If the Unity editor is open, editor_* tools work even outside Play Mode: editor_status, editor_compile (compiler errors), editor_tests (run EditMode/PlayMode tests), editor_build, editor_play, editor_scene, editor_assets; " +
-        "scene_tree / state_get / types_find also work in edit mode. Run self_test once in a new project to learn which capabilities work there.";
+        "scene_tree / state_get / types_find also work in edit mode. Run self_test once in a new project to learn which capabilities work there. " +
+        "Testing: qa_watch action=start -> play or qa_crawl -> qa_findings -> qa_isolate -> qa_report (one per distinct finding); editor_tests runs unit tests, qa_scenario saves and reruns repeatable checks, " +
+        "qa_parallel runs several copies of a game at once with different seeds and timing; the prompt 'test' has the full playbook. " +
+        "If UDriver could not do something you needed (a tool failed, gave unusable output, or is missing), call report_problem before working around it or giving up.";
 
     static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(30) };
     static readonly Stream Stdout = Console.OpenStandardOutput();
@@ -89,6 +92,7 @@ internal static partial class Program
     {
         ["editor_compile"] = new[] { "status" }, ["editor_tests"] = new[] { "status", "results" }, ["editor_build"] = new[] { "status" },
         ["editor_scene"] = new[] { "list" }, ["time_control"] = new[] { "status" }, ["frames_record"] = new[] { "status" },
+        ["qa_watch"] = new[] { "status" }, ["qa_scenario"] = new[] { "list" },
     };
     static int Need(string name, JsonObject? args)
     {
@@ -409,6 +413,33 @@ internal static partial class Program
                 P("args", "array", "Extra game arguments, as for app_launch."),
                 P("waitSec", "integer", "How long to wait for each copy (default 90)."),
             } },
+        new() { Name = "report_problem", Desc = "Tell the UDriver developer that UDriver itself let you down: a tool failed, gave output you could not use, or a tool you needed does not exist. Saved on this computer; the owner decides whether to send it. Not for bugs in the game.",
+            Params = new[]
+            {
+                P("what", "string", "What you needed UDriver to do, in one or two sentences.", true), P("tried", "string", "What you tried."),
+                P("missing", "string", "What tool or output would have helped."), P("tool", "string", "The UDriver tool involved, if any."), P("error", "string", "The error text you got, if any."),
+            } },
+        new() { Name = "qa_report", Desc = "Write a bug report into the game's UDriverReports folder (project folder, or the folder holding the build): Markdown with steps to reproduce, expected/actual, suspected cause with file:line and what breaks together, stack, log lines and screenshot, plus JSON. Repeats of the same finding update the same report. Pass findings or all=true to report what qa_findings found, or title/steps/expected/actual/stack for a bug you found yourself.",
+            Params = new[]
+            {
+                P("findings", "array", "Finding ids from qa_findings (or finding objects)."), P("all", "boolean", "Report every current finding."),
+                P("title", "string", "Short title (manual report, or to rename a single finding)."), P("steps", "array", "Steps to reproduce, one per item (manual report)."),
+                P("expected", "string", "What should happen."), P("actual", "string", "What happens instead."), P("stack", "string", "Stack trace text; file:line is read from it."),
+                P("severity", "string", "critical | major | minor."), P("source", "string", "Folder with the game's C# sources when the target is a build; file:line is found by scanning *.cs there."),
+            } },
+        new() { Name = "qa_scenario", Desc = "Repeatable checks: save a list of tool calls with expected text, run it again later through the normal tools (switches and access apply), list saved ones. Stored in UDriverReports/scenarios.",
+            Params = new[]
+            {
+                P("action", "string", "list (default) | save | run."), P("name", "string", "Scenario name (letters, digits, space, _ . -)."),
+                P("steps", "array", "For save: [{\"tool\":\"ui_click\",\"args\":{...},\"expect\":\"text the result must contain\",\"expectNot\":\"text it must not contain\"}]."),
+            } },
+        new() { Name = "qa_parallel", Desc = "Run one in-game tool (default qa_crawl) on several copies of the same game at once, each with its own seed, delay and time scale, then merge qa_findings from all copies by signature: which copies and variations reproduced each finding. A finding hit only under some variations points to a timing or combination bug.",
+            Params = new[]
+            {
+                P("targets", "array", "Target names to use (default: every running copy of the same game as target)."), P("copies", "integer", "Start more copies of the build first until this many run."),
+                P("tool", "string", "In-game tool to run (default qa_crawl)."), P("args", "object", "Arguments for the tool; seed is the base seed."),
+                P("vary", "boolean", "Give each copy seed = base + i, delayMs 0/150/400 and timeScale 1/2 (default true)."),
+            } },
     };
 
     static readonly HashSet<string> ServerTools = new(LocalTools.Select(t => t.Name).Append("batch").Append("eval"));
@@ -538,13 +569,20 @@ internal static partial class Program
                 return new JsonObject
                 {
                     ["protocolVersion"] = Versions.Contains((string?)prm?["protocolVersion"] ?? "") ? (string?)prm!["protocolVersion"] : Versions[0],
-                    ["capabilities"] = new JsonObject { ["tools"] = new JsonObject { ["listChanged"] = !HttpOn } },
+                    ["capabilities"] = new JsonObject { ["tools"] = new JsonObject { ["listChanged"] = !HttpOn }, ["prompts"] = new JsonObject() },
                     ["serverInfo"] = new JsonObject { ["name"] = "udriver", ["version"] = ToolManifest.Version },
                     ["instructions"] = Instructions,
                 };
             case "ping": return new JsonObject();
             case "resources/list": return new JsonObject { ["resources"] = new JsonArray() };
-            case "prompts/list": return new JsonObject { ["prompts"] = new JsonArray() };
+            case "prompts/list": return new JsonObject { ["prompts"] = new JsonArray { TestPrompt() } };
+            case "prompts/get":
+                if ((string?)prm?["name"] != "test") throw new RpcError(-32602, "unknown prompt: " + prm?["name"]);
+                return new JsonObject
+                {
+                    ["description"] = (string?)TestPrompt()["description"],
+                    ["messages"] = new JsonArray { new JsonObject { ["role"] = "user", ["content"] = new JsonObject { ["type"] = "text", ["text"] = TestPlaybook(prm?["arguments"]?["what"]?.ToString()) } } },
+                };
             case "tools/list": return new JsonObject { ["tools"] = await ListTools() };
             case "tools/call":
                 string name = (string?)prm?["name"] ?? throw new RpcError(-32602, "missing tool name");
@@ -566,16 +604,23 @@ internal static partial class Program
                 var def = LocalTools.Concat(ToolManifest.Tools).FirstOrDefault(d => d.Name == name);
                 var unknown = def == null ? new List<string>() : args.Select(kv => kv.Key).Where(k => k != "timeoutMs" && !def.Params.Any(p => p.Name == k)).ToList();
                 var sw = Timing ? Stopwatch.StartNew() : null;
+                JsonNode? res = null;
                 try
                 {
-                    var res = await Run(name, args, want);
+                    res = await Run(name, args, want);
                     if (unknown.Count > 0 && res["content"] is JsonArray content)
                         content.Add(new JsonObject { ["type"] = "text", ["text"] = $"warning: unknown argument {string.Join(", ", unknown.Select(k => $"'{k}'"))} was ignored (known: {string.Join(", ", def!.Params.Select(p => p.Name))})" });
                     return res;
                 }
-                catch (Exception e) when (e is not RpcError) { return Result(e.GetType().Name + ": " + e.Message, true); }
+                catch (Exception e) when (e is not RpcError)
+                {
+                    if (e is not OperationCanceledException && e.GetType() != typeof(ArgumentException))
+                        await Record("exception", name, args, e.GetType().Name + ": " + e.Message, e.StackTrace ?? "", 0, want);
+                    return res = Result(e.GetType().Name + ": " + e.Message, true);
+                }
                 finally
                 {
+                    Remember(name, args, res);
                     Registry.Touch(Me);
                     if (sw != null) Console.Error.WriteLine($"timing {name} {sw.Elapsed.TotalMilliseconds:0.0} ms");
                 }
@@ -602,6 +647,10 @@ internal static partial class Program
         "claim" => await Claim(args, want, true),
         "release" => await Claim(args, want, false),
         "launch_game" => await LaunchCopies(args),
+        "report_problem" => await ReportProblem(args, want),
+        "qa_report" => await QaReport(args, want),
+        "qa_scenario" => await QaScenario(args, want),
+        "qa_parallel" => await QaParallel(args, want),
         _ => await CallUnity(name, args, want),
     };
 
@@ -851,7 +900,13 @@ internal static partial class Program
     {
         var body = new JsonObject { ["tool"] = name, ["args"] = args.DeepClone() };
         int status; string text;
-        try { (status, text) = await Http2(HttpMethod.Post, port, "/call", body.ToJsonString()); }
+        int ms = Math.Clamp(IntArg(args, "timeoutMs", 0), 0, 600000);
+        double limit = (ms > 0 ? ms + 4000 : 122000) / 1000.0 + 10;
+        try { (status, text) = await Http2(HttpMethod.Post, port, "/call", body.ToJsonString(), limit); }
+        catch (TaskCanceledException) when (!Cancel.Value.IsCancellationRequested)
+        {
+            return await Watch(port, name, args, Result($"timeout: '{name}' got no answer within {limit:0} s.", true));
+        }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException && !Cancel.Value.IsCancellationRequested) { return null; }
         if (status == 401)
             return Result($"The game or editor on port {port} is not connected to this UDriver. If the owner has not allowed it yet, ask them to set its access in the UDriver panel. If another program connected to it first, restart it, or start the build with app_launch.", true);
@@ -861,9 +916,9 @@ internal static partial class Program
         {
             return Result($"The Unity editor or game on port {port} dropped the call while reloading scripts (entering or leaving Play Mode, or after a code change). Repeat the call in a second or two.", true);
         }
-        if (json?["content"] is JsonArray content)
-            return new JsonObject { ["content"] = content.DeepClone(), ["isError"] = json["isError"]?.GetValue<bool>() ?? false };
-        return Result((string?)json?["error"] ?? "unexpected response: " + text, true);
+        return await Watch(port, name, args, json?["content"] is JsonArray content
+            ? new JsonObject { ["content"] = content.DeepClone(), ["isError"] = json["isError"]?.GetValue<bool>() ?? false }
+            : Result((string?)json?["error"] ?? "unexpected response: " + text, true));
     }
 
     /// <summary>The bridge is offline during script reloads.</summary>

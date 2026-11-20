@@ -1,0 +1,75 @@
+[
+  {
+    "id": 1,
+    "title": "Settings button throws NullReferenceException: volumeLabel is never assigned",
+    "kind": "exception",
+    "file": "Assets/Scripts/SettingsMenu.cs",
+    "line": 13,
+    "method": "SettingsMenu.Open",
+    "trigger": "Click the Settings button in the main menu"
+  },
+  {
+    "id": 2,
+    "title": "Quest dialog softlock: off-by-one on the last page, Close never appears and the overlay blocks every other button",
+    "kind": "stuck",
+    "file": "Assets/Scripts/DialogBox.cs",
+    "line": 33,
+    "method": "DialogBox.Continue",
+    "trigger": "Click Quest, then Continue until the last page (2 clicks), then Continue again: nothing happens, no exception"
+  },
+  {
+    "id": 3,
+    "title": "Claim reward button is placed below the visible screen and can never be clicked",
+    "kind": "visual",
+    "file": "Assets/Scripts/RewardPanel.cs",
+    "line": 13,
+    "method": "RewardPanel.OnEnable",
+    "trigger": "Click Play / Shop and look for the Claim reward button in the reward panel"
+  },
+  {
+    "id": 4,
+    "title": "HUD creates a new health bar Texture2D every frame and never destroys it",
+    "kind": "leak",
+    "file": "Assets/Scripts/HUD.cs",
+    "line": 18,
+    "method": "HUD.Update",
+    "trigger": "Just run the game: the Texture2D count grows every frame"
+  },
+  {
+    "id": 5,
+    "title": "Buying during an autosave modifies Inventory.items while SaveSystem enumerates it (Collection was modified)",
+    "kind": "exception-race",
+    "file": "Assets/Scripts/SaveSystem.cs",
+    "line": 25,
+    "method": "SaveSystem.Save",
+    "trigger": "Click Play / Shop, then click Buy Potion repeatedly for a few seconds; an autosave runs every 2 s and takes about 1 s, a Buy inside that window throws InvalidOperationException"
+  },
+  {
+    "id": 6,
+    "title": "Player position becomes NaN after pausing: velocity divides by Time.deltaTime, which is 0 while paused",
+    "kind": "nan",
+    "file": "Assets/Scripts/PlayerMover.cs",
+    "line": 18,
+    "method": "PlayerMover.Update",
+    "trigger": "Click Pause; PlayerMover.position and velocity become NaN and stay NaN after Resume"
+  },
+  {
+    "id": 7,
+    "title": "Report button freezes a frame for hundreds of milliseconds: O(n^2) duplicate search",
+    "kind": "perf",
+    "file": "Assets/Scripts/ReportBuilder.cs",
+    "line": 17,
+    "method": "ReportBuilder.Build",
+    "trigger": "Click the Report button and watch the frame time"
+  },
+  {
+    "id": 8,
+    "title": "EditMode test fails: Inventory.Add does not check capacity",
+    "kind": "test",
+    "file": "Assets/Tests/Editor/InventoryTests.cs",
+    "line": 34,
+    "method": "InventoryTests.AddRefusesItemsBeyondCapacity",
+    "cause": "Assets/Scripts/Inventory.cs:15 (Inventory.Add adds without checking capacity)",
+    "trigger": "Run the EditMode tests"
+  }
+]

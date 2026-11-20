@@ -2,9 +2,9 @@ import AppKit
 import UniformTypeIdentifiers
 
 enum Section: Int, CaseIterable {
-    case games, agents, tools, access
-    var title: String { ["Games", "Agents", "Tools", "Access from Anywhere"][rawValue] }
-    var icon: String { ["gamecontroller", "person.2", "switch.2", "globe"][rawValue] }
+    case games, agents, tools, access, problems
+    var title: String { ["Games", "Agents", "Tools", "Access from Anywhere", "Problems"][rawValue] }
+    var icon: String { ["gamecontroller", "person.2", "switch.2", "globe", "exclamationmark.bubble"][rawValue] }
 }
 
 /// Everything the screens show, refreshed from the server every few seconds.
@@ -14,6 +14,7 @@ enum Section: Int, CaseIterable {
     var clients: [J] = []
     var remote: J = [:]
     var tools: [J] = []
+    var problems: [J] = []
     var up = false
     var problem: String?
     var remoteOn: Bool { remote["on"] as? Bool ?? false }
@@ -52,7 +53,7 @@ enum Section: Int, CaseIterable {
     var window: NSWindow!
     let sidebar = Sidebar()
     let content = NSViewController()
-    lazy var screens: [Screen] = [GamesScreen(), AgentsScreen(), ToolsScreen(), AccessScreen()]
+    lazy var screens: [Screen] = [GamesScreen(), AgentsScreen(), ToolsScreen(), AccessScreen(), ProblemsScreen()]
     var section = Section.games
     var approvals: Approvals!
     let split = NSSplitViewController()
@@ -118,9 +119,10 @@ enum Section: Int, CaseIterable {
             let c = try await api.json("/panel/api/clients")
             let r = try await api.json("/panel/api/remote")
             let t = try await api.json("/panel/api/tools")
+            let p = try await api.json("/panel/api/problems")
             model.games = g.list("games"); model.agents = a.list("agents")
             model.clients = c.list("clients")
-            model.remote = r; model.tools = t.list("tools")
+            model.remote = r; model.tools = t.list("tools"); model.problems = p.list("problems")
             model.up = true; model.problem = nil
         } catch {
             model.up = await api.running()
@@ -295,7 +297,7 @@ enum Section: Int, CaseIterable {
     let table = NSTableView()
     let foot = label("", size: 12, color: .secondaryLabelColor)
     let dot = NSView()
-    var counts: [String] = ["", "", "", ""]
+    var counts: [String] = ["", "", "", "", ""]
 
     override func loadView() {
         table.addTableColumn(NSTableColumn(identifier: .init("c")))
@@ -331,7 +333,7 @@ enum Section: Int, CaseIterable {
     }
 
     func update(_ m: Model) {
-        counts = [m.games.isEmpty ? "" : "\(m.games.count)", m.agents.isEmpty ? "" : "\(m.agents.count)", "", m.remoteOn ? "On" : "Off"]
+        counts = [m.games.isEmpty ? "" : "\(m.games.count)", m.agents.isEmpty ? "" : "\(m.agents.count)", "", m.remoteOn ? "On" : "Off", m.problems.isEmpty ? "" : "\(m.problems.count)"]
         let sel = table.selectedRow
         table.reloadData()
         table.selectRowIndexes([sel], byExtendingSelection: false)

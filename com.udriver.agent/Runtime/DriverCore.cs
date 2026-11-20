@@ -321,6 +321,7 @@ namespace UDriver
             RenderTools.Register();
             RecordTools.Register();
             Sandbox.Register();
+            QaTools.Register();
         }
 
         /// <summary>Runs another tool from inside a tool (same arguments an agent would send).</summary>
@@ -350,7 +351,11 @@ namespace UDriver
                 s.Text("--- [" + (first + i) + "] " + tool);
                 ToolHandler h;
                 if (tool == null || tool == "batch" || tool == "eval" || !Handlers.TryGetValue(tool, out h)) s.Error(Unknown(tool));
-                else yield return Guard(() => h(calls[i]["args"] as JObject ?? new JObject(), s), s);
+                else
+                {
+                    QaTools.OnCall(tool, calls[i]["args"] as JObject ?? new JObject());
+                    yield return Guard(() => h(calls[i]["args"] as JObject ?? new JObject(), s), s);
+                }
                 last = null;
                 if (s.IsError || (output == "all" && !((JObject)calls[i]).Bool("quiet"))) r.Append(s);
                 else if (output == "last") last = s;
@@ -545,13 +550,16 @@ namespace UDriver
 
         internal static IEnumerator RunJob(Job job)
         {
+            QaTools.OnCall(job.Tool, job.Args);
             var it = Guard(() => job.Handler(job.Args, job.Res), job.Res);
             try
             {
                 while (!job.Cancelled)
                 {
                     Current = job;
+                    float t0 = Time.realtimeSinceStartup;
                     bool more = it.MoveNext();
+                    QaTools.Own(job.Tool, Time.realtimeSinceStartup - t0);
                     Current = null;
                     if (!more) break;
                     yield return it.Current;

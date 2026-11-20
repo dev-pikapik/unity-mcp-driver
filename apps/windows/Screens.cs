@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -662,5 +663,29 @@ sealed class AccessScreen : Screen
             return;
         }
         Shell.Main.Render(true);
+    }
+}
+
+sealed class ProblemsScreen : Screen
+{
+    public override string Title => "Problems";
+    public override string Key(Model m) => string.Join("\n", m.Problems.Select(p => $"{p.S("id")}|{p.S("count")}|{p.S("lastSeen")}"));
+
+    public override UIElement Build(Model m)
+    {
+        UIElement Row(JsonNode p)
+        {
+            var what = p.S("title") is { Length: > 0 } t ? t : p.S("what");
+            var n = int.TryParse(p.S("count"), out var c) ? c : 1;
+            var when = DateTime.TryParse(p.S("lastSeen"), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var d)
+                ? " · last " + d.ToLocalTime().ToString("d MMM, HH:mm", CultureInfo.InvariantCulture) : "";
+            var send = Ui.Btn("Send to developer", () => Ui.Open(p.S("issueUrl")));
+            var dismiss = Ui.Btn("Dismiss", () => Shell.Main.Act("problems/dismiss", ("id", p.S("id"))));
+            AutomationProperties.SetName(dismiss, "Dismiss: " + what);
+            return Ui.CardOf(Ui.Row(Ui.VStack(0, Ui.Txt(what, "BodyStrongTextBlockStyle"), Ui.Txt((n > 1 ? $"{n} times" : "Once") + when, "CaptionTextBlockStyle", true)), Ui.HStack(8, send, dismiss)), 12);
+        }
+
+        var rows = m.Problems.Length == 0 ? [Ui.CardOf(Ui.Txt("No problems found.", "BodyTextBlockStyle", true))] : m.Problems.Select(Row).ToArray();
+        return Ui.Page([.. rows, Ui.Txt("When UDriver itself lets an agent down, a short note appears here. Nothing is sent on its own: Send to developer opens a filled-in page on GitHub, and you decide whether to press Submit there. Passwords, keys and your user name are removed first.", "CaptionTextBlockStyle", true)]);
     }
 }

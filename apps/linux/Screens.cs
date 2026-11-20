@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using QRCoder;
@@ -706,4 +707,28 @@ sealed class AccessScreen : ListScreen
             Shell.Copy(j["mcpJson"] is JsonValue s && s.TryGetValue(out string? text) ? text : j["mcpJson"]?.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) ?? "", null);
             Shell.Alert("Setup copied", "Paste it into the app's MCP settings. It connects while UDriver is running.");
         }));
+}
+
+sealed class ProblemsScreen(Shell shell) : ListScreen(shell)
+{
+    public override string Title => "Problems";
+
+    public override void Show(Model m)
+    {
+        if (!Changed(Key(m.Problems.Select(p => Key(p.S("id"), p.S("count"), p.S("lastSeen"))).ToArray()))) return;
+        var group = Group(null, "When UDriver itself lets an agent down, a short note appears here. Nothing is sent on its own: Send to developer opens a filled-in page on GitHub, and you decide whether to press Submit there. Passwords, keys and your user name are removed first.");
+        if (m.Problems.Count == 0) group.Add(Row("No problems found."));
+        foreach (var p in m.Problems)
+        {
+            string id = p.S("id"), url = p.S("issueUrl");
+            int n = p.I("count") ?? 1;
+            string when = DateTime.TryParse(p.S("lastSeen"), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var d)
+                ? " · last " + d.ToLocalTime().ToString("d MMM, HH:mm", CultureInfo.InvariantCulture) : "";
+            var row = Row(p.S("title") is { Length: > 0 } t ? t : p.S("what"), (n > 1 ? $"{n} times" : "Once") + when);
+            row.AddSuffix(Button("Send to developer", () => Shell.Open(url)));
+            row.AddSuffix(Button("Dismiss", () => Shell.Act("/panel/api/problems/dismiss", new() { ["id"] = id })));
+            group.Add(row);
+        }
+        Fill([group]);
+    }
 }

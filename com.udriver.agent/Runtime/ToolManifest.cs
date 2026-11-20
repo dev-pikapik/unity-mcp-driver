@@ -37,13 +37,14 @@ namespace UDriver
             "app_status", "app_connect", "targets", "batch", "status", "ui_tree", "ui_find", "ui_inspect", "screenshot", "screen_pick", "locate", "scene_tree", "state_get",
             "state_query", "errors", "types_find", "type_members", "events_query", "wait_for", "input_actions", "frames_get", "probe_list",
             "profiler_get", "profiler_list", "profiler_capture", "leak_check", "rec_steps", "memory_top", "memory_summary", "memory_snapshot", "memory_watch", "memory_refs", "render_stats", "render_scene",
-            "editor_status", "editor_assets", "list_instances", "where_was_i", "team_read", "perceive", "rule_list",
+            "editor_status", "editor_assets", "list_instances", "where_was_i", "team_read", "qa_findings", "qa_risk", "report_problem", "perceive", "rule_list",
         };
         static readonly HashSet<string> Play = new HashSet<string>
         {
             "app_launch", "app_kill", "ui_click", "ui_hover", "ui_drag", "pointer", "ui_scroll", "ui_scroll_to", "ui_focus", "type_text", "key", "play",
             "frames_record", "time_control", "events_config", "watch_add", "trigger_add", "probe_remove", "state_export", "memory_capture", "self_test", "rec_start", "rec_stop", "rec_replay",
-            "editor_play", "editor_compile", "editor_tests", "take_controls", "launch_game", "use_instance", "team_post", "claim", "release", "rule_add", "rule_remove", "move",
+            "editor_play", "editor_compile", "editor_tests", "take_controls", "launch_game", "use_instance", "team_post", "claim", "release",
+            "qa_watch", "qa_crawl", "qa_isolate", "qa_visual", "qa_report", "qa_scenario", "qa_parallel", "rule_add", "rule_remove", "move",
         };
         static readonly HashSet<string> Beyond = new HashSet<string> { "state_call", "editor_menu" };
 
@@ -240,6 +241,25 @@ namespace UDriver
                 P("calls", "array", "Items: {\"tool\":\"ui_click\",\"args\":{...}}, optionally with \"target\" (next to tool or inside args) and \"quiet\":true (drop this call's output unless it fails) (max 50). Steps may mix games, editor_*, app_* and targets.", true), P("stopOnError", "boolean", "Stop at the first failing call (default true)."),
                 P("output", "string", "all (default) | last (only the last call's output) | errors (only failing calls). Failing calls are always shown.")),
             T("self_test", "Driver diagnostics: builds a temporary UI and verifies that every core capability really works in this project/build (tree, click, typing, keys, drag, scroll, value setting, screenshots, events, reflection, watches, input injection, uGUI, memory, rendering). Run once after installing; report the output if something fails."),
+
+            // ---- testing ----
+            T("qa_watch", "Testing mode. Exceptions, errors and asserts are always collected as findings from the start of the game; action=start adds frame spikes, heap and object-count growth (leaks), NaN/Infinity in game components and transforms, watched fields turning null or NaN, stuck UI (3+ actions without any visible change), off-screen controls and broken materials. Read results with qa_findings.",
+                P("action", "string", "start | stop | status (default)."), P("stuckSec", "number", "Window for the stuck check in seconds (default 10)."),
+                P("fields", "array", "State paths (as in state_get) to watch for null, destroyed or NaN."), P("perf", "boolean", "Frame spikes (default true)."), P("nan", "boolean", "NaN/Infinity scan (default true)."),
+                P("leak", "boolean", "Object-count and heap growth (default true)."), P("visual", "boolean", "Off-screen controls, error shaders, magenta pixels (default true).")),
+            T("qa_findings", "Deduplicated problems found in this game: kind, severity, where (type, method, file:line), how often, the last actions and log lines before it, and the code involved: fields the failing method reads and which other methods write them (what breaks in combination).",
+                P("since", "integer", "Only findings with an id above this."), P("id", "integer", "One finding in full."), P("format", "string", "text (default) | json: {instance:{product,pid,port}, findings:[...]}."),
+                P("image", "boolean", "With id: attach the screenshot taken at its first occurrence."), P("clear", "boolean", "Forget all findings after answering.")),
+            T("qa_crawl", "Explore the game automatically. mode=crawl clicks every interactive control on every screen it reaches, types into inputs and goes back (Escape, back/close buttons, scene reload); mode=monkey sends seeded random clicks, keys and drags. Returns coverage (screens, controls clicked of total, click handlers reached and not reached), the steps taken and the new findings with the steps that led to each.",
+                P("mode", "string", "crawl (default) | monkey."), P("seed", "integer", "Random seed for monkey (default 1)."), P("steps", "integer", "Most actions (default 200)."), P("seconds", "number", "Time budget (default 120)."),
+                P("avoid", "array", "Skip controls whose name, text or handler contains one of these (default quit, exit, delete)."),
+                P("delayMs", "integer", "Pause after each action (default 250; small values click fast and reveal races)."), P("timeScale", "number", "Time.timeScale during the run, restored afterwards.")),
+            T("qa_isolate", "Shrink a reproduction: replays subsets of the steps (delta debugging), reloading the scene between runs, and returns the smallest list of steps that still produces the same finding.",
+                P("id", "integer", "Finding to reproduce.", true), P("steps", "array", "Steps {tool, args, waitMs} of in-game tools; waitMs pauses before the step (default: the steps recorded with the finding and the pauses between them)."),
+                P("reset", "string", "scene (default): reload the active scene before each run | none."), P("maxRuns", "integer", "Most replays (default 30)."), P("delayMs", "integer", "Pause after each step (default 250).")),
+            T("qa_risk", "Where bugs are likely: per loaded scene and game type, ranked by findings so far, fields written by 2+ types, collections enumerated inside coroutines across a yield, Start/Awake that read other components, and static mutable fields."),
+            T("qa_visual", "Visual checks. action=check lists controls off screen, renderers with an error shader or no material, images without a sprite or texture, and the share of magenta pixels. save stores a named screenshot baseline; compare diffs the screen against it (percent of changed pixels plus a diff image).",
+                P("action", "string", "check (default) | save | compare."), P("name", "string", "Baseline name for save/compare (default main)."), P("threshold", "number", "Percent of changed pixels that counts as a difference (default 1).")),
 
             // ---- Unity editor (served by the editor bridge, also outside Play Mode) ----
             T("editor_status", "Editor state: Unity version, project, Play Mode, compiling, compile errors, open scenes, last test run and build."),

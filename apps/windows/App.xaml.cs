@@ -49,7 +49,7 @@ public partial class App : Application
 
 sealed class Model
 {
-    public JsonNode[] Games = [], Agents = [], Clients = [], Tools = [], ToolClients = [], Pending = [];
+    public JsonNode[] Games = [], Agents = [], Clients = [], Tools = [], ToolClients = [], Pending = [], Problems = [];
     public JsonObject Remote = new();
     public IEnumerable<JsonNode> Live => Agents.Where(a => !a.B("disconnected"));
 }
@@ -97,7 +97,7 @@ sealed partial class Shell : Window
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "udriver.ico"));
         var scale = GetDpiForWindow(Hwnd) / 96.0;
         AppWindow.Resize(new((int)(1180 * scale), (int)(800 * scale)));
-        screens = new() { ["games"] = new GamesScreen(), ["agents"] = new AgentsScreen(), ["tools"] = new ToolsScreen(), ["access"] = new AccessScreen() };
+        screens = new() { ["games"] = new GamesScreen(), ["agents"] = new AgentsScreen(), ["tools"] = new ToolsScreen(), ["access"] = new AccessScreen(), ["problems"] = new ProblemsScreen() };
 
         var logo = new Image { Source = new BitmapImage(new Uri(Path.Combine(AppContext.BaseDirectory, "udriver.png"))), Width = 16, Height = 16 };
         var bar = new Grid { Height = 48, Children = { Ui.HStack(12, logo, Ui.Txt("UDriver", "CaptionTextBlockStyle")) } };
@@ -109,7 +109,7 @@ sealed partial class Shell : Window
             PaneDisplayMode = NavigationViewPaneDisplayMode.Left, IsBackButtonVisible = NavigationViewBackButtonVisible.Collapsed,
             IsPaneToggleButtonVisible = false, IsSettingsVisible = false, OpenPaneLength = 250,
         };
-        foreach (var (tag, text, glyph) in new[] { ("games", "Games", ""), ("agents", "Agents", ""), ("tools", "Tools", ""), ("access", "Access from anywhere", "") })
+        foreach (var (tag, text, glyph) in new[] { ("games", "Games", ""), ("agents", "Agents", ""), ("tools", "Tools", ""), ("access", "Access from anywhere", ""), ("problems", "Problems", "") })
         {
             var count = Ui.Txt("", "BodyTextBlockStyle", true);
             counts[tag] = count;
@@ -174,10 +174,11 @@ sealed partial class Shell : Window
             }
             M.Pending = (await Api.Get("pending")).A("pending");
             Approvals();
-            var (g, a, c, r, t) = (Api.Get("games"), Api.Get("agents"), Api.Get("clients"), Api.Get("remote"), Api.Get("tools"));
-            await Task.WhenAll(g, a, c, r, t);
+            var (g, a, c, r, t, p) = (Api.Get("games"), Api.Get("agents"), Api.Get("clients"), Api.Get("remote"), Api.Get("tools"), Api.Get("problems"));
+            await Task.WhenAll(g, a, c, r, t, p);
             static JsonNode[] Named(JsonNode[] list) { foreach (var x in list.Where(x => x.S("kind") == "link")) x["name"] = "Apps on this computer (setup link)"; return list; }
             (M.Games, M.Agents, M.Clients, M.Remote, M.Tools, M.ToolClients) = (g.Result.A("games"), a.Result.A("agents"), Named(c.Result.A("clients")), r.Result, t.Result.A("tools"), Named(t.Result.A("clients")));
+            M.Problems = p.Result.A("problems");
             problem = null;
             if (!polled) welcome = M.Games.Length == 0 && !File.Exists(Welcomed);
             polled = true;
@@ -199,6 +200,7 @@ sealed partial class Shell : Window
         counts["games"].Text = ready ? M.Games.Length.ToString() : "";
         counts["agents"].Text = ready ? M.Live.Count().ToString() : "";
         counts["access"].Text = ready ? M.Remote.B("on") ? "On" : "Off" : "";
+        counts["problems"].Text = ready && M.Problems.Length > 0 ? M.Problems.Length.ToString() : "";
         dot.Fill = new SolidColorBrush(problem != null ? Colors.IndianRed : ready ? Colors.MediumSeaGreen : Colors.Gray);
         status.Text = problem ?? (ready ? "Ready on this computer" : "Starting UDriver…");
         if (welcome && M.Games.Length > 0) MarkWelcomed();

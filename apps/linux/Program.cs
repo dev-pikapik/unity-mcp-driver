@@ -37,13 +37,13 @@ static class Program
 
 sealed class Model
 {
-    public List<JsonNode> Games = [], Agents = [], Clients = [], Tools = [];
+    public List<JsonNode> Games = [], Agents = [], Clients = [], Tools = [], Problems = [];
     public JsonNode Remote = new JsonObject();
     public bool Up;
     public string? Problem;
 }
 
-enum Section { Games, Agents, Tools, Access }
+enum Section { Games, Agents, Tools, Access, Problems }
 
 sealed class Shell
 {
@@ -55,7 +55,7 @@ sealed class Shell
     readonly Adw.NavigationPage contentPage;
     readonly Gtk.Stack stack = Gtk.Stack.New();
     readonly Gtk.ListBox nav = Gtk.ListBox.New();
-    readonly Gtk.Label[] counts = new Gtk.Label[4];
+    readonly Gtk.Label[] counts = new Gtk.Label[5];
     readonly Gtk.Label status = Gtk.Label.New("Starting UDriver…");
     readonly Gtk.Box dot = Gtk.Box.New(Gtk.Orientation.Horizontal, 0);
     readonly Screen[] screens;
@@ -71,7 +71,7 @@ sealed class Shell
     {
         this.app = app;
         Style();
-        screens = [new GamesScreen(this), new AgentsScreen(this), new ToolsScreen(this), new AccessScreen(this)];
+        screens = [new GamesScreen(this), new AgentsScreen(this), new ToolsScreen(this), new AccessScreen(this), new ProblemsScreen(this)];
         foreach (var s in screens) stack.AddNamed(s.Root, s.Title);
 
         Window = Adw.ApplicationWindow.New(app);
@@ -119,7 +119,7 @@ sealed class Shell
 
         nav.AddCssClass("navigation-sidebar");
         (string Icon, string Name)[] items = [("input-gaming-symbolic", "Games"), ("system-users-symbolic", "Agents"),
-            ("applications-system-symbolic", "Tools"), ("network-workgroup-symbolic", "Access from Anywhere")];
+            ("applications-system-symbolic", "Tools"), ("network-workgroup-symbolic", "Access from Anywhere"), ("dialog-warning-symbolic", "Problems")];
         for (int i = 0; i < items.Length; i++)
         {
             var row = Gtk.Box.New(Gtk.Orientation.Horizontal, 12);
@@ -174,7 +174,7 @@ sealed class Shell
         Add("update", CheckUpdates);
         Add("about", About);
         Add("quit", () => app.Quit(), "<Control>q");
-        for (int i = 0; i < 4; i++) { var s = (Section)i; Add("go" + i, () => Select(s), $"<Control>{i + 1}"); }
+        for (int i = 0; i < 5; i++) { var s = (Section)i; Add("go" + i, () => Select(s), $"<Control>{i + 1}"); }
     }
 
     public void Select(Section s)
@@ -223,12 +223,14 @@ sealed class Shell
             var c = Api.Json("/panel/api/clients");
             var r = Api.Json("/panel/api/remote");
             var t = Api.Json("/panel/api/tools");
-            await Task.WhenAll(g, a, c, r, t);
+            var p = Api.Json("/panel/api/problems");
+            await Task.WhenAll(g, a, c, r, t, p);
             Model.Games = g.Result.L("games");
             Model.Agents = a.Result.L("agents");
             Model.Clients = c.Result.L("clients");
             Model.Remote = r.Result;
             Model.Tools = t.Result.L("tools");
+            Model.Problems = p.Result.L("problems");
             Model.Up = true;
             Model.Problem = null;
         }
@@ -248,6 +250,7 @@ sealed class Shell
         int live = Model.Agents.Count(a => !a.B("disconnected"));
         counts[1].Label_ = live > 0 ? live.ToString() : "";
         counts[3].Label_ = Model.Remote.B("on") ? "On" : "Off";
+        counts[4].Label_ = Model.Problems.Count > 0 ? Model.Problems.Count.ToString() : "";
         status.Label_ = Model.Problem ?? (Model.Up ? "Ready on this computer" : "Starting UDriver…");
         foreach (string c in new[] { "ok", "warn", "bad" }) dot.RemoveCssClass(c);
         dot.AddCssClass(!Model.Up ? "bad" : Model.Problem != null ? "warn" : "ok");
