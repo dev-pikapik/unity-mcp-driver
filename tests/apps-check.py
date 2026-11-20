@@ -13,12 +13,14 @@ app_map / net_log / chart_data / query output. Exit code 0 = every step passed.
 import argparse
 import base64
 import csv
+import glob
 import io
 import json
 import os
 import platform
 import plistlib
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -114,24 +116,30 @@ class Mcp:
 class Http:
     """The in-app driver's own /call endpoint (same tools, no server in between)."""
 
-    def __init__(self, udir, port):
-        self.udir, self.port = udir, port
+    def __init__(self, port):
+        self.port, self.key = port, None
 
     def tools(self):
         return None
 
     def call(self, name, /, **args):
-        token = open(os.path.join(self.udir, "%d.token" % self.port)).read().strip()
+        if not self.key:
+            # The first program to POST /pair its key owns the game until it restarts; pairing on first use leaves MCP runs to the server.
+            key = secrets.token_hex(24)
+            urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:%d/pair" % self.port, data=b"", headers={"X-UDriver-Token": key}), timeout=10)
+            self.key = key
+            # The demos ship no Harmony: hand the driver the one the server would (tracing and net_capture need it).
+            harmony = sorted(glob.glob(os.path.expanduser("~/.nuget/packages/lib.harmony/*/lib/net48/0Harmony.dll")))
+            if harmony:
+                self.call("eval", arm=True, harmony=base64.b64encode(open(harmony[-1], "rb").read()).decode())
         req = urllib.request.Request("http://127.0.0.1:%d/call" % self.port, data=json.dumps({"tool": name, "args": args}).encode(),
-                                     headers={"Content-Type": "application/json", "X-UDriver-Token": token})
+                                     headers={"Content-Type": "application/json", "X-UDriver-Token": self.key})
         r = json.loads(urllib.request.urlopen(req, timeout=60).read())
-        if r.get("ok") is False:
-            raise ToolError("%s: %s" % (name, r.get("error")))
         content = r.get("content", [])
         text = "\n\n".join(c.get("text", "") for c in content if c.get("type") == "text")
         images = [base64.b64decode(c["data"]) for c in content if c.get("type") == "image"]
-        if r.get("isError"):
-            raise ToolError("%s: %s" % (name, text[:600]))
+        if r.get("ok") is False or r.get("isError"):
+            raise ToolError("%s: %s" % (name, (r.get("error") or text)[:600]))
         return text, images
 
     def close(self):
@@ -150,13 +158,15 @@ class App:
             exe = os.path.join(root, next(f for f in os.listdir(root) if f.endswith((".x86_64", ".exe")) and not f.startswith("UnityCrash")))
         # An agent's change while Computer access is off marks the build's saves, and Unity keeps those in the real profile on
         # macOS and Windows; a mark left by a past run would wall the demo's own feed, so each run starts and ends unmarked.
+        with open(os.path.join(macos, "..", "Resources", "Data", "app.info") if OS == "macOS" else os.path.splitext(exe)[0] + "_Data/app.info") as f:
+            company, product = f.read().splitlines()[:2]
         if OS == "macOS":
+            # Unity on macOS keeps saves under the bundle id or under company/product, depending on the build
             with open(os.path.join(macos, "..", "Info.plist"), "rb") as f:
-                self.mark = os.path.expanduser("~/Library/Application Support/%s/UDriver" % plistlib.load(f)["CFBundleIdentifier"])
+                ident = plistlib.load(f)["CFBundleIdentifier"]
+            self.marks = [os.path.expanduser("~/Library/Application Support/" + d + "/UDriver") for d in (ident, company + "/" + product)]
         else:
-            with open(os.path.splitext(exe)[0] + "_Data/app.info") as f:
-                company, product = f.read().splitlines()[:2]
-            self.mark = os.path.expanduser("~/AppData/LocalLow/%s/%s/UDriver" % (company, product)) if OS == "Windows" else None
+            self.marks = [os.path.expanduser("~/AppData/LocalLow/%s/%s/UDriver" % (company, product))] if OS == "Windows" else []
         self.clear_mark()
         self.s, self.port = s, port
         self.p = subprocess.Popen([exe, "-udriver-port", str(port), "-screen-fullscreen", "0", "-screen-width", "1280", "-screen-height", "720",
@@ -172,7 +182,7 @@ class App:
         else:
             raise SystemExit("%s did not start its driver on port %d" % (folder, port))
         self.name = json.load(open(info))["name"]
-        self.http = Http(s.udir, port)
+        self.http = Http(port)
 
     def __call__(self, tool, /, **args):
         if self.s.mcp:
@@ -199,8 +209,8 @@ class App:
         self.clear_mark()
 
     def clear_mark(self):
-        if self.mark:
-            shutil.rmtree(self.mark, ignore_errors=True)
+        for m in self.marks:
+            shutil.rmtree(m, ignore_errors=True)
 
 
 class Session:

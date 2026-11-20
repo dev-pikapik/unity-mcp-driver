@@ -685,6 +685,8 @@ namespace UDriver
         {
             for (; t != null; t = t.DeclaringType)
             {
+                // T's DeclaringType is its own open generic, whose arguments are T again
+                if (t.IsGenericParameter) return false;
                 if (t.IsPointer) return true;
                 if (t.IsByRef || t.IsArray) return IsProtected(t.GetElementType());
                 string n = t.FullName ?? t.Name;
