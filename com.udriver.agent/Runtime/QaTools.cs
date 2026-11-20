@@ -811,11 +811,11 @@ namespace UDriver
         static void Spike(float dt, float med)
         {
             var parts = new List<string>();
-            if (_rec != null) for (int i = 0; i < _rec.Length; i++) if (_rec[i].isValid) parts.Add(RecLabels[i] + " " + (_rec[i].elapsedNanoseconds / 1e6).ToString("0.#") + " ms");
+            if (_rec != null) for (int i = 0; i < _rec.Length; i++) if (_rec[i].isValid) parts.Add(RecLabels[i] + " " + (_rec[i].elapsedNanoseconds / 1e6).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " ms");
             var last = Actions.Count > 0 && Time.realtimeSinceStartup - Actions[Actions.Count - 1].T < 3 ? Actions[Actions.Count - 1] : null;
             var hs = last != null && (last.Tool == "ui_click" || last.Tool == "pointer") ? HandlersOf(_lastTarget) : new List<string>();
-            string key = hs.Count > 0 ? hs[0] : null, ms = (dt * 1000).ToString("0");
-            string msg = "frame took " + ms + " ms (median " + (med * 1000).ToString("0.#") + " ms). "
+            string key = hs.Count > 0 ? hs[0] : null, ms = (dt * 1000).ToString("0", System.Globalization.CultureInfo.InvariantCulture);
+            string msg = "frame took " + ms + " ms (median " + (med * 1000).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " ms). "
                 + (parts.Count > 0 ? "Script time in that frame: " + string.Join(", ", parts) + ". " : "Script timing is not available here (no profiler recorder in this player). ")
                 + (key != null ? "It followed the action \"" + last.Text + "\", whose click handler is " + key + "." : "A frame spike has no stack, so the method is not known; profiler_get or trace_add on suspected Update methods narrows it down.");
             bool fresh;
@@ -856,8 +856,8 @@ namespace UDriver
             {
                 bool fresh;
                 var f = Report("gc", "gc|" + Scene(), "minor", "Managed heap keeps growing in " + Scene(),
-                    "managed heap " + (HeapS[0] >> 20) + " MB -> " + (HeapS[4] >> 20) + " MB in " + secs.ToString("0") + " s without being collected", null, Where(null), null, out fresh);
-                if (f != null && !fresh) f.J["message"] = "managed heap " + (HeapS[0] >> 20) + " MB -> " + (HeapS[4] >> 20) + " MB in " + secs.ToString("0") + " s without being collected";
+                    "managed heap " + (HeapS[0] >> 20) + " MB -> " + (HeapS[4] >> 20) + " MB in " + secs.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + " s without being collected", null, Where(null), null, out fresh);
+                if (f != null && !fresh) f.J["message"] = "managed heap " + (HeapS[0] >> 20) + " MB -> " + (HeapS[4] >> 20) + " MB in " + secs.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + " s without being collected";
             }
         }
 
@@ -878,7 +878,7 @@ namespace UDriver
 
         static void LeakFinding(string type, int from, int to, float secs)
         {
-            string msg = type + " objects: " + from + " -> " + to + " in " + secs.ToString("0") + " s (+" + ((to - from) / Mathf.Max(1, secs)).ToString("0.#") + "/s) and still growing";
+            string msg = type + " objects: " + from + " -> " + to + " in " + secs.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + " s (+" + ((to - from) / Mathf.Max(1, secs)).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + "/s) and still growing";
             bool fresh;
             var f = BySig.ContainsKey(Hash("leak|" + type)) ? Report("leak", "leak|" + type, "major", "", "", null, null, null, out fresh) : null;
             if (f != null) { f.J["message"] = msg + f.J["created"]; return; }
@@ -1116,8 +1116,8 @@ namespace UDriver
             float m = Magenta(px);
             if (m < 0.005f) return;
             bool fresh;
-            Report("visual", "visual|magenta|" + Scene(), "major", "Magenta on screen: " + (m * 100).ToString("0.#") + "% of pixels",
-                (m * 100).ToString("0.#") + "% of the screen is pure magenta, the colour Unity draws for a missing or unsupported shader", null, Where(null), null, out fresh);
+            Report("visual", "visual|magenta|" + Scene(), "major", "Magenta on screen: " + (m * 100).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + "% of pixels",
+                (m * 100).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + "% of the screen is pure magenta, the colour Unity draws for a missing or unsupported shader", null, Where(null), null, out fresh);
         }
 
         static string Root()
@@ -1159,7 +1159,7 @@ namespace UDriver
                 MagentaCheck(shot);
                 r.Text(lines.Count == 0 ? "no off-screen controls, broken materials or empty images found" : lines.Count + " visual problem(s):");
                 foreach (var l in lines) r.Text("  " + l);
-                r.Text("magenta pixels: " + (m * 100).ToString("0.##") + "%" + (m >= 0.005f ? " - a missing or unsupported shader is visible" : ""));
+                r.Text("magenta pixels: " + (m * 100).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) + "%" + (m >= 0.005f ? " - a missing or unsupported shader is visible" : ""));
                 yield break;
             }
             Texture2D bt = null;
@@ -1198,10 +1198,10 @@ namespace UDriver
                 string dfile = Path.Combine(dir, name + ".diff.png");
                 var dpng = Png(diff, w, h);
                 Sandbox.Own(() => File.WriteAllBytes(dfile, dpng));
-                r.Text((pct > thr ? "DIFFERENT" : "SAME") + ": " + pct.ToString("0.##") + "% of pixels changed against baseline '" + name + "' (threshold " + thr + "%). Diff image, changed pixels in red: " + dfile);
+                r.Text((pct > thr ? "DIFFERENT" : "SAME") + ": " + pct.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) + "% of pixels changed against baseline '" + name + "' (threshold " + thr + "%). Diff image, changed pixels in red: " + dfile);
                 r.Image(CaptureTools.Encode(diff, w, h, 75), "image/jpeg");
                 bool fresh;
-                if (pct > thr) Report("visual", "visual|baseline|" + name, "minor", "Screen differs from baseline " + name + " by " + pct.ToString("0.#") + "%", pct.ToString("0.##") + "% of pixels changed; diff image " + dfile, null, Where(null), null, out fresh);
+                if (pct > thr) Report("visual", "visual|baseline|" + name, "minor", "Screen differs from baseline " + name + " by " + pct.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + "%", pct.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) + "% of pixels changed; diff image " + dfile, null, Where(null), null, out fresh);
             }
             finally { UObject.Destroy(bt); }
         }
@@ -1239,9 +1239,9 @@ namespace UDriver
         {
             string act = a.Str("action", "status");
             if (act == "start") { StartWatch(a); r.Text("watching: " + Flags() + ". Findings so far: " + Findings.Count + " (qa_findings)."); return; }
-            if (act == "stop") { _watch = false; r.Text("stopped watching after " + (Time.realtimeSinceStartup - _watchStart).ToString("0") + " s; exceptions, errors and asserts are still collected. Findings: " + Findings.Count + "."); return; }
+            if (act == "stop") { _watch = false; r.Text("stopped watching after " + (Time.realtimeSinceStartup - _watchStart).ToString("0", System.Globalization.CultureInfo.InvariantCulture) + " s; exceptions, errors and asserts are still collected. Findings: " + Findings.Count + "."); return; }
             if (act != "status") throw new ToolException("action must be start, stop or status");
-            r.Text(_watch ? "watching for " + (Time.realtimeSinceStartup - _watchStart).ToString("0") + " s: " + Flags() : "not watching: exceptions, errors and asserts are collected; action=start adds the rest");
+            r.Text(_watch ? "watching for " + (Time.realtimeSinceStartup - _watchStart).ToString("0", System.Globalization.CultureInfo.InvariantCulture) + " s: " + Flags() : "not watching: exceptions, errors and asserts are collected; action=start adds the rest");
             var kinds = new SortedDictionary<string, int>();
             foreach (var f in Findings) { string k = (string)f.J["kind"]; kinds[k] = (kinds.ContainsKey(k) ? kinds[k] : 0) + 1; }
             var parts = new List<string>();
@@ -1622,7 +1622,7 @@ namespace UDriver
             foreach (var kv in c.Seen) if (c.Clicked.Contains(kv.Key)) clicked++; else if (!c.Avoided.Contains(kv.Key)) unclicked.Add(kv.Value);
             var all = SceneHandlers();
             var notReached = all.FindAll(h => !c.Reached.Contains(h));
-            r.Text(mode + ": " + c.Count + " steps in " + (Time.realtimeSinceStartup - t0).ToString("0") + " s, " + c.Screens.Count + " screens, controls clicked " + clicked + "/" + c.Seen.Count
+            r.Text(mode + ": " + c.Count + " steps in " + (Time.realtimeSinceStartup - t0).ToString("0", System.Globalization.CultureInfo.InvariantCulture) + " s, " + c.Screens.Count + " screens, controls clicked " + clicked + "/" + c.Seen.Count
                    + (c.Avoided.Count > 0 ? " (" + c.Avoided.Count + " avoided)" : "") + (c.Errors > 0 ? ", " + c.Errors + " actions failed (last: " + c.LastError + ")" : ""));
             r.Text("click handlers reached (" + c.Reached.Count + "): " + string.Join(", ", Arr(c.Reached, 30)));
             r.Text("click handlers not reached (" + notReached.Count + "): " + string.Join(", ", Arr(notReached, 30)));

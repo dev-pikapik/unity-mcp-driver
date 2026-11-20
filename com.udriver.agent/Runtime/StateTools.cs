@@ -1049,7 +1049,7 @@ namespace UDriver
             string dir = ExportDir();
             long limit = ExportLimit(), cap = Math.Min(ExportCap, limit);
             MakeRoom(dir, cap);
-            string file = Path.Combine(dir, "export-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6) + ".jsonl");
+            string file = Path.Combine(dir, "export-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N", System.Globalization.CultureInfo.InvariantCulture).Substring(0, 6) + ".jsonl");
             var dictSrc = src as IDictionary;
             var first = new List<string>();
             long size = 0;

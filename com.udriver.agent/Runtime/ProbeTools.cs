@@ -483,7 +483,7 @@ namespace UDriver
             string dir = StateTools.ExportDir();
             long limit = StateTools.ExportLimit();
             StateTools.MakeRoom(dir, Math.Min(frames * 100000L, limit));
-            string file = Path.Combine(dir, "profile-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6));
+            string file = Path.Combine(dir, "profile-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N", System.Globalization.CultureInfo.InvariantCulture).Substring(0, 6));
             Profiler.logFile = file;
             Profiler.enableBinaryLog = true;
             Profiler.enabled = true;

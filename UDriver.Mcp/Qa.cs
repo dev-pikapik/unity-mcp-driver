@@ -55,7 +55,7 @@ internal static partial class Program
     /// <summary>Writes through a new temporary file, so a link planted at the name is replaced, not followed.</summary>
     static void Put(string file, Action<string> write)
     {
-        string tmp = file + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        string tmp = file + "." + Guid.NewGuid().ToString("N", System.Globalization.CultureInfo.InvariantCulture) + ".tmp";
         try { write(tmp); File.Move(tmp, file, true); }
         finally { File.Delete(tmp); }
     }

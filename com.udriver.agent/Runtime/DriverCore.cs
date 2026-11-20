@@ -174,7 +174,7 @@ namespace UDriver
 
         static void WriteOwn(string f, string text)
         {
-            string dir = Path.GetDirectoryName(f), tmp = f + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            string dir = Path.GetDirectoryName(f), tmp = f + "." + Guid.NewGuid().ToString("N", System.Globalization.CultureInfo.InvariantCulture) + ".tmp";
             Directory.CreateDirectory(dir);
             OwnerOnly(dir, true);
             try

@@ -53,7 +53,7 @@ namespace UDriver
             var cf = body.Cam.transform.forward;
             sb.Append("self ").Append(body.Root.name).Append(' ').Append(StateTools.IdOf(body.Root.gameObject))
               .Append(" pos ").Append(V(body.Root.position)).Append(" facing ").Append(Mathf.RoundToInt(Yaw(cf))).Append("° pitch ").Append(Mathf.RoundToInt(Pitch(cf)))
-              .Append("° speed ").Append(selfVel.magnitude.ToString("0.0")).Append(body.Grounded() ? " grounded" : " in air");
+              .Append("° speed ").Append(selfVel.magnitude.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)).Append(body.Grounded() ? " grounded" : " in air");
             foreach (var s in Stats.All(body.Root.gameObject, true)) sb.Append(' ').Append(s);
             sb.AppendLine();
 
@@ -76,17 +76,17 @@ namespace UDriver
                 if (go.tag != "Untagged") line.Append(" tag=").Append(go.tag);
                 var scripts = Ent.Scripts(go).Select(m => m.GetType().Name).Distinct().Take(4).ToArray();
                 if (scripts.Length > 0) line.Append(" [").Append(string.Join(",", scripts)).Append(']');
-                line.Append(' ').Append(d.ToString("0.0")).Append("m ").Append(Bearing(body, c));
+                line.Append(' ').Append(d.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)).Append("m ").Append(Bearing(body, c));
                 float dy = c.y - body.Cam.transform.position.y;
-                if (Mathf.Abs(dy) > 1f) line.Append(dy > 0 ? " above " : " below ").Append(Mathf.Abs(dy).ToString("0.0")).Append('m');
-                if (isScenery) line.Append(" size ").Append(b.size.x.ToString("0.#")).Append('x').Append(b.size.y.ToString("0.#")).Append('x').Append(b.size.z.ToString("0.#"));
+                if (Mathf.Abs(dy) > 1f) line.Append(dy > 0 ? " above " : " below ").Append(Mathf.Abs(dy).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)).Append('m');
+                if (isScenery) line.Append(" size ").Append(b.size.x.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)).Append('x').Append(b.size.y.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)).Append('x').Append(b.size.z.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture));
                 Vector3 p0;
                 if (first.TryGetValue(go, out p0))
                 {
                     var v = (c - p0) / dt;
                     if (v.magnitude > 0.2f)
                     {
-                        line.Append(" speed ").Append(v.magnitude.ToString("0.0"));
+                        line.Append(" speed ").Append(v.magnitude.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture));
                         float closing = Vector3.Dot(v, (body.Root.position - c).normalized);
                         if (closing > 0.3f) line.Append(" approaching"); else if (closing < -0.3f) line.Append(" moving away");
                     }
@@ -135,7 +135,7 @@ namespace UDriver
 
         internal static float Yaw(Vector3 v) => Mathf.Atan2(v.x, v.z) * Mathf.Rad2Deg;
         internal static float Pitch(Vector3 v) => Mathf.Atan2(v.y, new Vector2(v.x, v.z).magnitude) * Mathf.Rad2Deg;
-        internal static string V(Vector3 v) => "(" + v.x.ToString("0.0") + "," + v.y.ToString("0.0") + "," + v.z.ToString("0.0") + ")";
+        internal static string V(Vector3 v) => "(" + v.x.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "," + v.y.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "," + v.z.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + ")";
 
         // ---------------- rules ----------------
 
@@ -245,13 +245,13 @@ namespace UDriver
                 if (!UDriverPilot.I || !UDriverPilot.I.Rules.Contains(rule)) result = result ?? "stopped";
             }
             if (UDriverPilot.I) { UDriverPilot.I.Rules.Remove(rule); if (UDriverPilot.I.Rules.Count == 0) UDriverPilot.I.Stop(); }
-            var sb = new StringBuilder(result).Append(" in ").Append((Time.unscaledTime - t0).ToString("0.0")).Append(" s");
+            var sb = new StringBuilder(result).Append(" in ").Append((Time.unscaledTime - t0).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)).Append(" s");
             if (body.Root != null)
             {
                 sb.Append(", at ").Append(V(body.Root.position)).Append(" facing ").Append(Mathf.RoundToInt(Yaw(body.Cam.transform.forward))).Append('°');
-                if (rule.Goal != null) sb.Append(", ").Append(rule.Goal.Flat(body.Root.position).ToString("0.0")).Append(" m from the goal");
+                if (rule.Goal != null) sb.Append(", ").Append(rule.Goal.Flat(body.Root.position).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)).Append(" m from the goal");
                 if (rule.UsedNavMesh) sb.Append(" (NavMesh path)");
-                if (jumpNow) sb.Append(peak > 0.1f ? ", jumped " + peak.ToString("0.0") + " m high" : ", the player did not leave the ground");
+                if (jumpNow) sb.Append(peak > 0.1f ? ", jumped " + peak.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " m high" : ", the player did not leave the ground");
             }
             if (rule.Note != null) sb.Append(". ").Append(rule.Note);
             r.Text(sb.ToString());
@@ -449,7 +449,7 @@ namespace UDriver
             return double.NaN;
         }
 
-        static string Fmt(object v) => v is float fl ? fl.ToString("0.#") : v is double d ? d.ToString("0.#") : Convert.ToString(v);
+        static string Fmt(object v) => v is float fl ? fl.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) : v is double d ? d.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) : Convert.ToString(v);
     }
 
     /// <summary>The player: its root object and camera.</summary>
@@ -562,7 +562,7 @@ namespace UDriver
             var sb = new StringBuilder("rule '").Append(Name).Append("'");
             if (Targets != null) sb.Append(" match=").Append((string)Spec["match"]);
             if (Avoid != null) sb.Append(" avoid=").Append((string)Spec["avoid"]);
-            sb.Append(", running ").Append((Time.unscaledTime - Started).ToString("0.0")).Append(" s");
+            sb.Append(", running ").Append((Time.unscaledTime - Started).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)).Append(" s");
             if (Logic != null) sb.Append(Logic.Report());
             if (Shoot)
             {
@@ -702,8 +702,8 @@ namespace UDriver
                     if (r.Alert > 0)
                     {
                         bool inside = d <= r.Alert;
-                        if (inside && r.Near.Add(go)) Emit(r, "enter " + go.name + " " + StateTools.IdOf(go) + " " + d.ToString("0.0") + " m");
-                        else if (!inside && r.Near.Remove(go)) Emit(r, "leave " + go.name + " " + d.ToString("0.0") + " m");
+                        if (inside && r.Near.Add(go)) Emit(r, "enter " + go.name + " " + StateTools.IdOf(go) + " " + d.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " m");
+                        else if (!inside && r.Near.Remove(go)) Emit(r, "leave " + go.name + " " + d.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " m");
                     }
                     if (d < nd) { nd = d; nearest = go; }
                     if (r.KeepAway > 0 && d < r.KeepAway) { var away = pos - c; away.y = 0; move += away.normalized * (r.KeepAway - d) / r.KeepAway * 2f; }

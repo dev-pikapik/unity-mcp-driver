@@ -251,7 +251,7 @@ internal static partial class Program
     internal static void WritePrivate(string path, string text)
     {
         PrivateDir(Path.GetDirectoryName(path)!);
-        string tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        string tmp = path + "." + Guid.NewGuid().ToString("N", System.Globalization.CultureInfo.InvariantCulture) + ".tmp";
         var opt = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write };
         if (!OperatingSystem.IsWindows()) opt.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
         try

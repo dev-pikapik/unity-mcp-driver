@@ -61,7 +61,7 @@ namespace UDriver
             Driver.Register("rec_replay", ReplayTool);
         }
 
-        static string NewId() { return "rec-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 4); }
+        static string NewId() { return "rec-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N", System.Globalization.CultureInfo.InvariantCulture).Substring(0, 4); }
 
         static Rec Begin(bool trace, int capacity)
         {

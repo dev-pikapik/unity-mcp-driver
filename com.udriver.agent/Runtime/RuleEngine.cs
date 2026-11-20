@@ -154,7 +154,7 @@ namespace UDriver
         public string Report()
         {
             var sb = new StringBuilder(", when ").Append(WhenText).Append(": checks ").Append(Checks).Append(", fires ").Append(Fires);
-            if (Fires > 0) sb.Append(" (last ").Append((Time.unscaledTime - LastFire).ToString("0.0")).Append(" s ago)");
+            if (Fires > 0) sb.Append(" (last ").Append((Time.unscaledTime - LastFire).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)).Append(" s ago)");
             if (Names.Count > 0) sb.Append(", values ").Append(Shown());
             if (LastError != null) sb.Append(", last error: ").Append(LastError);
             if (Done != null) sb.Append(". ").Append(Done);

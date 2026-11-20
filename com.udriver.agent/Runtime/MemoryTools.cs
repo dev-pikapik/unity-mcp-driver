@@ -707,7 +707,7 @@ namespace UDriver
             string dir = StateTools.ExportDir();
             long limit = Math.Min(CaptureCap, StateTools.ExportLimit());
             StateTools.MakeRoom(dir, Math.Min(Profiler.GetTotalReservedMemoryLong(), limit));
-            string file = Path.Combine(dir, "memory-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6) + ".snap");
+            string file = Path.Combine(dir, "memory-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N", System.Globalization.CultureInfo.InvariantCulture).Substring(0, 6) + ".snap");
             string done = null;
             bool ok = false;
             var sw = Stopwatch.StartNew();
