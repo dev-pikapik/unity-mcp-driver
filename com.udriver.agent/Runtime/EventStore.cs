@@ -50,6 +50,7 @@ namespace UDriver
             Application.logMessageReceivedThreaded += (msg, stack, type) =>
             {
                 string cat = "log." + type.ToString().ToLowerInvariant();
+                if (string.IsNullOrEmpty(stack) && (type == LogType.Error || type == LogType.Assert)) stack = CallerStack();
                 Emit(cat, msg, stack);
                 if (type == LogType.Error || type == LogType.Exception || type == LogType.Assert) Group(cat, msg, stack);
             };
@@ -91,7 +92,7 @@ namespace UDriver
         /// <summary>Called every frame on the main thread.</summary>
         internal static void Tick()
         {
-            _frame = Time.frameCount; _time = Time.realtimeSinceStartupAsDouble;
+            _frame = Time.frameCount; _time = Util.Seconds;
             KeyValuePair<Trigger, Ev> f;
             while (Fired.TryDequeue(out f))
             {
@@ -195,6 +196,27 @@ namespace UDriver
                 }
                 g.Count++; g.Last = _time; g.LastFrame = _frame; g.Msg = msg; g.Stack = stack;
             }
+        }
+
+        /// <summary>The logging code's own stack, for release builds where Unity passes none.</summary>
+        static string CallerStack()
+        {
+            var frames = new System.Diagnostics.StackTrace(1, true).GetFrames() ?? new System.Diagnostics.StackFrame[0];
+            int start = 0;
+            for (int i = 0; i < frames.Length; i++)
+            {
+                var t = frames[i].GetMethod()?.DeclaringType;
+                if (t != null && (t.FullName.StartsWith("UnityEngine.Debug", StringComparison.Ordinal) || t.FullName.StartsWith("UnityEngine.Logger", StringComparison.Ordinal))) start = i + 1;
+            }
+            var sb = new StringBuilder();
+            for (int i = start; i < frames.Length; i++)
+            {
+                var m = frames[i].GetMethod();
+                if (m == null || m.DeclaringType == null) continue;
+                string file = frames[i].GetFileName();
+                sb.Append(m.DeclaringType.FullName).Append(':').Append(m.Name).Append(file != null ? " (at " + file + ":" + frames[i].GetFileLineNumber() + ")" : "").Append('\n');
+            }
+            return sb.ToString();
         }
 
         static string TopFrame(string stack)

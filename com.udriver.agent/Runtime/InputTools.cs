@@ -132,11 +132,13 @@ namespace UDriver
 
         const int MaxHoldMs = 10000;
 
+        const string NoOs = "method=os works only in game builds on macOS, Windows and Linux (X11)";
+
         const string NeedInputSystem = "needs the Input System: install com.unity.inputsystem and set Player Settings > Active Input Handling to Input System or Both. A game that reads only the old Input Manager cannot be driven this way.";
 
         // ---------------- primitives ----------------
 
-        static string Method(JObject a, ToolResponse r)
+        static string Method(JObject a, ToolResponse r, bool os = false)
         {
             string m = a.Str("method", "event");
             // UI Toolkit drops device input while the app is unfocused.
@@ -144,7 +146,9 @@ namespace UDriver
                 r.Text("WARNING: the game window is not focused. On Windows/macOS/Linux Unity's UI ignores device input in that state, so method=input may have no effect on UI. Use method=event (works unfocused) or bring the window to the front.");
             if (m == "input" && !Inj.Available)
                 throw new ToolException("method=input needs the Input System package with 'Active Input Handling' set to Input System or Both. Use method=event.");
-            if (m != "input" && m != "event" && m != "set") throw new ToolException("unknown method '" + m + "'");
+            if (m == "os" && os && !Os.Available) throw new ToolException(NoOs);
+            if (m == "patch" && os) Sandbox.Own(() => Patch.On(r));
+            if (m != "input" && m != "event" && m != "set" && !((m == "os" || m == "patch") && os)) throw new ToolException("unknown method '" + m + "'");
             return m;
         }
 
@@ -199,6 +203,8 @@ namespace UDriver
         static void Move(UiTools.Target t, string m, bool dragging, Vector2 delta)
         {
             if (m == "input") Inj.SendMouse(t.Screen, _buttons, Vector2.zero);
+            else if (m == "os") Os.Mouse(t.Screen, _buttons, -1, Vector2.zero);
+            else if (m == "patch") Patch.Mouse(t.Screen, Vector2.zero);
             else if (U(t)) Ugui.Move(t.Screen);
             else SendMouse(Top(t), dragging ? EventType.MouseDrag : EventType.MouseMove, t.Panel, 0, 0, delta);
         }
@@ -206,6 +212,8 @@ namespace UDriver
         static void Down(UiTools.Target t, string m, int button, int clicks)
         {
             if (m == "input") { _buttons |= 1 << button; Inj.SendMouse(t.Screen, _buttons, Vector2.zero); }
+            else if (m == "os") { _buttons |= 1 << button; Os.Mouse(t.Screen, _buttons, button, Vector2.zero); }
+            else if (m == "patch") Patch.Key(KeyCode.Mouse0 + button, true);
             else if (t.Go != null) Ugui.Down(t.Screen, button, clicks);
             else { SendMouse(Top(t), EventType.MouseDown, t.Panel, button, clicks, Vector2.zero); _evDown = true; }
         }
@@ -213,8 +221,17 @@ namespace UDriver
         static void Up(UiTools.Target t, string m, int button, int clicks)
         {
             if (m == "input") { _buttons &= ~(1 << button); Inj.SendMouse(t.Screen, _buttons, Vector2.zero); }
+            else if (m == "os") { _buttons &= ~(1 << button); Os.Mouse(t.Screen, _buttons, button, Vector2.zero); }
+            else if (m == "patch") Patch.Key(KeyCode.Mouse0 + button, false);
             else if (U(t)) Ugui.Up(t.Screen, button);
             else { SendMouse(Top(t), EventType.MouseUp, t.Panel, button, clicks, Vector2.zero); _evDown = false; }
+        }
+
+        static string Seen(string m)
+        {
+            if (m != "os" && m != "patch") return "";
+            try { var p = Input.mousePosition; return "; the game's Input.mousePosition is now (" + Mathf.RoundToInt(p.x) + "," + Mathf.RoundToInt(Screen.height - p.y) + ") from the top left"; }
+            catch (InvalidOperationException) { return ""; }
         }
 
         static string Where(UiTools.Target t)
@@ -281,6 +298,7 @@ namespace UDriver
         static void Nav(VisualElement top, VisualElement focused, KeyCode code)
         {
             EventBase e = null;
+#if UNITY_2022_2_OR_NEWER
             if (code == KeyCode.Return || code == KeyCode.KeypadEnter) e = NavigationSubmitEvent.GetPooled(_mods);
             else if (code == KeyCode.Escape) e = NavigationCancelEvent.GetPooled(_mods);
             else if (code == KeyCode.Tab) e = NavigationMoveEvent.GetPooled((_mods & EventModifiers.Shift) != 0 ? NavigationMoveEvent.Direction.Previous : NavigationMoveEvent.Direction.Next, _mods);
@@ -291,6 +309,7 @@ namespace UDriver
                 else if (code == KeyCode.LeftArrow) e = NavigationMoveEvent.GetPooled(NavigationMoveEvent.Direction.Left, _mods);
                 else if (code == KeyCode.RightArrow) e = NavigationMoveEvent.GetPooled(NavigationMoveEvent.Direction.Right, _mods);
             }
+#endif
             if (e == null) return;
             e.target = focused ?? top;
             using (e) top.SendEvent(e);
@@ -338,7 +357,7 @@ namespace UDriver
         {
             UiTools.HookPanels();
             var t = UiTools.Resolve(a);
-            string m = Method(a, r);
+            string m = Method(a, r, true);
             int button = Btn(a), count = Mathf.Clamp(a.Int("count", 1), 1, 3), hold = Mathf.Clamp(a.Int("holdMs", 0), 0, MaxHoldMs);
             long seq = EventStore.LastSeq;
             string warn = UiTools.Warnings(t);
@@ -364,7 +383,7 @@ namespace UDriver
                 yield return null;
             }
             finally { if (btn != null) btn.clicked -= onClick; }
-            r.Text((count > 1 ? "double-clicked " : hold > 0 ? "long-pressed (" + hold + " ms) " : "clicked ") + Where(t) + " via " + m);
+            r.Text((count > 1 ? "double-clicked " : hold > 0 ? "long-pressed (" + hold + " ms) " : "clicked ") + Where(t) + " via " + m + Seen(m));
             if (fired) r.Text("the button's clicked handler ran");
             Feedback(r, seq, button == 0 && m == "event" && !fired && !EventStore.IsDisabled("ui.click") && (t.El != null || t.Go != null));
         }
@@ -372,10 +391,10 @@ namespace UDriver
         static IEnumerator Hover(JObject a, ToolResponse r)
         {
             var t = UiTools.Resolve(a);
-            string m = Method(a, r);
+            string m = Method(a, r, true);
             Move(t, m, false, Vector2.zero);
             yield return null; yield return null;
-            r.Text("pointer moved to " + Where(t) + " via " + m);
+            r.Text("pointer moved to " + Where(t) + " via " + m + Seen(m));
         }
 
         static IEnumerator Drag(JObject a, ToolResponse r)
@@ -383,7 +402,7 @@ namespace UDriver
             UiTools.HookPanels();
             var from = UiTools.Resolve(a);
             var to = UiTools.Resolve(a, "to_");
-            string m = Method(a, r);
+            string m = Method(a, r, true);
             int button = Btn(a), steps = Mathf.Clamp(a.Int("steps", 12), 1, 500), hold = Mathf.Clamp(a.Int("holdMs", 0), 0, MaxHoldMs);
             float stepWait = Mathf.Clamp(a.Int("durationMs", 300), 0, MaxHoldMs) / 1000f / steps;
             long seq = EventStore.LastSeq;
@@ -408,7 +427,7 @@ namespace UDriver
             }
             Up(cur, m, button, 1);
             yield return null; yield return null;
-            r.Text("dragged from " + Where(from) + " to " + Where(to) + " in " + steps + " steps via " + m);
+            r.Text("dragged from " + Where(from) + " to " + Where(to) + " in " + steps + " steps via " + m + Seen(m));
             Feedback(r, seq, false);
         }
 
@@ -416,7 +435,7 @@ namespace UDriver
         {
             UiTools.HookPanels();
             var t = UiTools.Resolve(a);
-            string m = Method(a, r), action = a.Str("action");
+            string m = Method(a, r, true), action = a.Str("action");
             int button = Btn(a);
             long seq = EventStore.LastSeq;
             SetMods(a);
@@ -426,7 +445,7 @@ namespace UDriver
             else throw new ToolException("action must be down, move or up");
             _mods = EventModifiers.None;
             yield return null;
-            r.Text("pointer " + action + " " + Where(t) + " via " + m);
+            r.Text("pointer " + action + " " + Where(t) + " via " + m + Seen(m));
             Feedback(r, seq, false);
         }
 
@@ -436,8 +455,10 @@ namespace UDriver
             float dx = a.Num("dx"), dy = a.Num("dy");
             if (a.Str("mode", "offset") == "wheel")
             {
-                string m = Method(a, r);
+                string m = Method(a, r, true);
                 if (m == "input") Inj.SendMouse(t.Screen, _buttons, new Vector2(-dx, -dy));
+                else if (m == "os") { Move(t, m, false, Vector2.zero); Os.Mouse(t.Screen, _buttons, -1, new Vector2(dx, dy)); }
+                else if (m == "patch") Patch.Mouse(t.Screen, new Vector2(dx, -dy));
                 else if (t.Go != null) Ugui.Wheel(t.Screen, dx, dy);
                 else { Move(t, m, false, Vector2.zero); SendMouse(Top(t), EventType.ScrollWheel, t.Panel, 0, 0, new Vector2(dx, dy)); }
                 yield return null;
@@ -463,6 +484,7 @@ namespace UDriver
             var t = UiTools.Resolve(a);
             if (t.Go != null && !a.Has("x")) { string res = Ugui.ScrollTo(t.Go); yield return null; r.Text(res); yield break; }
             if (t.El == null) throw new ToolException("ui_scroll_to needs an element (id, name or text)");
+#if UNITY_2021_2_OR_NEWER
             if (a.Has("index"))
             {
                 var list = t.El as BaseVerticalCollectionView ?? t.El.GetFirstAncestorOfType<BaseVerticalCollectionView>();
@@ -475,6 +497,7 @@ namespace UDriver
                 r.Text("scrolled " + UiTools.Desc(list) + " to item " + i + " of " + count + (row != null ? "; row: " + UiTools.Line(row) : "; the row is not built yet, call ui_find in a moment"));
                 yield break;
             }
+#endif
             int n = 0;
             for (var p = t.El.hierarchy.parent; p != null; p = p.hierarchy.parent)
             {
@@ -555,7 +578,9 @@ namespace UDriver
             {
                 // Number fields (IntegerField, FloatField...) cannot take "": select their text and delete it like a user would.
                 if (cp.PropertyType == typeof(string)) SetProperty(subject, "value", new JValue(""));
+#if UNITY_2022_1_OR_NEWER
                 else if (UiTools.Prop(subject.GetType(), "textSelection")?.GetValue(subject) is ITextSelection sel) { sel.SelectAll(); SendKey(top, true, '\0', KeyCode.Backspace); }
+#endif
                 else throw new ToolException("clear works on text and number fields only; use ui_set_value for " + subject.GetType().Name);
                 yield return null;
             }
@@ -610,8 +635,8 @@ namespace UDriver
             string key = a.Str("key");
             if (key == null) throw new ToolException("key is required");
             string m = a.Str("method", "auto"), action = a.Str("action", "press"), note = "";
-            if (m != "auto" && m != "os") Method(a, r);
-            if (m == "os" && !Os.Available) throw new ToolException("method=os works only in macOS and Windows game builds");
+            if (m != "auto" && m != "os") Method(a, r, m == "patch");
+            if (m == "os" && !Os.Available) throw new ToolException(NoOs);
             int hold = Mathf.Clamp(a.Int("holdMs", 0), 0, MaxHoldMs);
             long seq = EventStore.LastSeq;
             SetMods(a);
@@ -629,8 +654,8 @@ namespace UDriver
                     Feedback(r, seq, false);
                     yield break;
                 }
-                if (m == "auto") m = f != null ? "event" : Inj.Available ? "input" : Os.Available ? "os" : top != null ? "event" : null;
-                if (m == null) throw new ToolException("nothing can take this key: no UI element is focused or selected (ui_focus one first), the Input System package is not active, and real key events are posted only by macOS and Windows game builds");
+                if (m == "auto") m = f != null ? "event" : Inj.Available ? "input" : Os.Available ? "os" : top != null ? "event" : ProbeTools.HarmonyAvailable ? "patch" : null;
+                if (m == null) throw new ToolException("nothing can take this key: no UI element is focused or selected (ui_focus one first), the Input System package is not active, and " + NoOs);
                 if (m == "input") key = KeyName(code);
                 if (m == "event")
                 {
@@ -645,22 +670,23 @@ namespace UDriver
                 if (action == "press") { if (hold > 0) yield return new WaitForSecondsRealtime(hold / 1000f); else yield return null; }
                 if (action != "down") Inj.SendKey(key, false);
             }
-            else if (m == "os")
+            else if (m == "os" || m == "patch")
             {
+                if (m == "patch") Sandbox.Own(() => Patch.On(r));
                 if (action != "up")
                 {
-                    Os.Send(code, true, _mods);
+                    if (m == "patch") Patch.Key(code, true); else Os.Send(code, true, _mods);
                     bool seen = false;
                     float until = Time.realtimeSinceStartup + 0.5f;
                     if (!LegacyInput) note = "; this game reads the Input System only, so Input.GetKey cannot confirm it - method=auto sends keys through the Input System";
                     else
                     {
                         while (!(seen = Held(code)) && Time.realtimeSinceStartup < until) yield return null;
-                        note = seen ? "; the game's Input.GetKey saw it" : "; WARNING: the game's Input.GetKey did not see it - bring the game window to the front and retry";
+                        note = seen ? "; the game's Input.GetKey saw it" : "; WARNING: the game's Input.GetKey did not see it" + (m == "os" ? " - bring the game window to the front and retry" : "");
                     }
                     if (action == "press" && hold > 0) yield return new WaitForSecondsRealtime(hold / 1000f);
                 }
-                if (action != "down") { Os.Send(code, false, _mods); yield return null; }
+                if (action != "down") { if (m == "patch") Patch.Key(code, false); else Os.Send(code, false, _mods); yield return null; }
             }
             _mods = EventModifiers.None;
             yield return null;
@@ -787,8 +813,9 @@ namespace UDriver
         /// <summary>Key events posted to this game's own window, the only input Input.GetKey reads.</summary>
         static class Os
         {
-            static readonly bool Mac = Application.platform == RuntimePlatform.OSXPlayer, Win = Application.platform == RuntimePlatform.WindowsPlayer;
-            public static readonly bool Available = Mac || Win;
+            static readonly bool Mac = Application.platform == RuntimePlatform.OSXPlayer, Win = Application.platform == RuntimePlatform.WindowsPlayer,
+                Linux = Application.platform == RuntimePlatform.LinuxPlayer;
+            public static readonly bool Available = Mac || Win || Linux;
             static readonly int Pid = System.Diagnostics.Process.GetCurrentProcess().Id;
 
             static char Char(KeyCode c, EventModifiers mods)
@@ -802,6 +829,7 @@ namespace UDriver
             public static void Send(KeyCode c, bool down, EventModifiers mods)
             {
                 if (Mac) { PostMac(c, down, mods); return; }
+                if (Linux) { PostX(down ? 2 : 3, XCode(c), 0, 0, XMods(mods)); return; }
                 var w = Window();
                 if (w == IntPtr.Zero) throw new ToolException("the game window was not found");
                 var with = new List<KeyCode>();
@@ -812,6 +840,15 @@ namespace UDriver
                 if (down) foreach (var x in with) PostWin(w, WinKey(x), x, true);
                 PostWin(w, vk, c, down);
                 if (!down) foreach (var x in with) PostWin(w, WinKey(x), x, false);
+            }
+
+            /// <summary>buttons: the held mask after this event; button: the one pressed or released, -1 for a move or a wheel.</summary>
+            public static void Mouse(Vector2 screenTopLeft, int buttons, int button, Vector2 wheel)
+            {
+                var p = new Vector2(Mathf.Clamp(Mathf.Round(screenTopLeft.x), 0, Screen.width - 1), Mathf.Clamp(Mathf.Round(screenTopLeft.y), 0, Screen.height - 1));
+                // The macOS and Windows players read the real cursor, which belongs to the whole computer, not to the game.
+                if (!Linux) throw new ToolException("method=os mouse works only in Linux builds: the macOS and Windows players read the real system cursor. Use method=patch (old Input Manager), method=event (uGUI and UI Toolkit) or method=input (Input System)");
+                MouseX(p, buttons, button, wheel);
             }
 
             // macOS: virtual key codes of the ANSI layout, indexed by the KeyCode character.
@@ -911,6 +948,304 @@ namespace UDriver
                 bool ext = vk >= 0x21 && vk <= 0x2E || c == KeyCode.KeypadEnter || vk == 0xA3 || vk == 0xA5;
                 long lp = 1 | scan << 16 | (ext ? 1L << 24 : 0) | (down ? 0 : 0xC0000000L);
                 PostMessage(w, down ? 0x100u : 0x101u, (IntPtr)vk, (IntPtr)lp);
+            }
+
+            // Linux (X11): events sent to the game's own window, found by _NET_WM_PID. With an empty event mask the X server delivers them only to the client that created that window.
+            const string X11 = "libX11.so.6";
+            [DllImport(X11)] static extern IntPtr XOpenDisplay(IntPtr name);
+            [DllImport(X11)] static extern IntPtr XDefaultRootWindow(IntPtr d);
+            [DllImport(X11)] static extern IntPtr XInternAtom(IntPtr d, string name, bool onlyIfExists);
+            [DllImport(X11)] static extern int XQueryTree(IntPtr d, IntPtr w, out IntPtr root, out IntPtr parent, out IntPtr children, out uint count);
+            [DllImport(X11)] static extern int XGetWindowProperty(IntPtr d, IntPtr w, IntPtr prop, IntPtr offset, IntPtr length, bool delete, IntPtr type,
+                out IntPtr actualType, out int format, out IntPtr items, out IntPtr after, out IntPtr data);
+            [DllImport(X11)] static extern int XFree(IntPtr p);
+            [DllImport(X11)] static extern bool XTranslateCoordinates(IntPtr d, IntPtr src, IntPtr dst, int x, int y, out int dx, out int dy, out IntPtr child);
+            [DllImport(X11)] static extern byte XKeysymToKeycode(IntPtr d, IntPtr sym);
+            [DllImport(X11)] static extern int XSendEvent(IntPtr d, IntPtr w, bool propagate, IntPtr mask, ref XEvent e);
+            [DllImport(X11)] static extern int XFlush(IntPtr d);
+
+            // XKeyEvent / XButtonEvent / XMotionEvent share this layout on 64-bit; XEvent is 24 longs.
+            [StructLayout(LayoutKind.Explicit, Size = 192)]
+            struct XEvent
+            {
+                [FieldOffset(0)] public int Type;
+                [FieldOffset(24)] public IntPtr Display;
+                [FieldOffset(32)] public IntPtr Window;
+                [FieldOffset(40)] public IntPtr Root;
+                [FieldOffset(64)] public int X;
+                [FieldOffset(68)] public int Y;
+                [FieldOffset(72)] public int XRoot;
+                [FieldOffset(76)] public int YRoot;
+                [FieldOffset(80)] public uint State;
+                [FieldOffset(84)] public uint Detail;
+                [FieldOffset(88)] public int SameScreen;
+            }
+
+            static IntPtr _dpy, _root, _pidAtom, _win;
+
+            static long XPid(IntPtr w)
+            {
+                IntPtr type, items, after, data;
+                int format;
+                if (XGetWindowProperty(_dpy, w, _pidAtom, IntPtr.Zero, (IntPtr)1, false, (IntPtr)6, out type, out format, out items, out after, out data) != 0 || data == IntPtr.Zero) return -1;
+                long pid = items == IntPtr.Zero ? -1 : Marshal.ReadIntPtr(data).ToInt64();
+                XFree(data);
+                return pid;
+            }
+
+            static IntPtr FindX(IntPtr w)
+            {
+                if (w != _root && XPid(w) == Pid) return w;
+                IntPtr root, parent, kids;
+                uint n;
+                if (XQueryTree(_dpy, w, out root, out parent, out kids, out n) == 0) return IntPtr.Zero;
+                var found = IntPtr.Zero;
+                for (int i = 0; i < n && found == IntPtr.Zero; i++) found = FindX(Marshal.ReadIntPtr(kids, i * IntPtr.Size));
+                if (kids != IntPtr.Zero) XFree(kids);
+                return found;
+            }
+
+            static IntPtr XWindow()
+            {
+                if (_dpy == IntPtr.Zero)
+                {
+                    _dpy = XOpenDisplay(IntPtr.Zero);
+                    if (_dpy == IntPtr.Zero) throw new ToolException("method=os needs an X11 display; this game is not running under X11");
+                    _root = XDefaultRootWindow(_dpy);
+                    _pidAtom = XInternAtom(_dpy, "_NET_WM_PID", false);
+                }
+                if (_win == IntPtr.Zero || XPid(_win) != Pid) _win = FindX(_root);
+                if (_win == IntPtr.Zero) throw new ToolException("the game window was not found");
+                return _win;
+            }
+
+            static void PostX(int type, uint detail, int x, int y, uint state)
+            {
+                var w = XWindow();
+                var e = new XEvent { Type = type, Display = _dpy, Window = w, Root = _root, X = x, Y = y, State = state, Detail = detail, SameScreen = 1 };
+                IntPtr child;
+                XTranslateCoordinates(_dpy, w, _root, x, y, out e.XRoot, out e.YRoot, out child);
+                XSendEvent(_dpy, w, false, IntPtr.Zero, ref e);
+                XFlush(_dpy);
+            }
+
+            static uint XMods(EventModifiers m)
+            {
+                return ((m & EventModifiers.Shift) != 0 ? 1u : 0) | ((m & EventModifiers.Control) != 0 ? 4u : 0) | ((m & EventModifiers.Alt) != 0 ? 8u : 0);
+            }
+
+            static uint XCode(KeyCode c)
+            {
+                XWindow();
+                int sym = (int)c >= 32 && (int)c < 127 ? (int)c : c >= KeyCode.F1 && c <= KeyCode.F12 ? 0xFFBE + (c - KeyCode.F1) : 0;
+                switch (c)
+                {
+                    case KeyCode.Return: sym = 0xFF0D; break; case KeyCode.KeypadEnter: sym = 0xFF8D; break; case KeyCode.Escape: sym = 0xFF1B; break;
+                    case KeyCode.Tab: sym = 0xFF09; break; case KeyCode.Backspace: sym = 0xFF08; break; case KeyCode.Delete: sym = 0xFFFF; break;
+                    case KeyCode.LeftArrow: sym = 0xFF51; break; case KeyCode.UpArrow: sym = 0xFF52; break; case KeyCode.RightArrow: sym = 0xFF53; break; case KeyCode.DownArrow: sym = 0xFF54; break;
+                    case KeyCode.Home: sym = 0xFF50; break; case KeyCode.End: sym = 0xFF57; break; case KeyCode.PageUp: sym = 0xFF55; break; case KeyCode.PageDown: sym = 0xFF56; break;
+                    case KeyCode.LeftShift: sym = 0xFFE1; break; case KeyCode.RightShift: sym = 0xFFE2; break; case KeyCode.LeftControl: sym = 0xFFE3; break;
+                    case KeyCode.RightControl: sym = 0xFFE4; break; case KeyCode.LeftAlt: sym = 0xFFE9; break; case KeyCode.RightAlt: sym = 0xFFEA; break;
+                }
+                uint code = sym == 0 ? 0u : XKeysymToKeycode(_dpy, (IntPtr)sym);
+                if (code == 0) throw NoCode(c);
+                return code;
+            }
+
+            static void MouseX(Vector2 p, int buttons, int button, Vector2 wheel)
+            {
+                int x = (int)p.x, y = (int)p.y;
+                // The state field holds the buttons held just before the event.
+                int before = button >= 0 ? buttons ^ 1 << button : buttons;
+                uint state = ((before & 1) != 0 ? 0x100u : 0) | ((before & 4) != 0 ? 0x200u : 0) | ((before & 2) != 0 ? 0x400u : 0);
+                if (button >= 0) { PostX((buttons & 1 << button) != 0 ? 4 : 5, (uint)new[] { 1, 3, 2 }[button], x, y, state); return; }
+                if (wheel == Vector2.zero) { PostX(6, 0, x, y, state); return; }
+                // Wheel notches are buttons 4/5 (up/down) and 6/7 (left/right).
+                for (int i = 0; i < Mathf.Max(1, Mathf.RoundToInt(Mathf.Abs(wheel.y))) && wheel.y != 0; i++) { PostX(4, wheel.y < 0 ? 4u : 5u, x, y, state); PostX(5, wheel.y < 0 ? 4u : 5u, x, y, state); }
+                for (int i = 0; i < Mathf.Max(1, Mathf.RoundToInt(Mathf.Abs(wheel.x))) && wheel.x != 0; i++) { PostX(4, wheel.x < 0 ? 6u : 7u, x, y, state); PostX(5, wheel.x < 0 ? 6u : 7u, x, y, state); }
+            }
+        }
+
+        internal static void Unpatch() { Patch.Off(); }
+
+        /// <summary>method=patch: Harmony prefixes on UnityEngine.Input answer with the agent's keys, pointer and wheel and fall through to the real input otherwise.
+        /// Input.GetMouseButton*, anyKey and anyKeyDown are native (no IL body), so the game and uGUI methods that call them get those calls redirected instead.</summary>
+        static class Patch
+        {
+            // x: first frame the key is held, y: first frame it is released again.
+            static readonly Dictionary<KeyCode, Vector2Int> Keys = new Dictionary<KeyCode, Vector2Int>();
+            static Vector3? _pos;
+            static Vector2 _wheel;
+            static int _wheelFrame = -1;
+            static List<KeyValuePair<MethodBase, MethodInfo>> _patched;
+            static readonly Dictionary<MethodInfo, MethodInfo> Swap = new Dictionary<MethodInfo, MethodInfo>();
+            static FieldInfo _operand;
+
+            public static void On(ToolResponse r)
+            {
+                if (_patched != null) return;
+                if (!ProbeTools.HarmonyAvailable) throw new ToolException("method=patch needs Harmony: built games get 0Harmony.dll from UDriver; in a Unity project put 0Harmony.dll (Lib.Harmony 2.4 or newer, net48 build) into Assets/Plugins. Mono only, not IL2CPP.");
+                _patched = new List<KeyValuePair<MethodBase, MethodInfo>>();
+                var i = typeof(Input);
+                Add(i.GetMethod("GetKey", new[] { typeof(KeyCode) }), "Held");
+                Add(i.GetMethod("GetKeyDown", new[] { typeof(KeyCode) }), "Pressed");
+                Add(i.GetMethod("GetKeyUp", new[] { typeof(KeyCode) }), "Released");
+                Add(i.GetMethod("GetKey", new[] { typeof(string) }), "HeldName");
+                Add(i.GetMethod("GetKeyDown", new[] { typeof(string) }), "PressedName");
+                Add(i.GetMethod("GetKeyUp", new[] { typeof(string) }), "ReleasedName");
+                Add(i.GetMethod("GetAxis", new[] { typeof(string) }), "Axis");
+                Add(i.GetMethod("GetAxisRaw", new[] { typeof(string) }), "Axis");
+                Add(i.GetProperty("mousePosition").GetGetMethod(), "Position");
+                Add(i.GetProperty("mouseScrollDelta").GetGetMethod(), "Wheel");
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                int n;
+                try { n = Callers(); } catch { Off(); throw; }
+                r.Text("method=patch: Input.GetMouseButton/Down/Up and anyKey/anyKeyDown redirected in " + n + " method(s) of the game and uGUI (" + sw.ElapsedMilliseconds + " ms)");
+            }
+
+            /// <summary>Rewrites every call to the native mouse-button and any-key reads in game assemblies and UnityEngine.UI (BaseInput) to Button/ButtonDown/ButtonUp/AnyKey/AnyKeyDown.</summary>
+            static int Callers()
+            {
+                var ci = ProbeTools.HarmonyType("CodeInstruction");
+                var pp = ProbeTools.HarmonyType("PatchProcessor");
+                var read = pp != null ? pp.GetMethod("ReadMethodBody", new[] { typeof(MethodBase) }) : null;
+                if (ci == null || read == null) throw new ToolException("method=patch: this Harmony version has no PatchProcessor.ReadMethodBody; use Lib.Harmony 2.4 or newer");
+                _operand = ci.GetField("operand");
+                var i = typeof(Input);
+                Swap[i.GetMethod("GetMouseButton")] = Own("Button");
+                Swap[i.GetMethod("GetMouseButtonDown")] = Own("ButtonDown");
+                Swap[i.GetMethod("GetMouseButtonUp")] = Own("ButtonUp");
+                Swap[i.GetProperty("anyKey").GetGetMethod()] = Own("AnyKey");
+                Swap[i.GetProperty("anyKeyDown").GetGetMethod()] = Own("AnyKeyDown");
+                var redirect = Own("Redirect").MakeGenericMethod(ci);
+                const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
+                int n = 0;
+                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    if (asm.IsDynamic || StateTools.IsEngine(asm) && asm.GetName().Name != "UnityEngine.UI" || !Array.Exists(asm.GetReferencedAssemblies(), x => x.Name == "UnityEngine" || x.Name == i.Assembly.GetName().Name)) continue;
+                    Type[] types;
+                    try { types = asm.GetTypes(); } catch (ReflectionTypeLoadException e) { types = e.Types; }
+                    foreach (var type in types)
+                    {
+                        if (type == null || type.ContainsGenericParameters) continue;
+                        foreach (var m in type.GetMethods(all))
+                        {
+                            if (m.IsAbstract || m.ContainsGenericParameters) continue;
+                            bool calls = false;
+                            try
+                            {
+                                foreach (var op in (IEnumerable<KeyValuePair<System.Reflection.Emit.OpCode, object>>)read.Invoke(null, new object[] { m }))
+                                    if (op.Value is MethodInfo mi && Swap.ContainsKey(mi)) { calls = true; break; }
+                            }
+                            catch { continue; }
+                            if (!calls) continue;
+                            try { ProbeTools.Hook(m, redirect, 3); _patched.Add(new KeyValuePair<MethodBase, MethodInfo>(m, redirect)); n++; }
+                            catch (Exception e) { Debug.LogWarning("[UDriver] method=patch could not rewrite " + type.FullName + "." + m.Name + ": " + (e.InnerException ?? e).Message); }
+                        }
+                    }
+                }
+                return n;
+            }
+
+            static MethodInfo Own(string name) { return typeof(Patch).GetMethod(name, BindingFlags.NonPublic | BindingFlags.Static); }
+
+            // Harmony transpiler, made generic so it needs no compile-time reference to Harmony's CodeInstruction.
+            static IEnumerable<T> Redirect<T>(IEnumerable<T> code)
+            {
+                foreach (var c in code)
+                {
+                    MethodInfo to;
+                    var mi = _operand.GetValue(c) as MethodInfo;
+                    if (mi != null && Swap.TryGetValue(mi, out to)) _operand.SetValue(c, to);
+                    yield return c;
+                }
+            }
+
+            static bool Button(int b) { return Is(KeyCode.Mouse0 + b, 0) || Input.GetMouseButton(b); }
+            static bool ButtonDown(int b) { return Is(KeyCode.Mouse0 + b, -1) || Input.GetMouseButtonDown(b); }
+            static bool ButtonUp(int b) { return Is(KeyCode.Mouse0 + b, 1) || Input.GetMouseButtonUp(b); }
+            static bool AnyKey() { foreach (var k in Keys.Keys) if (Is(k, 0)) return true; return Input.anyKey; }
+            static bool AnyKeyDown() { foreach (var k in Keys.Keys) if (Is(k, -1)) return true; return Input.anyKeyDown; }
+
+            static void Add(MethodBase target, string prefix)
+            {
+                var p = Own(prefix);
+                try { ProbeTools.Hook(target, p, 1); }
+                catch (Exception e) { Off(); throw new ToolException("method=patch could not patch Input." + target.Name + ": " + (e.InnerException ?? e).Message); }
+                _patched.Add(new KeyValuePair<MethodBase, MethodInfo>(target, p));
+            }
+
+            public static void Off()
+            {
+                Keys.Clear(); _pos = null; _wheelFrame = -1;
+                if (_patched == null) return;
+                foreach (var kv in _patched) ProbeTools.Unpatch(kv.Key, kv.Value);
+                _patched = null;
+            }
+
+            // Edges land on the next frame and a key is held for at least one frame, whenever in the frame the tool runs.
+            public static void Key(KeyCode c, bool down)
+            {
+                int f = Time.frameCount + 1;
+                Vector2Int k;
+                if (down) Keys[c] = new Vector2Int(f, int.MaxValue);
+                else if (Keys.TryGetValue(c, out k) && k.y == int.MaxValue) Keys[c] = new Vector2Int(k.x, Mathf.Max(f, k.x + 1));
+            }
+
+            public static void Mouse(Vector2 screenTopLeft, Vector2 wheel)
+            {
+                _pos = new Vector3(screenTopLeft.x, Screen.height - screenTopLeft.y, 0);
+                if (wheel != Vector2.zero) { _wheel = wheel; _wheelFrame = Time.frameCount + 1; }
+            }
+
+            static bool Is(KeyCode c, int edge)
+            {
+                Vector2Int k;
+                if (!Keys.TryGetValue(c, out k)) return false;
+                int f = Time.frameCount;
+                return edge < 0 ? f == k.x : edge > 0 ? f == k.y : f >= k.x && f < k.y;
+            }
+
+            static KeyCode Named(string n)
+            {
+                if (Keys.Count == 0 || string.IsNullOrEmpty(n)) return KeyCode.None;
+                n = n.Replace(" ", "").Replace("ctrl", "control").Replace("cmd", "command");
+                if (n.Length == 1 && char.IsDigit(n[0])) n = "Alpha" + n;
+                else if (n == "up" || n == "down" || n == "left" || n == "right") n += "arrow";
+                KeyCode c;
+                return Enum.TryParse(n, true, out c) && !char.IsDigit(n[0]) ? c : KeyCode.None;
+            }
+
+            // Harmony prefixes: returning false skips the real Input call and keeps __result.
+            static bool Held(KeyCode __0, ref bool __result) { return !(__result = Is(__0, 0)); }
+            static bool Pressed(KeyCode __0, ref bool __result) { return !(__result = Is(__0, -1)); }
+            static bool Released(KeyCode __0, ref bool __result) { return !(__result = Is(__0, 1)); }
+            static bool HeldName(string __0, ref bool __result) { return !(__result = Is(Named(__0), 0)); }
+            static bool PressedName(string __0, ref bool __result) { return !(__result = Is(Named(__0), -1)); }
+            static bool ReleasedName(string __0, ref bool __result) { return !(__result = Is(Named(__0), 1)); }
+
+            static bool Axis(string __0, ref float __result)
+            {
+                if (Keys.Count == 0) return true;
+                __result = __0 == "Horizontal" ? Dir(KeyCode.D, KeyCode.RightArrow) - Dir(KeyCode.A, KeyCode.LeftArrow)
+                    : __0 == "Vertical" ? Dir(KeyCode.W, KeyCode.UpArrow) - Dir(KeyCode.S, KeyCode.DownArrow) : 0;
+                return __result == 0;
+            }
+
+            static float Dir(KeyCode a, KeyCode b) { return Is(a, 0) || Is(b, 0) ? 1 : 0; }
+
+            static bool Position(ref Vector3 __result)
+            {
+                if (_pos == null) return true;
+                __result = _pos.Value;
+                return false;
+            }
+
+            static bool Wheel(ref Vector2 __result)
+            {
+                if (Time.frameCount != _wheelFrame) return true;
+                __result = _wheel;
+                return false;
             }
         }
 

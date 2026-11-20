@@ -257,7 +257,7 @@ namespace UDriver
         /// data folder, or the server's record of it when the marker is gone.</summary>
         public static bool Marked()
         {
-            string dir = MarkDir, list = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".udriver", "targets.json");
+            string dir = MarkDir, list = Path.Combine(Driver.HomeDir(), "targets.json");
             if (File.Exists(Path.Combine(dir, "changed"))) return true;
             try { return File.Exists(list) && (JObject.Parse(File.ReadAllText(list))["games"] as JArray ?? new JArray()).Any(g => string.Equals((string)g["mark"], dir, PathCase)); }
             catch (Exception) { return false; }
@@ -283,7 +283,7 @@ namespace UDriver
             if (Application.isEditor || !Marked()) return;
             try
             {
-                string h = new[] { MarkDir, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".udriver") }.Select(d => Path.Combine(d, "0Harmony.dll")).FirstOrDefault(File.Exists);
+                string h = new[] { MarkDir, Driver.HomeDir() }.Select(d => Path.Combine(d, "0Harmony.dll")).FirstOrDefault(File.Exists);
                 if (ProbeTools.FindHarmony() == null && h != null) Assembly.Load(harmonyBytes = File.ReadAllBytes(h));
                 var no = Install();
                 if (no.Count > 0) throw new Exception(string.Join("; ", no.Take(5)));

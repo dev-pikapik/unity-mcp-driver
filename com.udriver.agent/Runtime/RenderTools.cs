@@ -30,6 +30,14 @@ namespace UDriver
 
         static double R(double v) { return Math.Round(v, 2); }
 
+#if UNITY_2022_2_OR_NEWER
+        static double RefreshRate() { return Screen.currentResolution.refreshRateRatio.value; }
+        static int MipmapLimit() { return QualitySettings.globalTextureMipmapLimit; }
+#else
+        static double RefreshRate() { return Screen.currentResolution.refreshRate; }
+        static int MipmapLimit() { return QualitySettings.masterTextureLimit; }
+#endif
+
         static JToken Spread(List<double> v)
         {
             if (v.Count == 0) return JValue.CreateNull();
@@ -63,7 +71,11 @@ namespace UDriver
                     FrameTimingManager.CaptureFrameTimings();
                     yield return null;
                     dt.Add(Time.unscaledDeltaTime * 1000.0); frameNo.Add(Time.frameCount - 1);
+#if UNITY_2022_1_OR_NEWER
                     if (FrameTimingManager.GetLatestTimings(1, ft) > 0) { cpuMain.Add(ft[0].cpuMainThreadFrameTime); cpuRender.Add(ft[0].cpuRenderThreadFrameTime); gpu.Add(ft[0].gpuFrameTime); }
+#else
+                    if (FrameTimingManager.GetLatestTimings(1, ft) > 0) { cpuMain.Add(ft[0].cpuFrameTime); cpuRender.Add(0); gpu.Add(ft[0].gpuFrameTime); }
+#endif
                 }
                 var counters = new JObject();
                 int missing = 0;
@@ -91,7 +103,7 @@ namespace UDriver
                 var cm = cpuMain.Count > 0 ? Spread(cpuMain) : Spread(mainMs);
                 var cr = Spread(cpuRender); var g = Spread(gpu);
                 int vsync = QualitySettings.vSyncCount, target = Application.targetFrameRate;
-                double refresh = Screen.currentResolution.refreshRateRatio.value;
+                double refresh = RefreshRate();
                 double cap = vsync > 0 && refresh > 0 ? 1000.0 * vsync / refresh : target > 0 ? 1000.0 / target : 0;
                 string bound = null;
                 double busy = Math.Max(Avg(cm), Math.Max(Avg(cr), Avg(g)));
@@ -241,9 +253,9 @@ namespace UDriver
                 {
                     ["level"] = QualitySettings.names[QualitySettings.GetQualityLevel()], ["vSyncCount"] = QualitySettings.vSyncCount, ["targetFrameRate"] = Application.targetFrameRate,
                     ["antiAliasing"] = QualitySettings.antiAliasing, ["shadows"] = QualitySettings.shadows.ToString(), ["shadowDistance"] = R(QualitySettings.shadowDistance),
-                    ["pixelLightCount"] = QualitySettings.pixelLightCount, ["lodBias"] = R(QualitySettings.lodBias), ["textureMipmapLimit"] = QualitySettings.globalTextureMipmapLimit,
+                    ["pixelLightCount"] = QualitySettings.pixelLightCount, ["lodBias"] = R(QualitySettings.lodBias), ["textureMipmapLimit"] = MipmapLimit(),
                 },
-                ["screen"] = Screen.width + "x" + Screen.height + " " + Screen.fullScreenMode + " @" + R(Screen.currentResolution.refreshRateRatio.value) + "Hz",
+                ["screen"] = Screen.width + "x" + Screen.height + " " + Screen.fullScreenMode + " @" + R(RefreshRate()) + "Hz",
                 ["cameras"] = camArr,
                 ["renderers"] = new JObject { ["active"] = total, ["visible"] = rends.Count, ["offset"] = offset, ["items"] = items },
                 ["lights"] = new JObject { ["total"] = allLights, ["withShadows"] = shadowLights, ["items"] = lights },

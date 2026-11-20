@@ -10,7 +10,7 @@ static class Api
 {
     public static int Port = int.TryParse(Environment.GetEnvironmentVariable("UDRIVER_HTTP_PORT"), out var p) ? p : 8787;
     static readonly Version Own = Version.TryParse(Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0], out var v) ? v : new();
-    public static readonly string Home = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".udriver");
+    public static readonly string Home = Path.Combine(Environment.GetEnvironmentVariable("USERPROFILE") is { Length: > 0 } u ? u : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".udriver");
     static readonly string KeyPath = Path.Combine(Home, "app.key");
     static readonly string Log = Path.Combine(Home, "logs", "server.log");
     static readonly HttpClient Http = new() { Timeout = Timeout.InfiniteTimeSpan };

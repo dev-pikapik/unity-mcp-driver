@@ -45,6 +45,7 @@ namespace UDriver
         [MethodImpl(MethodImplOptions.NoInlining)]
         static int TraceTarget(int n, Tuple<int, string, float> item) { return n + item.Item1; }
 
+#if UNITY_2021_2_OR_NEWER
         public static IEnumerator Run(JObject a, ToolResponse r)
         {
             Lines.Clear(); _fail = _pass = _warn = 0;
@@ -394,5 +395,11 @@ namespace UDriver
             foreach (var l in Lines) r.Text(l);
             if (_fail > 0) r.Text("Send this whole report to the developer of the driver: each FAIL line names the capability that needs a fix for this Unity version.");
         }
+#else
+        public static IEnumerator Run(JObject a, ToolResponse r)
+        {
+            throw new ToolException("self_test needs Unity 2021.2 or newer");
+        }
+#endif
     }
 }

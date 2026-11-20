@@ -6,12 +6,13 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Emit;
 
 /// <summary>Puts the UDriver agent into a built Mono game that does not include the package, and takes it out again.</summary>
 static class Inject
 {
     internal const string Il2Cpp = "This game was built with IL2CPP. UDriver can control it only if the game includes the UDriver package.";
-    const string Dll = "UDriver.Runtime.dll", Json = "Newtonsoft.Json.dll";
+    const string Dll = "UDriver.Runtime.dll", Json = "Newtonsoft.Json.dll", Harmony = "0Harmony.dll";
     static readonly Assembly Self = typeof(Inject).Assembly;
     static readonly string Stamp = Convert.ToHexString(SHA256.HashData(Self.GetManifestResourceNames().Order()
         .SelectMany(n => { using var s = Self.GetManifestResourceStream(n)!; using var m = new MemoryStream(); s.CopyTo(m); return m.ToArray(); }).ToArray()))[..16];
@@ -82,7 +83,7 @@ static class Inject
 
     /// <summary>Makes sure the game at this game file has the agent; an error text when it cannot.
     /// An IL2CPP game is not changed: lib is the native agent to load into it at launch.</summary>
-    internal static string? Ensure(string exe, out string? lib)
+    internal static string? Ensure(string exe, out string? lib, bool computer = true)
     {
         lib = null;
         string data = DataDir(exe), managed = Path.Combine(data, "Managed"), bak = BackupDir(data);
@@ -97,15 +98,17 @@ static class Inject
         string root = AppDir(exe) ?? Path.GetDirectoryName(exe)!;
         if (IsIl2Cpp(exe, data)) return Preload(exe, out lib);
         if (!File.Exists(list)) return "This game is missing " + list + ", so UDriver cannot be added to it.";
+        if (!computer && UnityVersion(data) is { Success: true } v && int.Parse(v.Groups[1].Value) < 6000)
+            return $"Not done: this game was made with Unity {v.Value}, and UDriver keeps agents away from the computer only in games made with Unity 6 or newer. Adding UDriver to an older game needs Computer access, which only the owner can turn on, on the computer that runs UDriver.";
 
-        bool ownJson = !File.Exists(Path.Combine(managed, Json));
+        var own = new[] { Json, Harmony }.Where(n => !File.Exists(Path.Combine(managed, n))).ToArray();
         byte[] dll;
-        try { dll = Compile(exe, managed, ownJson); }
+        try { dll = Compile(exe, managed, own.Contains(Json)); }
         catch (Exception e) { return "UDriver could not be added to this game: " + e.Message; }
 
         string loads = Path.Combine(data, "RuntimeInitializeOnLoads.json");
         var touched = new List<string> { list, loads, Path.Combine(managed, Dll) };
-        if (ownJson) touched.Add(Path.Combine(managed, Json));
+        touched.AddRange(own.Select(n => Path.Combine(managed, n)));
         bool sign = OperatingSystem.IsMacOS() && AppDir(exe) != null;
         if (sign)
         {
@@ -126,11 +129,11 @@ static class Inject
         try
         {
             File.WriteAllBytes(Path.Combine(managed, Dll), dll);
-            if (ownJson) File.WriteAllBytes(Path.Combine(managed, Json), Resource(Json));
+            foreach (var n in own) File.WriteAllBytes(Path.Combine(managed, n), Resource(n));
 
             var sa = JsonNode.Parse(File.ReadAllText(list))!;
             var names = sa["names"]!.AsArray(); var types = sa["types"]!.AsArray();
-            foreach (var n in ownJson ? new[] { Json, Dll } : new[] { Dll })
+            foreach (var n in own.Append(Dll))
                 if (!names.Any(x => (string?)x == n)) { names.Add(n); types.Add(16); }
             File.WriteAllText(list, sa.ToJsonString());
 
@@ -216,19 +219,21 @@ static class Inject
         var v = UnityVersion(Path.GetDirectoryName(managed)!);
         if (!v.Success) throw new Exception("the Unity version of this game could not be read.");
         int major = int.Parse(v.Groups[1].Value), minor = int.Parse(v.Groups[2].Value);
-        if (major < 6000) throw new Exception($"it was made with Unity {v.Value}, and UDriver needs Unity 6 or newer.");
-        if (major > 6000 || minor >= 4) defines.Add("UNITY_6000_4_OR_NEWER");
+        if (major < 2019 || major == 2019 && minor < 4) throw new Exception($"it was made with Unity {v.Value}, and UDriver needs Unity 2019.4 or newer.");
+        for (int y = 2019; y <= Math.Min(major, 2023); y++)
+            for (int m = 1; m <= (y < major ? 4 : minor); m++) defines.Add($"UNITY_{y}_{m}_OR_NEWER");
+        for (int m = 0; major >= 6000 && m <= (major == 6000 ? minor : 9); m++) defines.Add($"UNITY_6000_{m}_OR_NEWER");
 
         var opts = new CSharpParseOptions(LanguageVersion.CSharp9, preprocessorSymbols: defines);
         var trees = Self.GetManifestResourceNames().Where(n => n.StartsWith("rt/"))
-            .Select(n => CSharpSyntaxTree.ParseText(Encoding.UTF8.GetString(Resource(n)), opts, n));
+            .Select(n => CSharpSyntaxTree.ParseText(Encoding.UTF8.GetString(Resource(n)), opts, n, Encoding.UTF8));
         var refs = Directory.GetFiles(managed, "*.dll").Where(f => Path.GetFileName(f) != Dll)
             .Select(f => (MetadataReference)MetadataReference.CreateFromFile(f)).ToList();
         if (ownJson) refs.Add(MetadataReference.CreateFromImage(Resource(Json)));
         var c = CSharpCompilation.Create("UDriver.Runtime", trees, refs,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, optimizationLevel: OptimizationLevel.Release));
         using var ms = new MemoryStream();
-        var r = c.Emit(ms);
+        var r = c.Emit(ms, options: new EmitOptions(debugInformationFormat: DebugInformationFormat.Embedded));
         if (!r.Success)
             throw new Exception($"the agent does not build against this game's Unity {v.Value}: " + string.Join("; ", r.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).Take(3)));
         return ms.ToArray();

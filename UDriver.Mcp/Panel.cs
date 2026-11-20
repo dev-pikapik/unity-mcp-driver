@@ -754,7 +754,7 @@ internal static partial class HttpMode
     }
 
     /// <summary>Copies com.udriver.agent into the project's Packages folder; returns a warning when that was not possible.</summary>
-    static string? InstallPackage(string project)
+    internal static string? InstallPackage(string project)
     {
         try { if (File.ReadAllText(Path.Combine(project, "Packages", "manifest.json")).Contains("\"com.udriver.agent\"")) return null; } catch { }
         string pkg = new[] { Path.Combine(Env("UDRIVER_DIST"), "com.udriver.agent"), Path.Combine(Program.HomeDir, "package", "com.udriver.agent") }

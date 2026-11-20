@@ -75,6 +75,7 @@ namespace UDriver
         {
             if (_roots != null && _rootsFrame == Time.frameCount && Application.isPlaying) return _roots;
             var list = new List<KeyValuePair<float, VisualElement>>();
+#if UNITY_2021_2_OR_NEWER
             foreach (var d in Util.FindAll<UIDocument>())
             {
                 var root = d.rootVisualElement;
@@ -84,6 +85,7 @@ namespace UDriver
                 foreach (var kv in list) if (kv.Value == top) { dup = true; break; }
                 if (!dup) list.Add(new KeyValuePair<float, VisualElement>(d.panelSettings != null ? d.panelSettings.sortingOrder : 0, top));
             }
+#endif
             list.Sort((x, y) => y.Key.CompareTo(x.Key));
             var res = new List<VisualElement>();
             foreach (var kv in list) res.Add(kv.Value);
@@ -156,12 +158,14 @@ namespace UDriver
         public static string ValueOf(VisualElement e)
         {
             // ToggleButtonGroupState prints as a 64-bit mask; list the indices of the pressed buttons instead.
+#if UNITY_2023_2_OR_NEWER
             if (e is ToggleButtonGroup g)
             {
                 var on = new StringBuilder();
                 for (int i = 0; i < g.value.length; i++) if (g.value[i]) on.Append(on.Length > 0 ? "," : "").Append(i);
                 return "on [" + on + "]";
             }
+#endif
             return PropStr(e, "value");
         }
 
@@ -174,7 +178,11 @@ namespace UDriver
             return r;
         }
 
+#if UNITY_2021_2_OR_NEWER
         static bool IsLeafControl(VisualElement e) { return (e is Button || IsBaseField(e.GetType())) && !(e is RadioButtonGroup); }
+#else
+        static bool IsLeafControl(VisualElement e) { return e is Button || IsBaseField(e.GetType()); }
+#endif
 
         public static bool Interactive(VisualElement e)
         {
@@ -501,7 +509,9 @@ namespace UDriver
             if (te != null) r.Text("text: " + Util.Cut(te.text, 500));
             if (!string.IsNullOrEmpty(e.tooltip)) r.Text("tooltip: " + e.tooltip);
             if (e.userData != null) r.Text("userData: " + e.userData.GetType().FullName + " (read with state_get '#" + Id(e) + ".userData')");
+#if UNITY_2023_2_OR_NEWER
             if (e.dataSource != null) r.Text("dataSource: " + e.dataSource.GetType().FullName + " (read with state_get '#" + Id(e) + ".dataSource')");
+#endif
             var center = e.worldBound.center;
             var hit = e.panel.Pick(center);
             r.Text("hit-test at center: " + (hit == null ? "nothing pickable" : hit == e ? "this element" : IsAncestor(e, hit) ? "its child " + Desc(hit) : IsAncestor(hit, e) ? "its ancestor " + Desc(hit) + " (this element is not pickable itself)" : "COVERED by " + Desc(hit)));
@@ -520,11 +530,13 @@ namespace UDriver
             foreach (var top in Roots())
             {
                 if (!Hooked.Add(top)) continue;
+#if UNITY_2021_2_OR_NEWER
                 Reg<PointerDownEvent>(top, "ui.down"); Reg<PointerUpEvent>(top, "ui.up"); Reg<ClickEvent>(top, "ui.click");
                 Reg<PointerMoveEvent>(top, "ui.move"); Reg<WheelEvent>(top, "ui.wheel");
                 Reg<KeyDownEvent>(top, "ui.keydown"); Reg<KeyUpEvent>(top, "ui.keyup");
                 Reg<FocusInEvent>(top, "ui.focus"); Reg<FocusOutEvent>(top, "ui.blur");
                 Reg<NavigationSubmitEvent>(top, "ui.submit"); Reg<NavigationCancelEvent>(top, "ui.cancel"); Reg<NavigationMoveEvent>(top, "ui.navmove");
+#endif
                 RegChange<string>(top); RegChange<bool>(top); RegChange<int>(top); RegChange<float>(top); RegChange<double>(top); RegChange<long>(top);
                 RegChange<Enum>(top); RegChange<Vector2>(top); RegChange<Vector3>(top); RegChange<Color>(top);
             }

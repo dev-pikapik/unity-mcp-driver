@@ -8,7 +8,11 @@ using System.Runtime.CompilerServices;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Unity.Profiling;
+#if UNITY_2022_2_OR_NEWER
 using Unity.Profiling.Memory;
+#else
+using UnityEngine.Profiling.Memory.Experimental;
+#endif
 using UnityEngine;
 using UnityEngine.Profiling;
 using Debug = UnityEngine.Debug;

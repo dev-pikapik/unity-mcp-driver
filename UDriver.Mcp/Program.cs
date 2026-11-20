@@ -101,6 +101,7 @@ internal static partial class Program
         if (name == "rec_replay") return (Recording((string?)args?["id"], out _, out _)?["actions"] as JsonArray ?? new JsonArray())
             .Select(x => x?["input"]?.GetValue<bool>() == true ? 1 : Need((string?)x?["tool"] ?? "", x?["args"] as JsonObject)).Append(1).Max();
         if (ObserveActions.TryGetValue(name, out var ok) && ok.Contains((string?)args?["action"] ?? "status")) return 0;
+        if (args?["method"]?.ToString() == "os" || name == "app_launch" && Registry.Find(args?["path"]?.ToString() ?? "") is { Kind: "project" }) return 3;
         if ((string?)args?["drive"] is "auto" or "direct" || ((string?)args?["fire"])?.StartsWith("method:") == true) return 2;
         int level = ToolManifest.Level(name);
         if (name == "rule_add" && args?["do"] is JsonArray d)
@@ -227,7 +228,8 @@ internal static partial class Program
     /// <summary>The panel server keeps the keys for every UDriver process on this computer.</summary>
     internal static bool IsHub;
 
-    internal static readonly string HomeDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".udriver");
+    // USERPROFILE first: on Windows GetFolderPath ignores it, so a test could not point UDriver at another folder.
+    internal static readonly string HomeDir = Path.Combine(Environment.GetEnvironmentVariable("USERPROFILE") is { Length: > 0 } u ? u : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".udriver");
 
     internal static string HubFile => Path.Combine(HomeDir, "panel.port");
 
@@ -370,10 +372,11 @@ internal static partial class Program
 
     static readonly ToolDef[] LocalTools =
     {
-        new() { Name = "app_launch", Desc = "Start a Unity build (Development Build with the UDriver package) and wait until its driver answers. Several builds can run at once, each on its own port. Returns the app status.",
+        new() { Name = "app_launch", Desc = "Start a Unity build (Development Build with the UDriver package) and wait until its driver answers. Several builds can run at once, each on its own port. Returns the app status. " +
+            "For a Unity project the owner saved with access full, while Computer access is on, opens it in the Unity editor version from its ProjectVersion.txt (installed through Unity Hub), adds the UDriver package if missing and waits for the editor; then use editor_play.",
             Params = new[]
             {
-                P("path", "string", "The game to start: the name of a saved build from targets, or on Windows the .exe or its build folder, on Linux the game file (.x86_64) or its folder, on macOS the .app.", true),
+                P("path", "string", "The game to start: the name of a saved build or project from targets, or on Windows the .exe or its build folder, on Linux the game file (.x86_64) or its folder, on macOS the .app.", true),
                 P("name", "string", "Target name for this copy, the same for every agent; must not be used by another running game (default: the product name, numbered -2, -3 when several copies run)."),
                 P("args", "array", "Extra command-line arguments for the game, e.g. [\"-screen-width\",\"1280\",\"-screen-height\",\"720\",\"-screen-fullscreen\",\"0\"]."),
                 P("port", "integer", $"Driver port (default: the first free one from {ToolManifest.GamePort})."),
@@ -513,7 +516,7 @@ internal static partial class Program
     internal static void StopLaunched()
     {
         lock (Launched)
-            foreach (var t in Launched)
+            foreach (var t in Launched.Where(t => t.Kind != "editor"))
             {
                 Stop(t.Proc!, t.Port);
                 try { if (LaunchName(t.Port, t.Proc!.Id) != null) File.Delete(NameFile(t.Port)); } catch { }
@@ -786,6 +789,7 @@ internal static partial class Program
 
     static bool Free(int port)
     {
+        try { using var c = new TcpClient(); if (c.ConnectAsync(IPAddress.Loopback, port).Wait(300)) return false; } catch { }
         try { var l = new TcpListener(IPAddress.Loopback, port); l.Start(); l.Stop(); return true; } catch { return false; }
     }
 
@@ -813,7 +817,7 @@ internal static partial class Program
         lock (Launched)
             foreach (var l in Launched)
             {
-                if (!found.TryGetValue(l.Port, out var t)) found[l.Port] = t = new Target { Port = l.Port, Path = l.Path, Name = Path.GetFileNameWithoutExtension(l.Path) };
+                if (!found.TryGetValue(l.Port, out var t)) found[l.Port] = t = new Target { Port = l.Port, Kind = l.Kind, Path = l.Path, Name = Path.GetFileNameWithoutExtension(l.Path) };
                 t.Proc = l.Proc;
                 t.Launch = l.Launch;
                 t.Owner = l.Owner;
@@ -882,7 +886,7 @@ internal static partial class Program
 
     static string AccessText(string access) => access == "none" ? "not allowed (the owner can set its access in the UDriver panel)" : "access " + access;
 
-    static string Saved(Registry.Game g) => $"{g.Name}  {g.Kind}  not running  {AccessText(g.Access)}" + (g.Kind == "build" ? "  (app_launch path=" + g.Name + ")" : "  (open it in the Unity editor)") + "  " + g.Path;
+    static string Saved(Registry.Game g) => $"{g.Name}  {g.Kind}  not running  {AccessText(g.Access)}" + "  (app_launch path=" + g.Name + ")" + "  " + g.Path;
 
     static async Task<JsonNode> ListTargets(string? want)
     {
@@ -1042,7 +1046,7 @@ internal static partial class Program
     {
         string path = (string?)args["path"] ?? throw new ArgumentException("path is required");
         var g = Registry.Find(path);
-        if (g is { Kind: "project" }) return Result($"'{g.Name}' is a Unity project, not a build: open it in the Unity editor, then use editor_play.", true);
+        if (g is { Kind: "project" }) return await OpenProject(g, args, byOwner);
         string real;
         if (g != null)
         {
@@ -1051,6 +1055,8 @@ internal static partial class Program
                 real = RealPath(real.EndsWith(".app", StringComparison.OrdinalIgnoreCase) ? Directory.GetFiles(Path.Combine(real, "Contents", "MacOS")).FirstOrDefault() ?? real : GameFile(real) ?? real);
             if (!File.Exists(real)) return Result($"The game file of '{g.Name}' was not found at {g.Path}. The owner can fix the path in the UDriver panel.", true);
         }
+        else if (Registry.Classify(path, out string kind, out _, out _) == null && kind == "project")
+            return Result($"refused: {path} is not a Unity project the owner saved. Only saved projects open (see targets); the owner can add this one in the UDriver panel.", true);
         else if (BuildDirs.Length == 0)
             return Result("app_launch is not enabled on this machine. A human must list the folder(s) that contain game builds in the MCP server configuration: " +
                           "environment variable UDRIVER_BUILDS_DIR (several folders separated by '" + Path.PathSeparator + "'). Until then, start the game manually and use app_connect.", true);
@@ -1069,7 +1075,7 @@ internal static partial class Program
             g = Registry.ForPath(real);
         }
         if (!byOwner && Denied("app_launch", args, null, g) is string no) return Result(no, true);
-        if (Inject.Ensure(real, out string? agentLib) is string cannot) return Result(cannot, true);
+        if (Inject.Ensure(real, out string? agentLib, byOwner || LevelOff(3) == null) is string cannot) return Result(cannot, true);
         if (args["args"] is JsonArray given)
         {
             string? prev = null;
@@ -1259,6 +1265,111 @@ internal static partial class Program
             await Kill(name, new JsonObject { ["force"] = true });
             (Me.LastGame, Me.LastTarget) = (lastGame, lastTarget);
         }
+    }
+
+    /// <summary>Opens a saved project in the editor version it was made with; editor scripts run, so only at access full and only from this computer.</summary>
+    static async Task<JsonNode> OpenProject(Registry.Game g, JsonObject args, bool byOwner)
+    {
+        if (args.Select(a => a.Key).FirstOrDefault(k => k is not ("path" or "waitSec")) is string extra)
+            return Result($"refused: '{extra}' does not apply to a Unity project. For a project app_launch takes only path and waitSec; the Unity editor is always the one Unity Hub installed for the project's version.", true);
+        if (!byOwner)
+        {
+            if (Registry.Level(g.Access) < 2)
+                return Result(g.Access == "none" ? $"\"{g.Name}\" is not allowed: the owner has not given agents access to it. Ask the owner to set its access in the UDriver panel."
+                    : $"\"{g.Name}\" allows {g.Access} only. Opening a project runs its editor scripts, so it needs access full; ask the owner to raise access in the UDriver panel.", true);
+        }
+        string real;
+        try { real = RealPath(g.Path); } catch { real = ""; }
+        var cmp = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        if (!real.Equals(g.Path, cmp) || !Directory.Exists(Path.Combine(real, "Assets")) || !Directory.Exists(Path.Combine(real, "ProjectSettings")))
+            return Result($"refused: the saved project \"{g.Name}\" is no longer a Unity project folder at {g.Path} (moved, deleted or replaced by a link). The owner can fix the path in the UDriver panel.", true);
+
+        var all = await Targets();
+        if (all.FirstOrDefault(t => t.Kind == "editor" && t.Live && t.Game?.Id == g.Id) is Target open)
+        {
+            Used(open, null);
+            return Result($"\"{g.Name}\" is already open in the Unity editor '{open.Name}' on port {open.Port}{(open.Up ? "" : " (still starting; wait with app_connect editorPort=" + open.Port + ")")}. Use editor_play to enter Play Mode.");
+        }
+
+        string ver = "";
+        try { ver = File.ReadLines(Path.Combine(real, "ProjectSettings", "ProjectVersion.txt")).Select(l => l.Trim()).FirstOrDefault(l => l.StartsWith("m_EditorVersion:"))?[16..].Trim() ?? ""; } catch { }
+        var editors = UnityEditors();
+        if (!editors.TryGetValue(ver, out string? unity))
+            return Result((ver.Length == 0 ? $"\"{g.Name}\" names no Unity version in ProjectSettings/ProjectVersion.txt." : $"\"{g.Name}\" needs Unity {ver}, which is not installed through Unity Hub.")
+                          + $" Installed: {(editors.Count == 0 ? "none" : string.Join(", ", editors.Keys.Order()))}. Install that version with Unity Hub; UDriver never opens a project in another version, because that upgrades it.", true);
+        if (!Directory.Exists(Path.Combine(real, "Packages", "com.udriver.agent")) && HttpMode.InstallPackage(real) is string cannot) return Result(cannot, true);
+
+        var used = all.Select(t => t.Port).ToHashSet();
+        int lp = ToolManifest.Ports(true).Prepend(EnvPort("UDRIVER_EDITOR_PORT", ToolManifest.EditorPort)).FirstOrDefault(p => !used.Contains(p) && Free(p));
+        if (lp == 0) return Result($"No free editor port from {ToolManifest.EditorPort} to {ToolManifest.EditorPortLast}: close a Unity editor first.", true);
+        var psi = new ProcessStartInfo(unity)
+        {
+            UseShellExecute = false, WorkingDirectory = real,
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+        };
+        foreach (var key in psi.Environment.Keys.Where(k => k.StartsWith("UDRIVER_", StringComparison.OrdinalIgnoreCase)).ToList()) psi.Environment.Remove(key);
+        if (Environment.GetEnvironmentVariable("UDRIVER_EXPORTS_MAX_MB") is { Length: > 0 } exportsMax) psi.Environment["UDRIVER_EXPORTS_MAX_MB"] = exportsMax;
+        string token = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
+        psi.Environment["UDRIVER_TOKEN"] = token;
+        psi.Environment["UDRIVER_EDITOR_PORT"] = lp.ToString();
+        lock (Tokens) Tokens[lp] = token;
+        psi.ArgumentList.Add("-projectPath");
+        psi.ArgumentList.Add(real);
+        var proc = Process.Start(psi) ?? throw new InvalidOperationException("could not start Unity");
+        Registry.Started(real, proc);
+        lock (Launched)
+        {
+            Launched.RemoveAll(t => t.Port == lp);
+            Launched.Add(new Target { Port = lp, Kind = "editor", Path = real, Proc = proc, Owner = Me.Label });
+        }
+        proc.OutputDataReceived += (_, _) => { };
+        proc.ErrorDataReceived += (_, _) => { };
+        proc.BeginOutputReadLine();
+        proc.BeginErrorReadLine();
+
+        int waitSec = IntArg(args, "waitSec", 300);
+        var sw = Stopwatch.StartNew();
+        while (sw.Elapsed.TotalSeconds < waitSec)
+        {
+            if (proc.HasExited)
+            {
+                lock (Launched) Launched.RemoveAll(t => t.Proc == proc);
+                string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                string log = OperatingSystem.IsWindows() ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Unity", "Editor", "Editor.log")
+                    : OperatingSystem.IsMacOS() ? Path.Combine(home, "Library", "Logs", "Unity", "Editor.log") : Path.Combine(home, ".config", "unity3d", "Editor.log");
+                return Result($"Unity {ver} closed while opening \"{g.Name}\" (code {proc.ExitCode}). If the project is open in another Unity editor, close it there first. Editor log: {log}", true);
+            }
+            if (await PingPid(lp) == proc.Id)
+            {
+                ToolsChanged();
+                var t = (await Targets()).FirstOrDefault(x => x.Port == lp);
+                if (t != null) Used(t, null);
+                return Result($"Opened \"{g.Name}\" in Unity {ver} (pid {proc.Id}) in {sw.Elapsed.TotalSeconds:0}s; its editor is target '{t?.Name}' on port {lp}. " +
+                              "Use editor_play to enter Play Mode. app_kill closes this editor without saving.");
+            }
+            await Task.Delay(1000);
+        }
+        return Result($"Unity {ver} is opening \"{g.Name}\" (pid {proc.Id}), but its editor did not answer on port {lp} within {waitSec}s; the first open of a project can take several minutes. " +
+                      $"Wait with app_connect editorPort={lp}, then use editor_play.");
+    }
+
+    /// <summary>Editor version to executable, only from Unity Hub's install folders.</summary>
+    static Dictionary<string, string> UnityEditors()
+    {
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var roots = new List<string>
+        {
+            OperatingSystem.IsWindows() ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Unity", "Hub", "Editor")
+            : OperatingSystem.IsMacOS() ? "/Applications/Unity/Hub/Editor" : Path.Combine(home, "Unity", "Hub", "Editor"),
+        };
+        string hub = OperatingSystem.IsWindows() ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "UnityHub")
+            : OperatingSystem.IsMacOS() ? Path.Combine(home, "Library", "Application Support", "UnityHub") : Path.Combine(home, ".config", "UnityHub");
+        try { if ((string?)JsonNode.Parse(File.ReadAllText(Path.Combine(hub, "secondaryInstallPath.json"))) is { Length: > 0 } second && Path.IsPathFullyQualified(second)) roots.Add(second); } catch { }
+        string exe = OperatingSystem.IsWindows() ? Path.Combine("Editor", "Unity.exe") : OperatingSystem.IsMacOS() ? "Unity.app/Contents/MacOS/Unity" : Path.Combine("Editor", "Unity");
+        var found = new Dictionary<string, string>();
+        foreach (var root in roots)
+            try { foreach (var d in Directory.GetDirectories(root)) if (File.Exists(Path.Combine(d, exe))) found.TryAdd(Path.GetFileName(d), Path.Combine(d, exe)); } catch { }
+        return found;
     }
 
     /// <summary>The file named after its NAME_Data folder, so UnityCrashHandler*.exe is skipped.</summary>

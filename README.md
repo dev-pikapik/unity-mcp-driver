@@ -29,7 +29,7 @@ It works with UI Toolkit and uGUI, in Play Mode, Edit Mode and game builds.
   «Выполнить в любом случае».
 - **Linux** (x64): `UDriver-linux.AppImage`. Разрешите запуск файла как программы и откройте его.
 
-You need Unity 6000.0 or newer. Open UDriver, add your game, and ask your agent to run `self_test`: it checks what
+You need Unity 6000.0 or newer; a built Mono game without the UDriver package can be from Unity 2019.4 on. Open UDriver, add your game, and ask your agent to run `self_test`: it checks what
 works in your project. UDriver updates itself from the same page.
 
 ## What the agent can do
@@ -70,7 +70,8 @@ Each game has its own access level, which you set in the panel or in the termina
 
 - **Watch.** Looks at the screen, the interface, the logs and the game data. Changes nothing.
 - **Play.** Also clicks, types, moves, presses keys, starts and stops the game and runs tests, like a player or a tester.
-- **Full control.** Also changes game data, calls game code, builds the game and opens scenes. Use it for debugging.
+- **Full control.** Also changes game data, calls game code, builds the game and opens scenes. An agent on this
+  computer can also open a project you added in the Unity editor. Use it for debugging.
 
 The panel lists every connected agent. You can disconnect any of them at any time.
 
@@ -110,6 +111,9 @@ The agent works only inside the games you add. UDriver doesn't give it your file
   Web pages can't reach them.
 - Reading and changing game data can't reach files, processes, the network or environment variables.
 - `app_launch` runs only the games you added, with short window and graphics arguments only.
+- `app_launch` opens only a Unity project you added with full control, and only for an agent on this computer. It
+  uses the Unity version the project asks for, installed through Unity Hub, and never upgrades the project. It adds
+  the UDriver package to the project if it is missing.
 - Screenshots show only the game window, never the desktop.
 - `state_export` and `memory_capture` write files to `~/.udriver/exports`. The folder keeps at most 2 GB and deletes
   its oldest files first. To change the limit, set the environment variable `UDRIVER_EXPORTS_MAX_MB` (in megabytes)
@@ -135,7 +139,7 @@ Found a vulnerability? Please report it privately, see [SECURITY.md](SECURITY.md
 ## Good to know
 
 - Interfaces drawn with IMGUI (`OnGUI`) aren't in the UI tree. The agent uses screenshots and clicks by position.
-- `trace_add` needs Harmony 2.4 or newer (`0Harmony.dll` in `Assets/Plugins`) and doesn't work in IL2CPP builds.
+- `trace_add` needs Harmony 2.4 or newer (`0Harmony.dll` in `Assets/Plugins`; UDriver adds it to built games itself) and doesn't work in IL2CPP builds.
 - IL2CPP builds strip unused code, so game data reads reach only what was kept. Set *Managed Stripping Level* to Minimal.
 - Input through the Input System reaches the game only while its window is in front. Plain UI clicks work in the background.
 - While the editor compiles or reloads scripts, it doesn't answer for up to 25 seconds.
@@ -242,3 +246,5 @@ you how to delete the Cloudflare tunnel, and asks before deleting `%USERPROFILE%
 Free to use, including at work. Redistribution and resale need written permission. Full terms: [LICENSE](LICENSE).
 
 Copyright (c) 2026 Vladislav Pesotchi.
+
+UDriver puts two MIT-licensed libraries into built games: [Newtonsoft.Json](https://github.com/JamesNK/Newtonsoft.Json/blob/master/LICENSE.md), Copyright (c) 2007 James Newton-King, and [Harmony](https://github.com/pardeike/Harmony/blob/master/LICENSE), Copyright (c) 2017 Andreas Pardeike.

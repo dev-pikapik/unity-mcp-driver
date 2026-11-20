@@ -9,7 +9,9 @@ using System.Text;
 using System.Threading;
 using Newtonsoft.Json.Linq;
 using Unity.Profiling;
+#if UNITY_2020_2_OR_NEWER
 using Unity.Profiling.LowLevel.Unsafe;
+#endif
 using UnityEngine;
 using UnityEngine.Profiling;
 
@@ -221,6 +223,29 @@ namespace UDriver
             _postfix = typeof(ProbeTools).GetMethod("TraceResult", f);
             _finalizer = typeof(ProbeTools).GetMethod("TraceFinalizer", f);
             if (_patch == null || _unpatch == null) throw new ToolException("unsupported Harmony version (Patch/Unpatch not found)");
+        }
+
+        /// <summary>slot: 1 prefix, 3 transpiler (Harmony.Patch argument order).</summary>
+        internal static void Hook(MethodBase target, MethodInfo patch, int slot)
+        {
+            EnsureHarmony();
+            var argv = new object[_patch.GetParameters().Length];
+            argv[0] = target; argv[slot] = HMethod(patch);
+            _patch.Invoke(_harmony, argv);
+        }
+
+        internal static Type HarmonyType(string name) { return FindHarmony() != null ? _hType.Assembly.GetType("HarmonyLib." + name) : null; }
+
+        internal static void Unpatch(MethodBase target, MethodInfo prefix)
+        {
+            try
+            {
+                if (!prefix.IsGenericMethod) { _unpatch.Invoke(_harmony, new object[] { target, prefix }); return; }
+                // Harmony does not match a constructed generic patch method, so our transpilers go by owner.
+                var kind = HarmonyType("HarmonyPatchType");
+                _hType.GetMethod("Unpatch", new[] { typeof(MethodBase), kind, typeof(string) }).Invoke(_harmony, new object[] { target, Enum.Parse(kind, "Transpiler"), "udriver.trace" });
+            }
+            catch { }
         }
 
         internal static object HMethod(MethodInfo m)
@@ -522,4 +547,29 @@ namespace UDriver
             r.Text(n + " counter(s)" + (more > 0 ? ", " + more + " more - use 'contains' to filter" : "") + ". Add one with profiler_get add=[\"Category/Name\"].");
         }
     }
+
+#if !UNITY_2020_2_OR_NEWER
+    enum ProfilerCategory { Memory, Render, Internal }
+    struct ProfilerSample { public long Value; }
+    struct ProfilerRecorderDescription { public string Category, Name, UnitType; }
+
+    struct ProfilerRecorder : IDisposable
+    {
+        public ProfilerRecorder(string category, string name, int capacity) { }
+        public static ProfilerRecorder StartNew(ProfilerCategory category, string name, int capacity = 1) { return default(ProfilerRecorder); }
+        public bool Valid { get { return false; } }
+        public long CurrentValue { get { return 0; } }
+        public long LastValue { get { return 0; } }
+        public long Count { get { return 0; } }
+        public ProfilerSample GetSample(int i) { return default(ProfilerSample); }
+        public void Start() { }
+        public void Dispose() { }
+    }
+
+    struct ProfilerRecorderHandle
+    {
+        public static void GetAvailable(List<ProfilerRecorderHandle> list) { }
+        public static ProfilerRecorderDescription GetDescription(ProfilerRecorderHandle h) { return default(ProfilerRecorderDescription); }
+    }
+#endif
 }

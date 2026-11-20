@@ -278,8 +278,9 @@ static class Eval
             if ((string?)cache[hash] is string known) why = known;
             else
             {
+                byte[] harmony = global::Inject.Resource("0Harmony.dll");
                 for (int i = 0; i < files.Length && why.Length == 0; i++)
-                    try { why = Scan(Path.GetFileNameWithoutExtension(files[i]), bytes[i], managed) ?? ""; }
+                    try { why = Path.GetFileName(files[i]) == "0Harmony.dll" && bytes[i].AsSpan().SequenceEqual(harmony) ? "" : Scan(Path.GetFileNameWithoutExtension(files[i]), bytes[i], managed) ?? ""; }
                     catch (Exception e) { why = Path.GetFileName(files[i]) + " cannot be read: " + e.Message; }
                 cache[hash] = why;
                 Directory.CreateDirectory(Program.HomeDir);
@@ -308,6 +309,7 @@ static class Eval
             TypeSpecification s => Fp(s.ElementType),
             _ => false,
         };
+        if (m.AssemblyReferences.Any(a => a.Name == "0Harmony")) return $"{name}: changes code while it runs through Harmony";
         foreach (var t in m.GetTypes())
         {
             if (t.Fields.FirstOrDefault(f => Fp(f.FieldType)) is { } fpf) return $"{name}: function pointer {t.FullName}.{fpf.Name}";

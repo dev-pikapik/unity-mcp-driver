@@ -204,7 +204,7 @@ namespace UDriver
             for (int i = 0; i < px.Length; i += 7) { var c = px[i]; hash = hash * 31 + (c.r << 16 | c.g << 8 | c.b); }
             if (_onlyChanges && label == null && hash == _lastHash && Frames.Count > 0) return;
             _lastHash = hash;
-            Frames.Add(new Frame { Index = _nextIndex++, FrameNo = Time.frameCount, Time = Time.realtimeSinceStartupAsDouble, Jpg = Encode(px, w, h, 60), Label = label });
+            Frames.Add(new Frame { Index = _nextIndex++, FrameNo = Time.frameCount, Time = Util.Seconds, Jpg = Encode(px, w, h, 60), Label = label });
             while (Frames.Count > Mathf.Max(1, _cap)) Frames.RemoveAt(0);
         }
 
@@ -216,8 +216,8 @@ namespace UDriver
             {
                 yield return wait;
                 if (!_rec) break;
-                if (Time.realtimeSinceStartupAsDouble < next) continue;
-                next = Time.realtimeSinceStartupAsDouble + _interval;
+                if (Util.Seconds < next) continue;
+                next = Util.Seconds + _interval;
                 try { Store(null); } catch (Exception e) { _rec = false; Debug.LogWarning("[UDriver] frame recording stopped: " + e.Message); }
             }
         }
@@ -240,7 +240,7 @@ namespace UDriver
             if (Frames.Count == 0) return "recording: " + _rec + ", no frames stored";
             var f0 = Frames[0]; var f1 = Frames[Frames.Count - 1];
             var sb = new StringBuilder("recording: " + _rec + ", " + Frames.Count + " frame(s), indices " + f0.Index + ".." + f1.Index
-                                       + ", time " + f0.Time.ToString("0.00", CultureInfo.InvariantCulture) + "s.." + f1.Time.ToString("0.00", CultureInfo.InvariantCulture) + "s (now " + Time.realtimeSinceStartupAsDouble.ToString("0.00", CultureInfo.InvariantCulture) + "s)");
+                                       + ", time " + f0.Time.ToString("0.00", CultureInfo.InvariantCulture) + "s.." + f1.Time.ToString("0.00", CultureInfo.InvariantCulture) + "s (now " + Util.Seconds.ToString("0.00", CultureInfo.InvariantCulture) + "s)");
             foreach (var f in Frames) if (f.Label != null) sb.Append("\n  labelled: index " + f.Index + " (" + f.Label + ", frame " + f.FrameNo + ")");
             return sb.ToString();
         }

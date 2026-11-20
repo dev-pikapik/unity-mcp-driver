@@ -109,7 +109,14 @@ namespace UDriver
 
         static string FileFor(int port, string ext)
         {
-            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".udriver", port + ext);
+            return Path.Combine(HomeDir(), port + ext);
+        }
+
+        /// <summary>~/.udriver; USERPROFILE first, the same as the server.</summary>
+        internal static string HomeDir()
+        {
+            string u = Environment.GetEnvironmentVariable("USERPROFILE");
+            return Path.Combine(string.IsNullOrEmpty(u) ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) : u, ".udriver");
         }
 
         /// <summary>Only a hash of the key is kept, in this process's environment, so it survives editor reloads and is shared by the editor and game ports; children do not inherit it.</summary>
@@ -399,6 +406,7 @@ namespace UDriver
             try { _listener?.Stop(); _listener?.Close(); } catch { }
             _listener = null;
             ProbeTools.RemoveAll();
+            InputTools.Unpatch();
         }
 
         /// <summary>Register a handler for a tool declared in ToolManifest.</summary>
@@ -646,7 +654,7 @@ namespace UDriver
             r.Text("input: " + InputTools.Controls(Current));
             r.Text("screen: " + Screen.width + "x" + Screen.height + " | focused: " + Application.isFocused + " | frame: " + Time.frameCount
                    + " | fps: " + (Time.unscaledDeltaTime > 0 ? (1f / Time.unscaledDeltaTime).ToString("0", CultureInfo.InvariantCulture) : "?") + " | timeScale: " + Time.timeScale);
-            r.Text("ui panels: " + UiTools.Roots().Count + " | input methods: event" + (InputTools.InjectAvailable ? ", input" : " (Input System not active: method=input unavailable)") + (InputTools.OsKeysAvailable ? ", os (real key events for Input.GetKey)" : ""));
+            r.Text("ui panels: " + UiTools.Roots().Count + " | input methods: event" + (InputTools.InjectAvailable ? ", input" : " (Input System not active: method=input unavailable)") + (InputTools.OsKeysAvailable ? ", os (real key and mouse events for the old Input Manager)" : "") + (ProbeTools.HarmonyAvailable ? ", patch (old Input Manager through Harmony)" : ""));
             #if ENABLE_IL2CPP
             r.Text("trace_add: not available in IL2CPP builds (method tracing needs a Mono build)");
 #else
@@ -659,6 +667,11 @@ namespace UDriver
 
     public static class Util
     {
+#if UNITY_2020_2_OR_NEWER
+        public static double Seconds { get { return Time.realtimeSinceStartupAsDouble; } }
+#else
+        public static double Seconds { get { return Time.realtimeSinceStartup; } }
+#endif
         static bool Null(JToken t) { return t == null || t.Type == JTokenType.Null; }
         public static bool Has(this JObject a, string k) { return !Null(a[k]); }
         public static string Str(this JObject a, string k, string d = null) { var t = a[k]; return Null(t) ? d : t.ToString(); }
@@ -684,13 +697,15 @@ namespace UDriver
             return new[] { t.ToString() };
         }
 
-        /// <summary>Wraps the API that changed in Unity 6000.4.</summary>
+        /// <summary>Wraps the API that changed across Unity versions.</summary>
         public static T[] FindAll<T>() where T : UnityEngine.Object
         {
 #if UNITY_6000_4_OR_NEWER
             return UnityEngine.Object.FindObjectsByType<T>();
-#else
+#elif UNITY_2023_1_OR_NEWER
             return UnityEngine.Object.FindObjectsByType<T>(FindObjectsSortMode.None);
+#else
+            return UnityEngine.Object.FindObjectsOfType<T>();
 #endif
         }
 

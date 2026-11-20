@@ -133,7 +133,7 @@ namespace UDriver
         static bool EditorOnly(Assembly asm) { return false; }
 #endif
 
-        static bool IsEngine(Assembly asm)
+        internal static bool IsEngine(Assembly asm)
         {
             string n = asm.GetName().Name;
             foreach (var p in EnginePrefixes) if (n.StartsWith(p, StringComparison.Ordinal)) return true;
@@ -364,8 +364,10 @@ namespace UDriver
 #if UNITY_6000_4_OR_NEWER
                 long e;
                 var o = long.TryParse(id.Substring(2), out e) ? Resources.EntityIdToObject(EntityId.FromULong((ulong)e)) : null;
-#else
+#elif UNITY_2020_2_OR_NEWER
                 var o = ok ? Resources.InstanceIDToObject(n) : null;
+#else
+                var o = ok ? Array.Find(Resources.FindObjectsOfTypeAll<UnityEngine.Object>(), x => x.GetInstanceID() == n) : null;
 #endif
                 if (o == null) throw new ToolException("object " + id + " not found (destroyed?)");
                 return o;
@@ -1012,7 +1014,7 @@ namespace UDriver
 
         internal static string ExportDir()
         {
-            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".udriver", "exports");
+            string dir = Path.Combine(Driver.HomeDir(), "exports");
             Sandbox.Own(() => Directory.CreateDirectory(dir));
             Driver.OwnerOnly(dir, true);
             return dir;
