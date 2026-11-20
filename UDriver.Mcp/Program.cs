@@ -1227,6 +1227,8 @@ internal static partial class Program
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
         };
         foreach (var key in psi.Environment.Keys.Where(k => k.StartsWith("UDRIVER_", StringComparison.OrdinalIgnoreCase)).ToList()) psi.Environment.Remove(key);
+        // As Steam does when it starts a game; without it the game asks Steam to start it again and quits, so UDriver loses it.
+        if (Inject.SteamAppId(real) is { } steamId) psi.Environment["SteamAppId"] = psi.Environment["SteamGameId"] = steamId;
         // Only the game gets the variable; the agent removes it before the game starts anything else.
         if (agentLib != null) psi.Environment[OperatingSystem.IsMacOS() ? "DYLD_INSERT_LIBRARIES" : "LD_PRELOAD"] = agentLib;
         if (Environment.GetEnvironmentVariable("UDRIVER_EXPORTS_MAX_MB") is { Length: > 0 } exportsMax) psi.Environment["UDRIVER_EXPORTS_MAX_MB"] = exportsMax;

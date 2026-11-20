@@ -35,6 +35,20 @@ static class Inject
         catch (IOException) { return ""; }
     }
 
+    /// <summary>The Steam app id of a game installed in a Steam library (steamapps/common/FOLDER), from the library's appmanifest_ID.acf.</summary>
+    internal static string? SteamAppId(string exe)
+    {
+        for (var d = new DirectoryInfo(Path.GetDirectoryName(exe)!); d.Parent?.Parent is { } library; d = d.Parent)
+        {
+            if (d.Parent.Name != "common" || library.Name != "steamapps") continue;
+            var installDir = new Regex($"\"installdir\"\\s+\"{Regex.Escape(d.Name)}\"", RegexOptions.IgnoreCase);
+            foreach (var f in Directory.EnumerateFiles(library.FullName, "appmanifest_*.acf"))
+                try { if (installDir.IsMatch(File.ReadAllText(f))) return Path.GetFileNameWithoutExtension(f)["appmanifest_".Length..]; } catch (IOException) { }
+            return null;
+        }
+        return null;
+    }
+
     /// <summary>The program the .app names in CFBundleExecutable: Steam games keep helpers such as Restarter next to it in Contents/MacOS.</summary>
     static string? MacExe(string app)
     {

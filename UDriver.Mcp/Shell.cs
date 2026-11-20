@@ -75,6 +75,7 @@ static class Shell
         (deny lsopen)
         (deny appleevent-send)
         (deny signal (target others))
+        {STEAM}
         (deny mach-lookup
           (global-name "com.apple.pasteboard.1") (global-name "com.apple.pboard")
           (global-name "com.apple.SecurityServer") (global-name-regex #"^com\.apple\.securityd") (global-name-regex #"^com\.apple\.ctkd")
@@ -86,14 +87,14 @@ static class Shell
           (subpath (param "EXPORTS")) (literal (param "LOG")) (literal "/dev/null") (literal "/dev/dtracehelper") (regex #"^/dev/tty") (regex #"^/private/tmp/mm-exhelper\.dylib\."))
         (deny file-read*)
         (allow file-read*
-          (subpath (param "GAME")) (subpath (param "SAVE")) (subpath (param "SAVEID")) (subpath (param "LOGS")) (subpath (param "TEMP")) (subpath (param "CACHE")) (subpath (param "CACHES")) (subpath (param "SERVER"))
+          (subpath (param "GAME")) (subpath (param "GAMEDIR")) (subpath (param "WORKSHOP")) (subpath (param "STEAMCLIENT")) (literal (param "STEAMREG")) (subpath (param "SAVE")) (subpath (param "SAVEID")) (subpath (param "LOGS")) (subpath (param "TEMP")) (subpath (param "CACHE")) (subpath (param "CACHES")) (subpath (param "SERVER"))
           (subpath (param "EXPORTS")) (literal (param "TARGETS")) (literal (param "LOG")) (literal (param "HARMONY")) (regex #"^/private/tmp/mm-exhelper\.dylib\.") (literal "/") (subpath "/System") (subpath "/usr/lib") (subpath "/usr/share") (subpath "/Library/Fonts")
           (subpath "/Library/Apple/System") (subpath "/private/var/db/timezone") (subpath "/private/etc") (subpath "/dev")
           (subpath (param "METAL")) (subpath (string-append (param "HOME") "/Library/Fonts"))
           (subpath (string-append (param "HOME") "/Library/Keyboard Layouts")) (subpath (string-append (param "HOME") "/Library/Input Methods")))
         (allow file-read-metadata)
         (deny file-read-metadata (subpath (param "HOME")))
-        (allow file-read-metadata (literal (param "HOME")) (subpath (param "GAME")) (subpath (param "SERVER")) (subpath (param "EXPORTS")) (literal (param "TARGETS")) (subpath (param "SAVE")) (subpath (param "SAVEID")) (subpath (param "LOGS")) (literal (param "LOG")) (literal (param "SAVEUP")) (literal (param "LOGSUP"))
+        (allow file-read-metadata (literal (param "HOME")) (subpath (param "GAME")) (subpath (param "GAMEDIR")) (literal (param "STEAM")) (literal (param "STEAMAPPS")) (literal (param "STEAMCOMMON")) (subpath (param "WORKSHOP")) (subpath (param "STEAMCLIENT")) (literal (param "STEAMREG")) (subpath (param "SERVER")) (subpath (param "EXPORTS")) (literal (param "TARGETS")) (subpath (param "SAVE")) (subpath (param "SAVEID")) (subpath (param "LOGS")) (literal (param "LOG")) (literal (param "SAVEUP")) (literal (param "LOGSUP"))
           (literal (string-append (param "HOME") "/Library")) (literal (string-append (param "HOME") "/Library/Application Support"))
           (literal (string-append (param "HOME") "/Library/Logs")) (literal (string-append (param "HOME") "/Library/Caches")) (subpath (param "CACHES")) (subpath (string-append (param "HOME") "/Library/Fonts")))
         """;
@@ -115,12 +116,17 @@ static class Shell
         if (company.Length == 0 || id.Length == 0 || Path.GetFileName(id) != id || id.StartsWith('.')) return null;
         // Unity takes the home folder from the user database, not from HOME.
         string home = Real(Marshal.PtrToStringUTF8(Marshal.ReadIntPtr(getpwuid(getuid()), 48))!);
+        // A Steam game reads its install folder and its Workshop items and reaches the Steam client; other games get nothing of Steam (the names fall back to the game itself).
+        string dir = Path.GetDirectoryName(app)!, steam = Path.Combine(home, "Library", "Application Support", "Steam");
+        bool fromSteam = Path.GetFileName(Path.GetDirectoryName(dir)) == "common" && Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName(dir))) == "steamapps";
         string temp = Real(Path.GetTempPath()), cache = Path.Combine(Path.GetDirectoryName(temp)!, "C");
         return new Dictionary<string, string>
         {
             ["GAME"] = app, ["HOME"] = home, ["EXE"] = Real(exe), ["LOG"] = Real(log), ["HARMONY"] = Path.Combine(Real(Program.HomeDir), "0Harmony.dll"),
             ["EXPORTS"] = Path.Combine(Real(Program.HomeDir), "exports"), ["TARGETS"] = Path.Combine(Real(Program.HomeDir), "targets.json"),
-            ["SERVER"] = Real(AppContext.BaseDirectory),
+            ["SERVER"] = Real(AppContext.BaseDirectory), ["GAMEDIR"] = fromSteam ? dir : app,
+            ["STEAM"] = fromSteam ? steam : app, ["STEAMCOMMON"] = fromSteam ? Path.GetDirectoryName(dir)! : app, ["STEAMAPPS"] = fromSteam ? Path.GetDirectoryName(Path.GetDirectoryName(dir))! : app,
+            ["WORKSHOP"] = fromSteam && Inject.SteamAppId(exe) is { } steamId ? Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(dir))!, "workshop", "content", steamId) : app, ["STEAMCLIENT"] = fromSteam ? Path.Combine(steam, "Steam.AppBundle") : app, ["STEAMREG"] = fromSteam ? Path.Combine(steam, "registry.vdf") : app,
             ["SAVE"] = Path.Combine(home, "Library", "Application Support", company, product),
             ["LOGS"] = Path.Combine(home, "Library", "Logs", company, product),
             // Unity games also keep files under their bundle id.
@@ -193,7 +199,9 @@ static class Shell
             if (MacDirs(exe, log) is not { } dirs) return Fail("no company, product or bundle id in the game");
             // Temporary files of the game's libraries go to its own temp folder, the one place under the system's temp it may write.
             Environment.SetEnvironmentVariable("TMPDIR", dirs["TEMP"] + "/");
-            string profile = MacProfile.Replace("{CLOSED}", string.Join("\n", closed.Select(p => $"(deny network-outbound (remote tcp \"localhost:{p}\"))")));
+            string profile = MacProfile.Replace("{CLOSED}", string.Join("\n", closed.Select(p => $"(deny network-outbound (remote tcp \"localhost:{p}\"))")))
+                // The Steam library checks that Steam runs with kill(pid, 0) and refuses to start the game when that fails.
+                .Replace("{STEAM}", dirs["STEAM"] != dirs["GAME"] ? "(allow signal (target others))" : "");
             var macArgv = a.Skip(3).Append(null).ToArray();
             var macEnvp = Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>().Select(e => e.Key + "=" + e.Value).Append(null).ToArray();
             if (sandbox_init_with_parameters(profile, 0, dirs.SelectMany(d => new string?[] { d.Key, d.Value }).Append(null).ToArray(), out var err) != 0)
