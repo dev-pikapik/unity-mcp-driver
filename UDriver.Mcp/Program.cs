@@ -477,8 +477,8 @@ internal static partial class Program
         if (args is ["setup"]) { HttpMode.TerminalSetup(); return; }
         if (args is ["inject" or "restore", var gamePath]) { Environment.ExitCode = Inject.Run(args[0], gamePath); return; }
         if (args is ["tui" or "status" or "approve" or "deny" or "code" or "tools" or "levels" or "computer" or "clear-mark", ..]) { Environment.ExitCode = await Cli.Run(args); return; }
-        // 1.0 game drivers left their keys in files.
-        try { foreach (var f in Directory.EnumerateFiles(HomeDir, "*.token")) File.Delete(f); } catch { }
+        // Game drivers from before 2.0 keep their keys in files; a running game's file stays, it tells OldAgent the game needs updating.
+        try { foreach (var f in Directory.EnumerateFiles(HomeDir, "*.token")) if (!int.TryParse(Path.GetFileNameWithoutExtension(f), out int tp) || Free(tp)) File.Delete(f); } catch { }
         if (int.TryParse(Environment.GetEnvironmentVariable("UDRIVER_HTTP_PORT"), out int httpPort))
         {
             HttpOn = true;
@@ -811,6 +811,11 @@ internal static partial class Program
         try { using var p = Process.GetProcessById(pid); return p.HasExited; } catch (ArgumentException) { return true; } catch { return false; }
     }
 
+    internal const string OldAgentText = "This game has an old UDriver inside, so agents cannot connect to it. Close the game and start it once from UDriver (Launch in the UDriver app, or app_launch): UDriver then updates it.";
+
+    /// <summary>A game with a UDriver package from before 2.0 inside: such drivers leave a key file, the current one never does.</summary>
+    internal static bool OldAgent(int port) => File.Exists(Path.Combine(HomeDir, port + ".token"));
+
     static bool Free(int port)
     {
         try { using var c = new TcpClient(); if (c.ConnectAsync(IPAddress.Loopback, port).Wait(300)) return false; } catch { }
@@ -937,6 +942,7 @@ internal static partial class Program
             return await Watch(port, name, args, Result($"timeout: '{name}' got no answer within {limit:0} s.", true));
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException && !Cancel.Value.IsCancellationRequested) { return null; }
+        if (status == 401 && OldAgent(port)) return Result(OldAgentText, true);
         if (status == 401)
             return Result($"The game or editor on port {port} is not connected to this UDriver. If the owner has not allowed it yet, ask them to set its access in the UDriver panel. If another program connected to it first, restart it, or start the build with app_launch.", true);
         JsonNode? json;

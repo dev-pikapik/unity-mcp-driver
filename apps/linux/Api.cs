@@ -70,13 +70,26 @@ static class Api
     /// True when the server on the port is UDriver of this app's version or newer, not an older install.
     static async Task<bool> Ours() => Version.TryParse(await ServerVersion(), out var v) && v >= Own;
 
-    static int FreePort()
+    static bool Free(int port)
     {
+        try { var l = new TcpListener(IPAddress.Loopback, port); l.Start(); l.Stop(); return true; }
+        catch (SocketException) { return false; }
+    }
+
+    /// Moves to the first port after the usual one that runs this app's UDriver (true) or is free, so the address in agent setups survives a restart.
+    static async Task<bool> NextPort()
+    {
+        int first = Port;
+        for (Port = first + 1; Port <= first + 20; Port++)
+        {
+            if (await Ours()) return true;
+            if (Free(Port)) return false;
+        }
         var l = new TcpListener(IPAddress.Loopback, 0);
         l.Start();
-        int port = ((IPEndPoint)l.LocalEndpoint).Port;
+        Port = ((IPEndPoint)l.LocalEndpoint).Port;
         l.Stop();
-        return port;
+        return false;
     }
 
     /// The server as a command line: the copy inside this app, or .NET with the installed server.
@@ -90,7 +103,7 @@ static class Api
     }
 
     /// Starts the server unless this app's UDriver already answers; returns an error to show, or null once it answers.
-    /// Another program or an older UDriver on the port is left alone: the server then starts on a free port.
+    /// Another program or an older UDriver on the port is left alone: the server then starts on the next free port.
     public static async Task<string?> EnsureServer()
     {
         if (await Ours()) return null;
@@ -101,7 +114,7 @@ static class Api
             if (await Ours()) return null;
             Port = first;
         }
-        if (started is not { HasExited: false } && await Running()) Port = FreePort();
+        if (started is not { HasExited: false } && await Running() && await NextPort()) return null;
         if (started is not { HasExited: false } && Start() is { } error) return error;
         for (int i = 0; i < 100; i++)
         {

@@ -64,13 +64,26 @@ static class Api
     /// True when the server on the port is UDriver of this app's version or newer, not an older install.
     static async Task<bool> Ours() => Version.TryParse(await ServerVersion(), out var v) && v >= Own;
 
-    static int FreePort()
+    static bool Free(int port)
     {
+        try { var l = new TcpListener(IPAddress.Loopback, port); l.Start(); l.Stop(); return true; }
+        catch (SocketException) { return false; }
+    }
+
+    /// Moves to the first port after the usual one that runs this app's UDriver (true) or is free, so the address in agent setups survives a restart.
+    static async Task<bool> NextPort()
+    {
+        int first = Port;
+        for (Port = first + 1; Port <= first + 20; Port++)
+        {
+            if (await Ours()) return true;
+            if (Free(Port)) return false;
+        }
         var l = new TcpListener(IPAddress.Loopback, 0);
         l.Start();
-        int port = ((IPEndPoint)l.LocalEndpoint).Port;
+        Port = ((IPEndPoint)l.LocalEndpoint).Port;
         l.Stop();
-        return port;
+        return false;
     }
 
     public static (string File, string[] Args)? Server()
@@ -87,7 +100,7 @@ static class Api
 
     public static async Task<string?> Ensure()
     {
-        // Another program or an older UDriver on the port is left alone: the server then starts on a free port.
+        // Another program or an older UDriver on the port is left alone: the server then starts on the next free port.
         if (await Ours())
         {
             for (int i = 0; i < 50 && !File.Exists(KeyPath); i++) await Task.Delay(200);
@@ -100,7 +113,7 @@ static class Api
             if (await Ours()) return null;
             Port = first;
         }
-        if (await Running()) Port = FreePort();
+        if (await Running() && await NextPort()) return null;
         if (Server() is not { } s) return "UDriver is not fully installed on this computer. Run the UDriver installer once, then open this app again.";
         Directory.CreateDirectory(Path.GetDirectoryName(Log)!);
         var psi = new ProcessStartInfo(s.File) { CreateNoWindow = true, UseShellExecute = false };

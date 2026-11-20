@@ -88,16 +88,31 @@ struct ServerError: LocalizedError {
         return v.compare(version, options: .numeric) != .orderedAscending
     }
 
-    /// A port nothing listens on.
-    func freePort() -> Int {
+    /// The port, or any free one for 0, when nothing listens on it; nil when it is taken.
+    func bindable(_ p: Int) -> Int? {
         let s = socket(AF_INET, SOCK_STREAM, 0)
         defer { close(s) }
+        var on: Int32 = 1   // as the server binds: a port left in TIME_WAIT by the previous run counts as free
+        setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &on, socklen_t(MemoryLayout<Int32>.size))
         var a = sockaddr_in()
         a.sin_family = sa_family_t(AF_INET)
+        a.sin_port = in_port_t(UInt16(p).bigEndian)
         a.sin_addr.s_addr = inet_addr("127.0.0.1")
         var n = socklen_t(MemoryLayout<sockaddr_in>.size)
-        withUnsafeMutablePointer(to: &a) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { _ = bind(s, $0, n); _ = getsockname(s, $0, &n) } }
-        return Int(UInt16(bigEndian: a.sin_port))
+        let ok = withUnsafeMutablePointer(to: &a) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(s, $0, n) == 0 && getsockname(s, $0, &n) == 0 } }
+        return ok ? Int(UInt16(bigEndian: a.sin_port)) : nil
+    }
+
+    /// Moves to the first port after the usual one that runs this app's UDriver (true) or is free, so the address in agent setups survives a restart.
+    func nextPort() async -> Bool {
+        let first = port
+        for p in first + 1...first + 20 {
+            port = p
+            if await ours() { return true }
+            if bindable(p) != nil { return false }
+        }
+        port = bindable(0) ?? first + 1
+        return false
     }
 
     /// How to run the server: the one inside the app, else the installed one with .NET 10.
@@ -112,7 +127,7 @@ struct ServerError: LocalizedError {
     }
 
     /// Starts the server unless this app's UDriver already answers; returns an error to show, or nil once it answers.
-    /// Another program or an older UDriver on the port is left alone: the server then starts on a free port.
+    /// Another program or an older UDriver on the port is left alone: the server then starts on the next free port.
     func ensureServer() async -> String? {
         if await ours() { return nil }
         let first = port
@@ -121,7 +136,7 @@ struct ServerError: LocalizedError {
             if await ours() { return nil }
             port = first
         }
-        if await running() { port = freePort() }
+        if await running(), await nextPort() { return nil }
         let fm = FileManager.default
         guard let (file, args) = command() else {
             return fm.fileExists(atPath: dll) ? "UDriver needs .NET 10. Run the UDriver installer once, then open this app again."

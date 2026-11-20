@@ -700,7 +700,8 @@ internal static partial class HttpMode
             games.Add(new JsonObject
             {
                 ["id"] = g.Id, ["name"] = g.Name, ["kind"] = g.Kind, ["engine"] = Inject.Engine(g), ["path"] = g.Path, ["access"] = g.Access,
-                ["state"] = live.Any(t => t.Kind == "editor" && t.Up) ? "editor open" : live.Any(t => t.Kind == "game" && t.Live) || copies.Count > 0 ? "running" : "not running",
+                ["state"] = live.Any(t => t.Kind == "editor" && t.Up) ? "editor open" : live.Any(t => t.Kind == "game" && t.Live) || copies.Count > 0
+                    ? (copies.Count == 0 && live.Any(t => t.Kind == "game" && t.Live && Program.OldAgent(t.Port)) ? "running with an old UDriver inside: close it and press Launch to update it" : "running") : "not running",
                 ["startedByUDriver"] = copies.Count > 0, ["exists"] = File.Exists(g.Path) || Directory.Exists(g.Path), ["changed"] = g.Mark.Length > 0, ["native"] = Registry.LevelOn(3, true) ? "" : Inject.Native(g),
             });
         }
