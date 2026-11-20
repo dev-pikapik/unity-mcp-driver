@@ -17,7 +17,7 @@ namespace UDriver
 
     public static class ToolManifest
     {
-        public const string Version = "1.0.0";
+        public const string Version = "1.0.1";
 
         /// <summary>Game drivers take 17890, then 17911-17930; editor bridges 17891-17910.</summary>
         public const int GamePort = 17890, EditorPort = 17891, EditorPortLast = 17910, GamePortLast = 17930;
@@ -57,7 +57,7 @@ namespace UDriver
 
             // ---- UI Toolkit: reading ----
             T("ui_tree", "Dump the live UI: UI Toolkit panels and uGUI canvases (what is really on screen, incl. elements created from code). One line per element: #id Type \"name\" .classes \"text\" =value [x,y,w,h] flags. '*' marks interactive elements. Coordinates are screen pixels (top-left origin).",
-                P("root", "integer", "Only the subtree of this element id."),
+                P("root", "string", "Only the subtree of this element: id, name, or uGUI path like /Canvas/Panel."),
                 P("depth", "integer", "Max depth (default 25)."),
                 P("maxNodes", "integer", "Max printed lines (default 300), shared equally between the UI panels and canvases."),
                 P("visibleOnly", "boolean", "Skip hidden elements (default true)."),

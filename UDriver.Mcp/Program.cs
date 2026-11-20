@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -172,7 +173,10 @@ internal static class Program
             return $"'{name}' is off by default because it can act outside the Unity project. A human can enable it with UDRIVER_ENABLE_TOOLS={name} in the MCP server configuration.";
         if (name == "editor_build" && args != null && (string?)args["action"] == "build")
         {
-            string? outPath = (string?)args["path"];
+            var keys = args.Select(kv => kv.Key).Where(k => k.Equals("path", StringComparison.OrdinalIgnoreCase)).ToList();
+            if (keys.Count > 1) return "editor_build refused: give the output path once, as 'path'.";
+            string? outPath = keys.Count == 1 ? (string?)args[keys[0]] : null;
+            if (keys.Count == 1 && keys[0] != "path") { args.Remove(keys[0]); args["path"] = outPath; }
             if (BuildDirs.Length == 0) return "editor_build is not enabled: a human must set UDRIVER_BUILDS_DIR (the folder builds may be written to) in the MCP server configuration.";
             if (outPath != null && Path.IsPathFullyQualified(outPath))
             {
@@ -180,6 +184,7 @@ internal static class Program
                     return $"editor_build refused: an absolute output path must be inside the approved build folders ({string.Join(", ", BuildDirs)}); a relative path or none builds inside the project.";
                 args["path"] = real;
             }
+            args["buildDirs"] = new JsonArray(BuildDirs.Select(d => (JsonNode)d).ToArray());
         }
         if (!ReadOnly || ObserveTools.Contains(name)) return null;
         if (ObserveActions.TryGetValue(name, out var ok))
@@ -389,10 +394,28 @@ internal static class Program
         lock (Launched)
             foreach (var t in Launched)
             {
-                try { if (!t.Proc!.HasExited) t.Proc.Kill(true); } catch { }
+                Stop(t.Proc!, t.Port);
                 try { if (LaunchName(t.Port, t.Proc!.Id) != null) File.Delete(NameFile(t.Port)); } catch { }
             }
     }
+
+    /// <summary>Lets the game shut down and remove its files (SIGTERM, WM_CLOSE on Windows), SIGKILL after 3 s, then drops what it left behind.</summary>
+    static void Stop(Process p, int port)
+    {
+        try
+        {
+            if (!p.HasExited)
+            {
+                if (OperatingSystem.IsWindows()) p.CloseMainWindow(); else kill(p.Id, 15);
+                if (!p.WaitForExit(3000)) { p.Kill(true); p.WaitForExit(2000); }
+            }
+        }
+        catch { }
+        var json = Path.Combine(HomeDir, port + ".json");
+        try { if ((int?)JsonNode.Parse(File.ReadAllText(json))?["pid"] == p.Id) { File.Delete(TokenFile(port)); File.Delete(json); } } catch { }
+    }
+
+    [DllImport("libc", SetLastError = true)] static extern int kill(int pid, int sig);
 
     sealed class RpcError : Exception
     {
@@ -450,8 +473,16 @@ internal static class Program
                 if (name == "batch" && args["calls"] is JsonArray inner)
                     foreach (var c in inner)
                         if (Blocked((string?)c?["tool"] ?? "", c?["args"] as JsonObject ?? new JsonObject()) is string r2) return Result("batch refused: " + r2, true);
+                var def = LocalTools.Concat(ToolManifest.Tools).FirstOrDefault(d => d.Name == name);
+                var unknown = def == null ? new List<string>() : args.Select(kv => kv.Key).Where(k => k != "timeoutMs" && !def.Params.Any(p => p.Name == k)).ToList();
                 var sw = Timing ? Stopwatch.StartNew() : null;
-                try { return await Run(name, args, want); }
+                try
+                {
+                    var res = await Run(name, args, want);
+                    if (unknown.Count > 0 && res["content"] is JsonArray content)
+                        content.Add(new JsonObject { ["type"] = "text", ["text"] = $"warning: unknown argument {string.Join(", ", unknown.Select(k => $"'{k}'"))} was ignored (known: {string.Join(", ", def!.Params.Select(p => p.Name))})" });
+                    return res;
+                }
                 catch (Exception e) when (e is not RpcError) { return Result(e.GetType().Name + ": " + e.Message, true); }
                 finally
                 {
@@ -504,11 +535,12 @@ internal static class Program
     {
         var tools = new JsonArray();
         var known = new HashSet<string>();
-        int top = Registry.Games.Select(g => Registry.Level(g.Access)).Append(BuildDirs.Length > 0 ? Registry.Level(Registry.DefaultAccess) : -1).Max();
+        int top = Registry.Games.Select(g => Registry.Level(g.Access)).Append(-1).Max();
         foreach (var d in LocalTools.Concat(ToolManifest.Tools))
         {
             known.Add(d.Name);
-            if (Blocked(d.Name, null) == null && (d.Name is "targets" or "app_status" || Need(d.Name, null) <= top)) tools.Add(ToolJson(d));
+            if (Blocked(d.Name, null) == null && (d.Name is "targets" or "app_status" || Need(d.Name, null) <= top
+                || d.Name == "app_launch" && BuildDirs.Length > 0 && Need(d.Name, null) <= Registry.Level(Registry.DefaultAccess))) tools.Add(ToolJson(d));
         }
         var live = _liveTools;
         if (live == null)
@@ -594,6 +626,11 @@ internal static class Program
         try { using var p = Process.GetProcessById(pid); return !p.HasExited; } catch { return false; }
     }
 
+    static bool Gone(int pid)
+    {
+        try { using var p = Process.GetProcessById(pid); return p.HasExited; } catch (ArgumentException) { return true; } catch { return false; }
+    }
+
     static bool Free(int port)
     {
         try { var l = new TcpListener(IPAddress.Loopback, port); l.Start(); l.Stop(); return true; } catch { return false; }
@@ -611,6 +648,7 @@ internal static class Program
             try
             {
                 var j = JsonNode.Parse(File.ReadAllText(f))!;
+                if ((int?)j["pid"] is > 0 and int pid && Gone(pid)) { File.Delete(TokenFile(port)); File.Delete(f); continue; }
                 found[port] = new Target
                 {
                     Port = port, Kind = (string?)j["kind"] == "editor" ? "editor" : "game", Name = ((string?)j["name"] ?? "").Trim(),
@@ -637,13 +675,15 @@ internal static class Program
         foreach (var t in list) t.Live = t.Up || (t.Proc != null ? !t.Proc.HasExited : t.Pid > 0 && Alive(t.Pid));
         list = list.Where(t => t.Live || t.Proc != null).ToList();
         Registry.Attach(list);
-        // Names are unique per kind, so an editor and its Play Mode game share one; names given by app_launch keep theirs.
+        // A target goes by its saved name, which stays the same while it runs; names are unique per kind, so an editor
+        // and its Play Mode game share one, and never take the saved name of another game. Names given by app_launch keep theirs.
         var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var saved = Registry.Games;
         foreach (var t in list.OrderBy(t => named.Contains(t) ? 0 : 1))
         {
-            string name = t.Name.Length > 0 ? t.Name : t.Kind;
+            string name = !named.Contains(t) && t.Game != null ? t.Game.Name : t.Name.Length > 0 ? t.Name : t.Kind;
             t.Name = name;
-            for (int i = 2; !taken.Add(t.Kind + "/" + t.Name); i++) t.Name = name + "-" + i;
+            for (int i = 2; (!named.Contains(t) && saved.Any(g => g.Id != t.Game?.Id && g.Name.Equals(t.Name, StringComparison.OrdinalIgnoreCase))) || !taken.Add(t.Kind + "/" + t.Name); i++) t.Name = name + "-" + i;
         }
         string sig = string.Join(",", list.Where(t => t.Kind == "game" && t.Up).Select(t => t.Port));
         if (sig != _liveSig) { _liveSig = sig; _liveTools = null; }
@@ -1015,7 +1055,7 @@ internal static class Program
         bool other = k.Owner != Me.Label;
         if (other && !(args["force"] is JsonValue fv && fv.TryGetValue(out bool force) && force))
             return Result($"'{k.Name}' was started by {k.Owner}, not by you. Pass force=true to stop it anyway.", true);
-        if (!k.Proc!.HasExited) { k.Proc.Kill(true); k.Proc.WaitForExit(5000); }
+        Stop(k.Proc!, k.Port);
         lock (Launched) Launched.RemoveAll(t => t.Port == k.Port);
         _liveTools = null;
         return Result($"'{k.Name}' terminated." + (other ? $" It had been started by {k.Owner}." : ""));
@@ -1035,7 +1075,7 @@ internal static class Program
             }
             if (kind == "game") Me.LastGame = p; else Me.LastEditor = p;
         }
-        bool Ready(List<Target> ts) => ts.Any(t => t.Up && (want != null ? t.Name.Equals(want, StringComparison.OrdinalIgnoreCase) : t.Kind == "game"));
+        bool Ready(List<Target> ts) => want != null ? Named(ts, want)?.Up == true : ts.Any(t => t.Up && t.Kind == "game");
         var sw = Stopwatch.StartNew();
         List<Target> all;
         while (!Ready(all = await Targets()) && sw.Elapsed.TotalSeconds < 12) await Task.Delay(500);

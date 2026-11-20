@@ -404,13 +404,25 @@ namespace UDriver
             HookPanels();
             var c = new Ctx { Max = a.Int("maxNodes", 300), VisibleOnly = a.Bool("visibleOnly", true), InteractiveOnly = a.Bool("interactiveOnly"), Compact = a.Bool("compact", true) };
             int depth = a.Int("depth", 25);
-            if (a.Has("root") && a.Int("root") >= Ugui.IdBase)
+            if (a.Has("root"))
             {
-                var rootGo = Ugui.Get(a.Int("root"));
-                if (rootGo == null) throw new ToolException("uGUI element #" + a.Int("root") + " not found");
-                Ugui.Tree(c.Sb, rootGo, c.InteractiveOnly, c.Max, ref c.Count, ref c.Skipped);
+                string root = a.Str("root");
+                VisualElement el = null;
+                GameObject rootGo = null;
+                if (int.TryParse(root, out int id))
+                {
+                    if (id < Ugui.IdBase) el = Need(id);
+                    else if ((rootGo = Ugui.Get(id)) == null) throw new ToolException("uGUI element #" + id + " not found");
+                }
+                else
+                {
+                    el = FindFirst(root, null);
+                    if (el == null) rootGo = root.Contains("/") ? GameObject.Find(root) : Ugui.FindFirst(root, null);
+                    if (el == null && rootGo == null) throw new ToolException("no element named '" + root + "' - pass an id, name or uGUI path like /Canvas/Panel from ui_tree / ui_find");
+                }
+                if (rootGo != null) Ugui.Tree(c.Sb, rootGo, c.InteractiveOnly, c.Max, ref c.Count, ref c.Skipped);
+                else Walk(el, 0, depth, null, c);
             }
-            else if (a.Has("root")) Walk(Need(a.Int("root")), 0, depth, null, c);
             else
             {
                 var roots = Roots();

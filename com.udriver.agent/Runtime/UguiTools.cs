@@ -388,7 +388,7 @@ namespace UDriver
         public static string ScrollBy(GameObject go, float dx, float dy)
         {
             var sr = go.GetComponentInParent<ScrollRect>();
-            if (sr == null || sr.content == null) throw new ToolException("no ScrollRect at or above the target - try mode=wheel or ui_drag");
+            if (sr == null || sr.content == null) throw new ToolException("no ScrollRect at or above the target - target a ScrollRect or an element inside one" + (InputTools.InjectAvailable ? ", or try mode=wheel method=input" : "") + ", or use ui_drag for swipe-style scrolling");
             var before = sr.content.anchoredPosition;
             sr.content.anchoredPosition = before + new Vector2(-dx, dy);
             sr.normalizedPosition = new Vector2(Mathf.Clamp01(sr.normalizedPosition.x), Mathf.Clamp01(sr.normalizedPosition.y));

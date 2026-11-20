@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -146,7 +147,7 @@ namespace UDriver
 
         public static string Fmt(Ev e, bool detail)
         {
-            string s = "#" + e.Seq + " f" + e.Frame + " " + e.Time.ToString("0.00") + "s [" + e.Cat + "] " + Util.OneLine(e.Text, 400);
+            string s = "#" + e.Seq + " f" + e.Frame + " " + e.Time.ToString("0.00", CultureInfo.InvariantCulture) + "s [" + e.Cat + "] " + Util.OneLine(e.Text, 400);
             if (detail && !string.IsNullOrEmpty(e.Detail)) s += "\n    " + Util.Cut(e.Detail.TrimEnd(), 1500).Replace("\n", "\n    ");
             return s;
         }
@@ -227,8 +228,8 @@ namespace UDriver
             for (int i = offset; i < end; i++)
             {
                 var g = gs[i];
-                r.Text(g.Count + "x " + g.Type + (g.Top.Length > 0 ? " at " + g.Top : "") + " | first " + g.First.ToString("0.00") + "s f" + g.FirstFrame
-                       + ", last " + g.Last.ToString("0.00") + "s f" + g.LastFrame + "\n    " + Util.OneLine(g.Msg, 400)
+                r.Text(g.Count + "x " + g.Type + (g.Top.Length > 0 ? " at " + g.Top : "") + " | first " + g.First.ToString("0.00", CultureInfo.InvariantCulture) + "s f" + g.FirstFrame
+                       + ", last " + g.Last.ToString("0.00", CultureInfo.InvariantCulture) + "s f" + g.LastFrame + "\n    " + Util.OneLine(g.Msg, 400)
                        + (full && !string.IsNullOrEmpty(g.Stack) ? "\n    " + g.Stack.TrimEnd().Replace("\n", "\n    ") : ""));
             }
             r.Text((gs.Count == 0 ? "no errors" + (contains != null ? " matching '" + contains + "'" : "") + " logged since the driver started (or the last events_config clear=true)"

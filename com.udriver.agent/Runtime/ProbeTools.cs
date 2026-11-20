@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Reflection;
@@ -46,7 +47,9 @@ namespace UDriver
         internal static void Register()
         {
             Driver.Register("watch_add", Driver.Sync(WatchAdd));
+#if !ENABLE_IL2CPP
             Driver.Register("trace_add", Driver.Sync(TraceAdd));
+#endif
             Driver.Register("trigger_add", Driver.Sync(TriggerAdd));
             Driver.Register("probe_list", Driver.Sync(List));
             Driver.Register("probe_remove", Driver.Sync(RemoveTool));
@@ -253,7 +256,7 @@ namespace UDriver
                     try { var v = Read(c, __args, __instance); sb.Append(v == StateTools.Missing ? "<none>" : StateTools.Short(v)); }
                     catch (Exception e) { sb.Append("<error: ").Append((e.InnerException ?? e).Message).Append('>'); }
                 }
-            string text = sb.ToString(), stack = tp.Stack ? Environment.StackTrace : null;
+            string text = sb.ToString(), stack = tp.Stack ? new System.Diagnostics.StackTrace(2, true).ToString() : null;   // skips this prefix and the patched copy of the method
             lock (tp.Log) tp.Log.Add("hit " + hit + " f" + Time.frameCount + " " + text + (stack != null ? "\n    " + stack.Trim().Replace("\n", "\n    ") : ""));
             EventStore.Emit("trace", text, stack);
             if (tp.Pause) { if (Driver.OnMainThread) PauseGame(); else _pauseRequested = true; }
@@ -429,9 +432,9 @@ namespace UDriver
 
         static string Val(double v, string unit)
         {
-            if (unit == "ns") return (v / 1e6).ToString("0.00") + " ms";
-            if (unit == "bytes") return v >= 1048576 ? (v / 1048576.0).ToString("0.0") + " MB" : (v / 1024.0).ToString("0.0") + " KB";
-            return v.ToString("0.##");
+            if (unit == "ns") return (v / 1e6).ToString("0.00", CultureInfo.InvariantCulture) + " ms";
+            if (unit == "bytes") return v >= 1048576 ? (v / 1048576.0).ToString("0.0", CultureInfo.InvariantCulture) + " MB" : (v / 1024.0).ToString("0.0", CultureInfo.InvariantCulture) + " KB";
+            return v.ToString("0.##", CultureInfo.InvariantCulture);
         }
 
         static void ProfilerGet(JObject a, ToolResponse r)
@@ -446,7 +449,7 @@ namespace UDriver
                     AddCounter(s.Substring(0, i), s.Substring(i + 1), "");
                     if (Counters.Count > before) Counters[Counters.Count - 1].Rec.Start();
                 }
-            r.Text("fps (last frame): " + (Time.unscaledDeltaTime > 0 ? (1f / Time.unscaledDeltaTime).ToString("0.0") : "?") + " | frame " + Time.frameCount
+            r.Text("fps (last frame): " + (Time.unscaledDeltaTime > 0 ? (1f / Time.unscaledDeltaTime).ToString("0.0", CultureInfo.InvariantCulture) : "?") + " | frame " + Time.frameCount
                    + " | managed heap: " + Val(GC.GetTotalMemory(false), "bytes") + " | GC gen0 collections: " + GC.CollectionCount(0)
                    + " | unity allocated: " + Val(Profiler.GetTotalAllocatedMemoryLong(), "bytes") + " | mono used: " + Val(Profiler.GetMonoUsedSizeLong(), "bytes"));
             foreach (var c in Counters)

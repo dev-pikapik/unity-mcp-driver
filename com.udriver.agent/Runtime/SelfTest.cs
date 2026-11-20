@@ -39,6 +39,9 @@ namespace UDriver
 
         static bool Has(long since, string cat) { return EventStore.Query(since, new[] { cat }, null, 1, false).Count > 0; }
 
+        // IL2CPP strips library overloads that no code calls; the state_call tie check needs Convert.ToString(string) next to ToString(object).
+        internal static readonly Func<string, string> KeepConvertToString = Convert.ToString;
+
         [MethodImpl(MethodImplOptions.NoInlining)]
         static int TraceTarget(int n, Tuple<int, string, float> item) { return n + item.Item1; }
 
@@ -325,7 +328,12 @@ namespace UDriver
             t = new ToolResponse();
             yield return Tool("errors", new JObject { ["contains"] = "self-test error probe", ["full"] = true }, t);
             var gm = System.Text.RegularExpressions.Regex.Match(t.AllText(), @"(\d+)x error at ");
-            Check("errors groups repeats and keeps the full stack", gm.Success && int.Parse(gm.Groups[1].Value) >= 2 && t.AllText().Contains(probeTag) && t.AllText().Contains("SelfTest.cs"), t.AllText());
+#if ENABLE_IL2CPP
+            const string frame = "<Run>d__";   // IL2CPP stacks carry file names only with Stacktrace Information = Method Name, File Name and Line Number
+#else
+            const string frame = "SelfTest.cs";
+#endif
+            Check("errors groups repeats and keeps the full stack", gm.Success && int.Parse(gm.Groups[1].Value) >= 2 && t.AllText().Contains(probeTag) && t.AllText().Contains(frame), t.AllText());
             t = new ToolResponse();
             yield return Tool("events_config", new JObject { ["firstChance"] = true, ["firstChanceMax"] = 5 }, t);
             seq = EventStore.LastSeq;
@@ -361,7 +369,11 @@ namespace UDriver
                 yield return Tool("probe_remove", new JObject { ["id"] = probe }, new ToolResponse());
             }
 
+#if ENABLE_IL2CPP
+            Check("method tracing (Harmony)", false, "trace_add is not available in IL2CPP builds, everything else works", true);
+#else
             Check("method tracing (Harmony)", ProbeTools.HarmonyAvailable, ProbeTools.HarmonyAvailable ? null : "0Harmony.dll not found - trace_add unavailable, everything else works", true);
+#endif
             Finish(r, go, canvas, ps);
         }
 

@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Collections;
 using System.Collections.Generic;
 using System.Text;
@@ -83,7 +84,7 @@ namespace UDriver
             var px = Grab(a.Int("maxWidth", 1024), out w, out h);
             float scale = w / (float)Screen.width;
             r.Text("screen " + Screen.width + "x" + Screen.height + ", image " + w + "x" + h + ", frame " + Time.frameCount
-                   + (Mathf.Abs(scale - 1f) > 0.001f ? ". Image is scaled: screen_coord = image_coord * " + (1f / scale).ToString("0.###") : ". Image coords = screen coords"));
+                   + (Mathf.Abs(scale - 1f) > 0.001f ? ". Image is scaled: screen_coord = image_coord * " + (1f / scale).ToString("0.###", CultureInfo.InvariantCulture) : ". Image coords = screen coords"));
             if (a.Bool("annotate")) r.Text(Annotate(px, w, h, scale));
             r.Image(Encode(px, w, h, a.Int("quality", 75)), "image/jpeg");
         }
@@ -239,7 +240,7 @@ namespace UDriver
             if (Frames.Count == 0) return "recording: " + _rec + ", no frames stored";
             var f0 = Frames[0]; var f1 = Frames[Frames.Count - 1];
             var sb = new StringBuilder("recording: " + _rec + ", " + Frames.Count + " frame(s), indices " + f0.Index + ".." + f1.Index
-                                       + ", time " + f0.Time.ToString("0.00") + "s.." + f1.Time.ToString("0.00") + "s (now " + Time.realtimeSinceStartupAsDouble.ToString("0.00") + "s)");
+                                       + ", time " + f0.Time.ToString("0.00", CultureInfo.InvariantCulture) + "s.." + f1.Time.ToString("0.00", CultureInfo.InvariantCulture) + "s (now " + Time.realtimeSinceStartupAsDouble.ToString("0.00", CultureInfo.InvariantCulture) + "s)");
             foreach (var f in Frames) if (f.Label != null) sb.Append("\n  labelled: index " + f.Index + " (" + f.Label + ", frame " + f.FrameNo + ")");
             return sb.ToString();
         }
@@ -279,7 +280,7 @@ namespace UDriver
                 var f = Frames.Find(x => x.Index == i);
                 if (f == null) continue;
                 if (sent >= 8) { r.Text("... limit of 8 frames per call reached; request the rest separately"); break; }
-                r.Text("frame index " + f.Index + " | game frame " + f.FrameNo + " | t=" + f.Time.ToString("0.00") + "s" + (f.Label != null ? " | " + f.Label : ""));
+                r.Text("frame index " + f.Index + " | game frame " + f.FrameNo + " | t=" + f.Time.ToString("0.00", CultureInfo.InvariantCulture) + "s" + (f.Label != null ? " | " + f.Label : ""));
                 r.Image(f.Jpg, "image/jpeg");
                 sent++;
             }
@@ -313,7 +314,7 @@ namespace UDriver
                 r.Text("advanced " + n + " frame(s)");
             }
             else if (action != "status") throw new ToolException("action must be pause, resume, step, scale or status");
-            r.Text("timeScale=" + Time.timeScale + " frame=" + Time.frameCount + " time=" + Time.time.ToString("0.000")
+            r.Text("timeScale=" + Time.timeScale + " frame=" + Time.frameCount + " time=" + Time.time.ToString("0.000", CultureInfo.InvariantCulture)
                    + (Time.timeScale == 0 ? " (PAUSED: scaled time is frozen; code using unscaled time or Update without deltaTime still runs)" : ""));
         }
     }

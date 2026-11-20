@@ -242,7 +242,7 @@ internal static partial class HttpMode
         string host = ctx.Request.Host.Value ?? "";
         if (host != "127.0.0.1:" + _port && host != "localhost:" + _port) return false;
         var h = ctx.Request.Headers;
-        if (h.ContainsKey("Cf-Ray") || h.ContainsKey("Cf-Connecting-Ip") || h.ContainsKey("X-Forwarded-For") || h.ContainsKey("Cdn-Loop")) return false;
+        if (h.ContainsKey("Cf-Ray") || h.ContainsKey("Cf-Connecting-Ip") || h.ContainsKey("X-Forwarded-For") || h.ContainsKey("Forwarded") || h.ContainsKey("X-Real-IP") || h.ContainsKey("Cdn-Loop")) return false;
         return ctx.Connection.RemoteIpAddress is { } ip && IPAddress.IsLoopback(ip);
     }
 

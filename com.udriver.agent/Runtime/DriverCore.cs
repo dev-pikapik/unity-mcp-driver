@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -292,7 +293,7 @@ namespace UDriver
         public static IEnumerator Invoke(string tool, JObject args, ToolResponse res)
         {
             ToolHandler h;
-            if (!Handlers.TryGetValue(tool, out h)) throw new ToolException("unknown tool '" + tool + "'");
+            if (!Handlers.TryGetValue(tool, out h)) throw new ToolException(Unknown(tool));
             return h(args ?? new JObject(), res);
         }
 
@@ -312,7 +313,7 @@ namespace UDriver
                 var s = new ToolResponse();
                 s.Text("--- [" + (first + i) + "] " + tool);
                 ToolHandler h;
-                if (tool == null || tool == "batch" || !Handlers.TryGetValue(tool, out h)) s.Error("unknown tool '" + tool + "'");
+                if (tool == null || tool == "batch" || !Handlers.TryGetValue(tool, out h)) s.Error(Unknown(tool));
                 else yield return Guard(() => h(calls[i]["args"] as JObject ?? new JObject(), s), s);
                 last = null;
                 if (s.IsError || (output == "all" && !((JObject)calls[i]).Bool("quiet"))) r.Append(s);
@@ -329,7 +330,7 @@ namespace UDriver
             if (Array.IndexOf(ToolManifest.EditModeTools, tool) < 0)
                 throw new ToolException("'" + tool + "' needs a running game: enter Play Mode (editor_play action=play) or start a build (app_launch), then call it again");
             ToolHandler h;
-            if (!Handlers.TryGetValue(tool, out h)) throw new ToolException("unknown tool '" + tool + "'");
+            if (!Handlers.TryGetValue(tool, out h)) throw new ToolException(Unknown(tool));
             var it = Guard(() => h(args ?? new JObject(), res), res);
             for (int guard = 0; guard < 10000 && it.MoveNext(); guard++) { }
         }
@@ -450,7 +451,7 @@ namespace UDriver
         {
             ToolHandler h;
             lock (Handlers) { if (tool == null || !Handlers.TryGetValue(tool, out h)) h = null; }
-            if (h == null) return new JObject { ["ok"] = false, ["error"] = "unknown tool '" + tool + "'" };
+            if (h == null) return new JObject { ["ok"] = false, ["error"] = Unknown(tool) };
             var job = new Job { Handler = h, Tool = tool, Args = args, Client = client };
             bool tracked = !string.IsNullOrEmpty(callId) && callId.Length <= 64 && Calls.TryAdd(callId, job);
             try
@@ -468,6 +469,11 @@ namespace UDriver
             if (job.Cancelled) return new JObject { ["ok"] = false, ["error"] = "cancelled: '" + tool + "' was stopped by its caller; any input it held is released" };
             job.Res.FlushText();
             return new JObject { ["ok"] = !job.Res.IsError, ["isError"] = job.Res.IsError, ["content"] = job.Res.Content };
+        }
+
+        static string Unknown(string tool)
+        {
+            return tool != null && Defs.ContainsKey(tool) ? "tool '" + tool + "' is not available in this game build" : "unknown tool '" + tool + "'";
         }
 
         static string ToolsJson()
@@ -592,9 +598,13 @@ namespace UDriver
                    + (Application.isEditor ? " (editor play mode)" : Debug.isDebugBuild ? " (development build)" : " (release build)"));
             r.Text("scenes: " + string.Join(", ", scenes));
             r.Text("screen: " + Screen.width + "x" + Screen.height + " | focused: " + Application.isFocused + " | frame: " + Time.frameCount
-                   + " | fps: " + (Time.unscaledDeltaTime > 0 ? (1f / Time.unscaledDeltaTime).ToString("0") : "?") + " | timeScale: " + Time.timeScale);
+                   + " | fps: " + (Time.unscaledDeltaTime > 0 ? (1f / Time.unscaledDeltaTime).ToString("0", CultureInfo.InvariantCulture) : "?") + " | timeScale: " + Time.timeScale);
             r.Text("ui panels: " + UiTools.Roots().Count + " | input methods: event" + (InputTools.InjectAvailable ? ", input" : " (Input System not active: method=input unavailable)") + (InputTools.OsKeysAvailable ? ", os (real key events for Input.GetKey)" : ""));
+            #if ENABLE_IL2CPP
+            r.Text("trace_add: not available in IL2CPP builds (method tracing needs a Mono build)");
+#else
             r.Text("harmony (trace_add): " + (ProbeTools.HarmonyAvailable ? "available" : "not found - add 0Harmony.dll to Assets/Plugins to enable method tracing"));
+#endif
             r.Text("safety: " + (AllowUnsafe ? "UNSAFE - state_set/state_call may reach any .NET API (UDRIVER_UNSAFE=1)" : "restricted - state_set/state_call limited to game code, UnityEngine and basic types; access token required; loopback only"));
             r.Text("probes: " + ProbeTools.Count + " | recording frames: " + CaptureTools.Recording + " (" + CaptureTools.FrameCount + " stored) | last event seq: " + EventStore.LastSeq);
         }
@@ -605,9 +615,18 @@ namespace UDriver
         static bool Null(JToken t) { return t == null || t.Type == JTokenType.Null; }
         public static bool Has(this JObject a, string k) { return !Null(a[k]); }
         public static string Str(this JObject a, string k, string d = null) { var t = a[k]; return Null(t) ? d : t.ToString(); }
-        public static int Int(this JObject a, string k, int d = 0) { var t = a[k]; return Null(t) ? d : (int)Math.Round(t.ToObject<double>()); }
-        public static long Long(this JObject a, string k, long d = 0) { var t = a[k]; return Null(t) ? d : (long)Math.Round(t.ToObject<double>()); }
-        public static float Num(this JObject a, string k, float d = 0) { var t = a[k]; return Null(t) ? d : t.ToObject<float>(); }
+        public static int Int(this JObject a, string k, int d = 0) { var t = a[k]; return Null(t) ? d : (int)Math.Round(Number(t, k)); }
+        public static long Long(this JObject a, string k, long d = 0) { var t = a[k]; return Null(t) ? d : (long)Math.Round(Number(t, k)); }
+        public static float Num(this JObject a, string k, float d = 0) { var t = a[k]; return Null(t) ? d : (float)Number(t, k); }
+
+        /// <summary>Also takes an element id the way UDriver prints it ("#1000001").</summary>
+        static double Number(JToken t, string k)
+        {
+            if (t.Type == JTokenType.Integer || t.Type == JTokenType.Float) return t.ToObject<double>();
+            double v;
+            if (t.Type == JTokenType.String && double.TryParse(((string)t).Trim().TrimStart('#'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v)) return v;
+            throw new ToolException(k + " must be a number, got " + Cut(t.ToString(Formatting.None), 60));
+        }
         public static bool Bool(this JObject a, string k, bool d = false) { var t = a[k]; return Null(t) ? d : t.ToObject<bool>(); }
 
         public static string[] Strs(this JObject a, string k)

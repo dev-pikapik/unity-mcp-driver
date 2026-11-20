@@ -2,7 +2,7 @@
 # Builds UDriver.app next to this script.
 set -e
 cd "$(dirname "$0")"
-VERSION="${VERSION:-1.0.0}"
+VERSION="${VERSION:-1.0.1}"
 swift build -c release
 BIN="$(swift build -c release --show-bin-path)/UDriver"
 APP=UDriver.app

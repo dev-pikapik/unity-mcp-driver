@@ -22,7 +22,10 @@ namespace UDriver
         static int _buttons; // pressed-button mask for method=input (bit0 left, bit1 right, bit2 middle)
 
         public static bool InjectAvailable { get { return Inj.Available; } }
-        public static bool OsKeysAvailable { get { return Os.Available; } }
+        public static bool OsKeysAvailable { get { return Os.Available && LegacyInput; } }
+
+        /// <summary>False when the player runs the Input System only, so Input.GetKey cannot see any key.</summary>
+        static bool LegacyInput { get { try { Input.GetKey(KeyCode.None); return true; } catch (InvalidOperationException) { return false; } } }
 
         internal static void Register()
         {
@@ -110,7 +113,8 @@ namespace UDriver
 
         static VisualElement Top(UiTools.Target t)
         {
-            if (t.Top == null) throw new ToolException("there is no UI Toolkit panel at that point - use method=input to send real input to uGUI / the game world");
+            if (t.Top == null) throw new ToolException("there is no UI Toolkit panel at that point - " + (Inj.Available ? "use method=input to send real input to uGUI / the game world"
+                : "target a uGUI or UI Toolkit element by id or name (to scroll: a ScrollRect or ScrollView). Real input at a point " + NeedInputSystem));
             return t.Top;
         }
 
@@ -281,19 +285,28 @@ namespace UDriver
             if (warn != null) r.Text(warn);
             SetMods(a);
             bool now = m == "event" && hold == 0;
-            Move(t, m, false, Vector2.zero);
-            if (!now) yield return null;
-            for (int i = 1; i <= count; i++)
+            var btn = t.El as Button ?? t.El?.GetFirstAncestorOfType<Button>();
+            bool fired = false;
+            Action onClick = () => fired = true;
+            if (btn != null) btn.clicked += onClick;
+            try
             {
-                Down(t, m, button, i);
-                if (hold > 0) yield return new WaitForSecondsRealtime(hold / 1000f); else if (!now) yield return null;
-                Up(t, m, button, i);
+                Move(t, m, false, Vector2.zero);
                 if (!now) yield return null;
+                for (int i = 1; i <= count; i++)
+                {
+                    Down(t, m, button, i);
+                    if (hold > 0) yield return new WaitForSecondsRealtime(hold / 1000f); else if (!now) yield return null;
+                    Up(t, m, button, i);
+                    if (!now) yield return null;
+                }
+                _mods = EventModifiers.None;
+                yield return null;
             }
-            _mods = EventModifiers.None;
-            yield return null;
+            finally { if (btn != null) btn.clicked -= onClick; }
             r.Text((count > 1 ? "double-clicked " : hold > 0 ? "long-pressed (" + hold + " ms) " : "clicked ") + Where(t) + " via " + m);
-            Feedback(r, seq, button == 0 && m == "event" && (t.El != null || t.Go != null));
+            if (fired) r.Text("the button's clicked handler ran");
+            Feedback(r, seq, button == 0 && m == "event" && !fired && !EventStore.IsDisabled("ui.click") && (t.El != null || t.Go != null));
         }
 
         static IEnumerator Hover(JObject a, ToolResponse r)
@@ -377,7 +390,7 @@ namespace UDriver
             var el = t.El ?? (t.Top != null ? t.Top.panel.Pick(t.Panel) : null);
             ScrollView sv = null;
             for (var p = el; p != null && sv == null; p = p.hierarchy.parent) sv = p as ScrollView;
-            if (sv == null) throw new ToolException("no ScrollView at or above the target - try mode=wheel, or ui_drag for swipe-style scrolling");
+            if (sv == null) throw new ToolException("no ScrollView at or above the target - target a ScrollView or an element inside one" + (Inj.Available ? ", or try mode=wheel method=input" : "") + ", or use ui_drag for swipe-style scrolling");
             var before = sv.scrollOffset;
             sv.scrollOffset = before + new Vector2(dx, dy);
             yield return null;
@@ -576,8 +589,12 @@ namespace UDriver
                     Os.Send(code, true, _mods);
                     bool seen = false;
                     float until = Time.realtimeSinceStartup + 0.5f;
-                    while (!(seen = Held(code)) && Time.realtimeSinceStartup < until) yield return null;
-                    note = seen ? "; the game's Input.GetKey saw it" : "; WARNING: the game's Input.GetKey did not see it - bring the game window to the front and retry";
+                    if (!LegacyInput) note = "; this game reads the Input System only, so Input.GetKey cannot confirm it - method=auto sends keys through the Input System";
+                    else
+                    {
+                        while (!(seen = Held(code)) && Time.realtimeSinceStartup < until) yield return null;
+                        note = seen ? "; the game's Input.GetKey saw it" : "; WARNING: the game's Input.GetKey did not see it - bring the game window to the front and retry";
+                    }
                     if (action == "press" && hold > 0) yield return new WaitForSecondsRealtime(hold / 1000f);
                 }
                 if (action != "down") { Os.Send(code, false, _mods); yield return null; }

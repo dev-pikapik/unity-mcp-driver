@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -24,12 +25,12 @@ namespace UDriver.Editor
     [InitializeOnLoad]
     public static class EditorBridge
     {
-        const string KPort = "UDriver.Port", KErrors = "UDriver.CompileErrors", KBuild = "UDriver.Build", KTestState = "UDriver.TestState", KTestLines = "UDriver.TestLines";
+        const string KPort = "UDriver.Port", KErrors = "UDriver.CompileErrors", KBuild = "UDriver.Build", KTestState = "UDriver.TestState", KTestLines = "UDriver.TestLines", KTestStart = "UDriver.TestStart";
 
         sealed class EJob
         {
             public string Tool; public JObject Args;
-            public volatile bool Cancelled;
+            public int State;   // 0 queued, 1 started, 2 given up before it started
             public readonly ToolResponse Res = new ToolResponse();
             public readonly ManualResetEventSlim Done = new ManualResetEventSlim(false);
         }
@@ -126,11 +127,11 @@ namespace UDriver.Editor
                     var req = JObject.Parse(reqBody);
                     var job = new EJob { Tool = (string)req["tool"], Args = req["args"] as JObject ?? new JObject() };
                     Jobs.Enqueue(job);
-                    if (!job.Done.Wait(120000))
-                    {
-                        job.Cancelled = true;
-                        body = new JObject { ["ok"] = false, ["error"] = "the editor main thread is busy (building, importing, or reloading scripts) - the call was dropped; retry in a moment" }.ToString(Formatting.None);
-                    }
+                    // The server gives up after 90 s, so a blocked main thread is reported long before that.
+                    if (!job.Done.Wait(10000) && Interlocked.CompareExchange(ref job.State, 2, 0) == 0)
+                        body = new JObject { ["ok"] = false, ["error"] = "the Unity editor is blocked (a dialog is open, or a long import, build or test run is in progress) - '" + job.Tool + "' was not run; look at the Unity window, then retry" }.ToString(Formatting.None);
+                    else if (!job.Done.Wait(70000))
+                        body = new JObject { ["ok"] = false, ["error"] = "'" + job.Tool + "' is still running in the editor after 80 s and goes on; check the result with editor_status" }.ToString(Formatting.None);
                     else
                     {
                         job.Res.FlushText();
@@ -158,7 +159,7 @@ namespace UDriver.Editor
             EJob job;
             while (Jobs.TryDequeue(out job))
             {
-                if (job.Cancelled) continue;
+                if (Interlocked.CompareExchange(ref job.State, 1, 0) != 0) continue;
                 try
                 {
                     Action<JObject, ToolResponse> h;
@@ -263,7 +264,7 @@ namespace UDriver.Editor
             public void RunFinished(ITestResultAdaptor result)
             {
                 TestsFlush();
-                SessionState.SetString(KTestState, "finished: " + result.PassCount + " passed, " + result.FailCount + " failed, " + result.SkipCount + " skipped in " + result.Duration.ToString("0.0") + "s (" + result.TestStatus + ")");
+                SessionState.SetString(KTestState, "finished: " + result.PassCount + " passed, " + result.FailCount + " failed, " + result.SkipCount + " skipped in " + (EditorApplication.timeSinceStartup - SessionState.GetFloat(KTestStart, (float)EditorApplication.timeSinceStartup)).ToString("0.0", CultureInfo.InvariantCulture) + "s (" + result.TestStatus + ")");
             }
         }
 
@@ -303,6 +304,7 @@ namespace UDriver.Editor
                 };
                 TestLines.Clear(); _passed = _failed = _skipped = 0; TestsFlush();
                 SessionState.SetString(KTestState, "running: started " + filter.testMode);
+                SessionState.SetFloat(KTestStart, (float)EditorApplication.timeSinceStartup);
                 _api.Execute(new ExecutionSettings(filter));
                 r.Text("test run started (" + filter.testMode + "). Poll editor_tests action=status; when finished use action=results." + (filter.testMode == TestMode.PlayMode ? " PlayMode runs enter Play Mode and reload scripts." : ""));
                 return;
@@ -343,7 +345,12 @@ namespace UDriver.Editor
             string example = "Builds/" + target + "/" + PlayerSettings.productName + ext;
             string path = Path.GetFullPath(Path.Combine(root, a.Str("path") ?? example));
             var cmp = Application.platform == RuntimePlatform.LinuxEditor ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
-            if (!path.StartsWith(root + Path.DirectorySeparatorChar, cmp)) throw new ToolException("Builds go inside the project folder, for example " + example);
+            var inside = new List<string> { root };
+            if (a.Strs("buildDirs") is string[] dirs) inside.AddRange(dirs);
+            if (!inside.Exists(d => path.StartsWith(d.TrimEnd('/', '\\') + Path.DirectorySeparatorChar, cmp)))
+                throw new ToolException("Builds go inside the project folder or a folder listed in UDRIVER_BUILDS_DIR, for example " + example);
+            if (ext.Length > 0 && !path.EndsWith(ext, StringComparison.OrdinalIgnoreCase) && !(target == BuildTarget.Android && path.EndsWith(".aab", StringComparison.OrdinalIgnoreCase)))
+                throw new ToolException("the active build target is " + target + ", so the output must end with " + ext + ", for example " + example + ". Switch the target in Build Settings to build for another platform");
             if (EditorApplication.isPlaying) throw new ToolException("leave Play Mode first (editor_play action=stop)");
             if (EditorUtility.scriptCompilationFailed) throw new ToolException("scripts have compile errors (editor_compile)");
             var scenes = new List<string>();
@@ -365,7 +372,7 @@ namespace UDriver.Editor
                     var report = BuildPipeline.BuildPlayer(opts);
                     var s = report.summary;
                     SessionState.SetString(KBuild, s.result.ToString().ToUpperInvariant() + ": " + s.outputPath + " | " + s.totalErrors + " error(s), " + s.totalWarnings + " warning(s) | "
-                                                   + (s.totalSize / 1048576.0).ToString("0.0") + " MB | " + s.totalTime.TotalSeconds.ToString("0") + "s | " + (dev ? "development" : "release") + " " + s.platform);
+                                                   + (s.totalSize / 1048576.0).ToString("0.0", CultureInfo.InvariantCulture) + " MB | " + s.totalTime.TotalSeconds.ToString("0", CultureInfo.InvariantCulture) + "s | " + (dev ? "development" : "release") + " " + s.platform);
                 }
                 catch (Exception e) { SessionState.SetString(KBuild, "FAILED: " + e.Message); }
             };

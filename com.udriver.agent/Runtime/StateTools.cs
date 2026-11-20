@@ -250,7 +250,7 @@ namespace UDriver
                 hits.Sort((x, y) => x.Key.CompareTo(y.Key));
                 for (int i = 0; i < hits.Count && i < 5; i++)
                 {
-                    r.Text("world (camera '" + cam.name + "', bounds test, distance " + hits[i].Key.ToString("0.##") + "): " + PathOf(hits[i].Value.gameObject) + " [" + hits[i].Value.GetType().Name + "]");
+                    r.Text("world (camera '" + cam.name + "', bounds test, distance " + hits[i].Key.ToString("0.##", CultureInfo.InvariantCulture) + "): " + PathOf(hits[i].Value.gameObject) + " [" + hits[i].Value.GetType().Name + "]");
                     any = true;
                 }
             }
@@ -275,7 +275,7 @@ namespace UDriver
             Vector3 world = rend != null ? rend.bounds.center : go.transform.position;
             var sp = cam.WorldToScreenPoint(world);
             bool on = sp.z > 0 && sp.x >= 0 && sp.x <= Screen.width && sp.y >= 0 && sp.y <= Screen.height;
-            r.Text("screen point (camera '" + cam.name + "'): x=" + Mathf.RoundToInt(sp.x) + " y=" + Mathf.RoundToInt(Screen.height - sp.y) + " depth=" + sp.z.ToString("0.##")
+            r.Text("screen point (camera '" + cam.name + "'): x=" + Mathf.RoundToInt(sp.x) + " y=" + Mathf.RoundToInt(Screen.height - sp.y) + " depth=" + sp.z.ToString("0.##", CultureInfo.InvariantCulture)
                    + (sp.z <= 0 ? " - BEHIND the camera" : on ? " - on screen" : " - outside the screen")
                    + ". Click it with ui_click x,y method=input (may be occluded: check screen_pick).");
         }
@@ -383,14 +383,36 @@ namespace UDriver
         static object Member(Ref r, string name)
         {
             var type = r.Static ?? r.Obj.GetType();
-            for (var t = type; t != null; t = t.BaseType)
-            {
-                var f = t.GetField(name, AllDeclared);
-                if (f != null) { Guard(f, "reading"); return f.GetValue(f.IsStatic ? null : r.Obj); }
-                var p = t.GetProperty(name, AllDeclared);
-                if (p != null && p.GetIndexParameters().Length == 0 && p.GetGetMethod(true) != null) { Guard(p, "reading"); return p.GetValue(p.GetGetMethod(true).IsStatic ? null : r.Obj); }
-            }
-            throw new ToolException("no field/property '" + name + "' on " + type.FullName + " - use type_members to list them");
+            var m = Readable(type, name);
+            if (m == null) throw new ToolException("no field/property '" + name + "' on " + type.FullName + " - use type_members to list them");
+            Guard(m, "reading");
+            var f = m as FieldInfo;
+            if (f != null) return f.GetValue(On(r, name, f.IsStatic));
+            var p = (PropertyInfo)m;
+            return p.GetValue(On(r, name, p.GetGetMethod(true).IsStatic));
+        }
+
+        static object On(Ref r, string name, bool isStatic)
+        {
+            if (isStatic) return null;
+            if (r.Obj == null) throw new ToolException("'" + name + "' is an instance field of " + r.Static.FullName + ", not static - read it on an object: pass the object id from state_get, e.g. #u<id>." + name + ", or a path like /GameObject:" + r.Static.Name + "." + name);
+            return r.Obj;
+        }
+
+        /// <summary>Field or readable property. IL2CPP stripping removes getters nothing calls but keeps the data,
+        /// so a missing property falls back to its backing field (auto-property or m_Name).</summary>
+        static MemberInfo Readable(Type type, string name)
+        {
+            foreach (var n in new[] { name, "<" + name + ">k__BackingField", "m_" + name })
+                for (var t = type; t != null; t = t.BaseType)
+                {
+                    var f = t.GetField(n, AllDeclared);
+                    if (f != null) return f;
+                    if (n != name) continue;
+                    var p = t.GetProperty(n, AllDeclared);
+                    if (p != null && p.GetIndexParameters().Length == 0 && p.GetGetMethod(true) != null) return p;
+                }
+            return null;
         }
 
         static object Index(object obj, string key)
@@ -675,13 +697,7 @@ namespace UDriver
             {
                 if (!Getters.TryGetValue(key, out m))
                 {
-                    for (var t = key.Key; t != null && m == null; t = t.BaseType)
-                    {
-                        var f = t.GetField(name, AllDeclared);
-                        if (f != null) { m = f; break; }
-                        var p = t.GetProperty(name, AllDeclared);
-                        if (p != null && p.GetIndexParameters().Length == 0 && p.GetGetMethod(true) != null) m = p;
-                    }
+                    m = Readable(key.Key, name);
                     if (m != null) Guard(m, "reading");
                     Getters[key] = m;
                 }
@@ -962,7 +978,7 @@ namespace UDriver
         {
             if (v == null) return JValue.CreateNull();
             var t = v.GetType();
-            if (v is string || t.IsPrimitive || v is decimal) return new JValue(v);
+            if (v is string || t.IsPrimitive && !(v is IntPtr || v is UIntPtr) || v is decimal) return new JValue(v);
             if (Simple(t)) return new JValue(Text(v));
             var uo = v as UnityEngine.Object;
             if (!ReferenceEquals(uo, null)) return uo == null ? new JObject { ["$destroyed"] = t.Name } : new JObject { ["$ref"] = IdOf(uo), ["$type"] = t.Name, ["name"] = uo.name };
@@ -984,7 +1000,13 @@ namespace UDriver
                 return arr;
             }
             var res = new JObject();
-            foreach (var e in Entries(v, new Opts(), null)) res[e.Label] = e.Error != null ? new JObject { ["$error"] = e.Error } : Json(e.Value, depth - 1);
+            foreach (var e in Entries(v, new Opts(), null))
+            {
+                JToken j;
+                try { j = e.Error != null ? new JObject { ["$error"] = e.Error } : Json(e.Value, depth - 1); }
+                catch (Exception ex) { j = new JObject { ["$error"] = ex.Message }; }
+                res[e.Label] = j;
+            }
             return res;
         }
 
@@ -1033,27 +1055,34 @@ namespace UDriver
             long size = 0;
             bool full = false;
             var scan = new Scan();
-            using (var fs = new FileStream(file, FileMode.CreateNew, FileAccess.Write))
+            bool written = false;
+            try
             {
-                Driver.OwnerOnly(file, false);
-                using (var w = new StreamWriter(fs, new UTF8Encoding(false)))
+                using (var fs = new FileStream(file, FileMode.CreateNew, FileAccess.Write))
                 {
-                    var entries = new List<object>();
-                    if (dictSrc != null) foreach (DictionaryEntry de in dictSrc) entries.Add(de);
-                    yield return Visit(dictSrc != null ? entries : src, (x, i) =>
+                    Driver.OwnerOnly(file, false);
+                    using (var w = new StreamWriter(fs, new UTF8Encoding(false)))
                     {
-                        string line = (dictSrc != null
-                            ? new JObject { ["key"] = Json(((DictionaryEntry)x).Key, depth), ["value"] = Json(((DictionaryEntry)x).Value, depth) }
-                            : Json(x, depth)).ToString(Newtonsoft.Json.Formatting.None);
-                        long bytes = Encoding.UTF8.GetByteCount(line) + 1;
-                        if (size + bytes > cap) { full = true; return false; }
-                        w.Write(line); w.Write('\n');
-                        size += bytes;
-                        if (first.Count < 3) first.Add(line);
-                        return true;
-                    }, scan);
+                        var entries = new List<object>();
+                        if (dictSrc != null) foreach (DictionaryEntry de in dictSrc) entries.Add(de);
+                        yield return Visit(dictSrc != null ? entries : src, (x, i) =>
+                        {
+                            string line = (dictSrc != null
+                                ? new JObject { ["key"] = Json(((DictionaryEntry)x).Key, depth), ["value"] = Json(((DictionaryEntry)x).Value, depth) }
+                                : Json(x, depth)).ToString(Newtonsoft.Json.Formatting.None);
+                            long bytes = Encoding.UTF8.GetByteCount(line) + 1;
+                            if (size + bytes > cap) { full = true; return false; }
+                            w.Write(line); w.Write('\n');
+                            size += bytes;
+                            if (first.Count < 3) first.Add(line);
+                            return true;
+                        }, scan);
+                    }
                 }
+                written = size > 0;
             }
+            finally { if (!written) File.Delete(file); }
+            if (size == 0 && !full) { r.Text("nothing was exported: " + path + (scan.Partial != null ? " - " + scan.Partial : " is empty")); yield break; }
             if (full && cap < ExportCap)
             {
                 File.Delete(file);
@@ -1061,7 +1090,7 @@ namespace UDriver
             }
             MakeRoom(dir, size, file);
             int lines = scan.Count - (full ? 1 : 0);
-            r.Text("exported " + lines + " line(s), " + (size >= 1048576 ? (size / 1048576.0).ToString("0.0") + " MB" : (size / 1024.0).ToString("0.0") + " KB") + " to " + file
+            r.Text("exported " + lines + " line(s), " + (size >= 1048576 ? (size / 1048576.0).ToString("0.0", CultureInfo.InvariantCulture) + " MB" : (size / 1024.0).ToString("0.0", CultureInfo.InvariantCulture) + " KB") + " to " + file
                    + (full ? " - stopped at the 200 MB limit" : "") + (scan.Partial != null ? " - " + scan.Partial : ""));
             foreach (var l in first) r.Text("  " + Util.Cut(l, 300));
         }
@@ -1109,9 +1138,9 @@ namespace UDriver
                 for (var t = type; t != null && !done; t = t.BaseType)
                 {
                     var f = t.GetField(last, AllDeclared);
-                    if (f != null) { Guard(f, "state_set"); f.SetValue(f.IsStatic ? null : parent.Obj, Util.To(val, f.FieldType)); done = true; break; }
+                    if (f != null) { Guard(f, "state_set"); f.SetValue(On(parent, last, f.IsStatic), Util.To(val, f.FieldType)); done = true; break; }
                     var p = t.GetProperty(last, AllDeclared);
-                    if (p != null && p.GetSetMethod(true) != null) { Guard(p, "state_set"); p.SetValue(p.GetSetMethod(true).IsStatic ? null : parent.Obj, Util.To(val, p.PropertyType)); done = true; }
+                    if (p != null && p.GetSetMethod(true) != null) { Guard(p, "state_set"); p.SetValue(On(parent, last, p.GetSetMethod(true).IsStatic), Util.To(val, p.PropertyType)); done = true; }
                 }
                 if (!done) throw new ToolException("no writable field/property '" + last + "' on " + type.FullName);
             }
