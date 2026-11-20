@@ -226,6 +226,11 @@ Without signing, macOS warns on first start and people must right-click UDriver 
 
    `security find-identity -v -p basic` lists the exact certificate names.
 
+The release workflow signs and notarizes on its own when the repository has these secrets:
+`MAC_CERT_P12` (the Developer ID Application certificate with its key, exported as .p12 and
+base64-encoded), `MAC_CERT_PASSWORD`, and an App Store Connect API key: `NOTARY_KEY` (the .p8 text),
+`NOTARY_KEY_ID`, `NOTARY_ISSUER_ID`. Without them, as in forks, it builds an ad-hoc signed app.
+
 ## Uninstall
 
 On a Mac or Linux, run:

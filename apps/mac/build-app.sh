@@ -4,7 +4,7 @@ set -e
 cd "$(dirname "$0")"
 dotnet --list-sdks 2>/dev/null | grep -q '^10\.' || export PATH="$HOME/.dotnet:$PATH"
 dotnet --list-sdks 2>/dev/null | grep -q '^10\.' || { echo "UDriver needs the .NET 10 SDK: https://dotnet.microsoft.com/download/dotnet/10.0" >&2; exit 1; }
-VERSION="${VERSION:-2.0.12}"
+VERSION="${VERSION:-2.0.13}"
 swift build -c release
 BIN="$(swift build -c release --show-bin-path)/UDriver"
 APP=UDriver.app
@@ -46,5 +46,4 @@ cat > "$APP/Contents/Info.plist" <<EOF
 </dict>
 </plist>
 EOF
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 echo "Built $(pwd)/$APP"
