@@ -17,32 +17,20 @@ screen, presses buttons, plays, reads logs and game data, and backs every answer
 
 It works with UI Toolkit and uGUI, in Play Mode, Edit Mode and game builds.
 
-## Install
+## Скачать
 
-You need Unity 6000.0 or newer. UDriver also needs the free .NET 10 SDK from Microsoft; if it is missing, the launcher
-installs it (with Homebrew on a Mac, with winget on Windows) or opens Microsoft's download page.
+Готовые программы лежат на странице [последней версии](https://github.com/dev-pikapik/unity-mcp-driver/releases/latest).
+Скачайте один файл для своей системы, больше ничего ставить не нужно:
 
-1. Put the `udriver` folder somewhere it can stay, for example in Documents.
-2. Start the launcher. On a Mac, double-click `UDriver.command` (if macOS blocks it, right-click it and choose **Open**).
-   On Windows, double-click `UDriver.cmd` (if Windows warns you, choose **More info**, then **Run anyway**).
-   On Linux, run `sh UDriver.command`.
-3. The UDriver panel opens in your browser. Answer three questions there. You don't type anything in the launcher
-   window: it only says that UDriver is running. Keep it open; closing it stops UDriver.
+- **Mac** (Apple Silicon, M1 и новее): `UDriver-mac.zip`. Распакуйте и откройте UDriver. При первом запуске macOS
+  скажет, что не может проверить разработчика: откройте «Системные настройки» → «Конфиденциальность и безопасность»
+  и нажмите «Всё равно открыть».
+- **Windows** 10 и 11: `UDriver-windows-Setup.exe`. Если появится окно SmartScreen, нажмите «Подробнее» →
+  «Выполнить в любом случае».
+- **Linux** (x64): `UDriver-linux.AppImage`. Разрешите запуск файла как программы и откройте его.
 
-To answer the same questions in a terminal instead, run `sh UDriver.command setup` on a Mac or Linux, or
-`UDriver.cmd setup` in a Windows command prompt opened in the `udriver` folder.
-
-The three questions are: which game the agent should control, what it may do, and where your agent runs. At the end
-UDriver shows the command to add to your agent's MCP settings. Then open your game or the Unity project and ask the
-agent to run `self_test`: it checks what works in your project.
-
-To change your answers later, start the launcher again. The panel also shows the exact terminal command.
-
-To open the panel again while UDriver is running, start the launcher again: it opens the panel right away. The
-link it opens works once and only for a minute, so a copied link or browser history can't open the panel later.
-
-The panel and the server run only while the launcher window is open. Nothing is added to startup and no background
-service is installed.
+You need Unity 6000.0 or newer. Open UDriver, add your game, and ask your agent to run `self_test`: it checks what
+works in your project. UDriver updates itself from the same page.
 
 ## What the agent can do
 
@@ -170,6 +158,33 @@ udriver tools off <tool> --for <app>
 
 The Linux AppImage takes the same words: `./UDriver.AppImage tui`, `./UDriver.AppImage status`.
 
+## Run from the source folder (for developers)
+
+You need Unity 6000.0 or newer. UDriver also needs the free .NET 10 SDK from Microsoft; if it is missing, the launcher
+installs it (with Homebrew on a Mac, with winget on Windows) or opens Microsoft's download page.
+
+1. Put the `udriver` folder somewhere it can stay, for example in Documents.
+2. Start the launcher. On a Mac, double-click `UDriver.command` (if macOS blocks it, right-click it and choose **Open**).
+   On Windows, double-click `UDriver.cmd` (if Windows warns you, choose **More info**, then **Run anyway**).
+   On Linux, run `sh UDriver.command`.
+3. The UDriver panel opens in your browser. Answer three questions there. You don't type anything in the launcher
+   window: it only says that UDriver is running. Keep it open; closing it stops UDriver.
+
+To answer the same questions in a terminal instead, run `sh UDriver.command setup` on a Mac or Linux, or
+`UDriver.cmd setup` in a Windows command prompt opened in the `udriver` folder.
+
+The three questions are: which game the agent should control, what it may do, and where your agent runs. At the end
+UDriver shows the command to add to your agent's MCP settings. Then open your game or the Unity project and ask the
+agent to run `self_test`: it checks what works in your project.
+
+To change your answers later, start the launcher again. The panel also shows the exact terminal command.
+
+To open the panel again while UDriver is running, start the launcher again: it opens the panel right away. The
+link it opens works once and only for a minute, so a copied link or browser history can't open the panel later.
+
+The panel and the server run only while the launcher window is open. Nothing is added to startup and no background
+service is installed.
+
 ## Installers and updates
 
 Each script builds one system's installer and its update files into `packaging/releases`. The version is the only
@@ -180,7 +195,8 @@ argument, and each needs the .NET 10 SDK:
 - Windows: `powershell -File packaging\pack-windows.ps1 1.0.0` makes `UDriver-win-Setup.exe` (`-Runtime win-arm64`
   for ARM computers). After Setup the terminal view opens; later, run `udriver.cmd` from the install folder.
 
-To publish a version, upload every file from `packaging/releases` to a new release at
+To publish a version, update `packaging/release-notes.md` and push a tag such as `v2.0.1`. GitHub Actions
+(`.github/workflows/release.yml`) runs all three scripts and publishes the files at
 github.com/dev-pikapik/unity-mcp-driver/releases. Installed copies look there: the panel's update button and
 `GET /panel/api/update` show a newer version, and `POST /panel/api/update/apply` installs it. Set
 `UDRIVER_UPDATE_URL` to a folder or another address to test updates from there.
