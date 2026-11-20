@@ -270,7 +270,7 @@ let levelHints = [
         let hint = wrapping(lvl < 0 ? "Not allowed — set access to use it." : levelHints[lvl])
         hint.preferredMaxLayoutWidth = 300
 
-        let views: [NSView] = [
+        var views: [NSView] = [
             fixed(img, width: 300, height: 188),
             stack([label(g.s("name"), size: 17, weight: .bold), path], spacing: 3),
             caption("Agents may"),
@@ -278,6 +278,11 @@ let levelHints = [
             hint,
             list([row("Status", sentence(g.s("state")), dot(running ? .systemGreen : .systemGray)), row("Agent", player(g) ?? "None"), row("Engine", g.s("engine").nilIfEmpty ?? "Unity")]),
         ]
+        if g.s("native").nilIfEmpty != nil, g["exists"] as? Bool != false {
+            let note = wrapping("This game calls code on the computer directly, so while Computer access is off agents can only look and play in it.", color: .systemOrange)
+            note.preferredMaxLayoutWidth = 300
+            views += [note, Button("Turn On Computer Access", symbol: "lock.open") { App.shared.act("/panel/api/levels/set", ["level": "3", "enabled": "true"]) }]
+        }
         views.forEach(inspector.addArrangedSubview)
         for v in views.dropFirst() { v.widthAnchor.constraint(equalTo: inspector.widthAnchor, constant: -36).isActive = true }
         inspector.setCustomSpacing(18, after: views[1])
@@ -358,6 +363,7 @@ final class Card: NSCollectionViewItem {
     let badge = chip("Live", symbol: "circle.fill", tint: .systemGreen)
 
     override func loadView() {
+        picture.unregisterDraggedTypes()
         picture.imageScaling = .scaleProportionallyUpOrDown
         picture.wantsLayer = true
         picture.layer?.cornerRadius = 8

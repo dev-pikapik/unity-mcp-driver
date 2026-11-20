@@ -443,6 +443,7 @@ enum Section: Int, CaseIterable {
     override func loadView() {
         let icon = NSImageView(image: logo(128))
         icon.setAccessibilityLabel("UDriver")
+        icon.unregisterDraggedTypes()
         let title = label("Welcome to UDriver", size: 32, weight: .bold)
         let sub = label("Let AI agents see and play your Unity games — with your permission.", size: 15, color: .secondaryLabelColor)
         func card(_ sym: String, _ color: NSColor, _ head: String, _ text: String) -> NSView {
@@ -469,7 +470,9 @@ enum Section: Int, CaseIterable {
         later.contentTintColor = .secondaryLabelColor
         let s = stack([icon, stack([title, sub], spacing: 8, align: .centerX), tiles, fixed(go, width: 260), later], spacing: 28, align: .centerX)
         s.setCustomSpacing(10, after: go)
-        let v = NSBox(frame: .init(x: 0, y: 0, width: 1120, height: 720))
+        let v = DropBox(frame: .init(x: 0, y: 0, width: 1120, height: 720))
+        v.registerForDraggedTypes([.fileURL])
+        v.take = { $0.forEach { App.shared.addGame($0) } }
         v.boxType = .custom
         v.borderWidth = 0
         v.fillColor = .controlBackgroundColor

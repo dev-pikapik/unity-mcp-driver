@@ -140,6 +140,17 @@ func alert(_ message: String, _ info: String = "", in window: NSWindow?) {
     if let window { a.beginSheetModal(for: window) } else { a.runModal() }
 }
 
+/// A box that takes files dropped on it.
+final class DropBox: NSBox {
+    var take: ([URL]) -> Void = { _ in }
+    override func draggingEntered(_ s: NSDraggingInfo) -> NSDragOperation { .copy }
+    override func performDragOperation(_ s: NSDraggingInfo) -> Bool {
+        let urls = s.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        take(urls)
+        return !urls.isEmpty
+    }
+}
+
 let accent = NSColor.systemBlue
 let violet = NSColor(srgbRed: 0.63, green: 0.47, blue: 0.95, alpha: 1)
 
@@ -147,6 +158,7 @@ let violet = NSColor(srgbRed: 0.63, green: 0.47, blue: 0.95, alpha: 1)
 func tile(_ name: String, _ color: NSColor, side: CGFloat = 28) -> NSView {
     let img = NSImageView(image: symbol(name, nil, size: side * 0.45) ?? NSImage())
     img.contentTintColor = .white
+    img.unregisterDraggedTypes()
     let t = NSView()
     t.wantsLayer = true
     t.layer?.backgroundColor = color.cgColor
