@@ -37,7 +37,7 @@ internal static partial class Program
     {
         public string Name = "", Kind = "game", Path = "", Unity = "", Owner = "";
         public int Port, Pid;
-        public bool Up, Live;
+        public bool Up, Live, Shell;
         public Process? Proc;
         public JsonObject? Launch;
         public Registry.Game? Game;
@@ -129,7 +129,7 @@ internal static partial class Program
     {
         g ??= t?.Game;
         string level = g?.Access ?? (t == null ? Registry.DefaultAccess : "none");
-        if (Math.Min(Need(name, args), 2) <= (g == null ? Registry.Level(level) : GameLevel(g))) return null;
+        if (Math.Min(Need(name, args), 2) <= (g == null ? Registry.Level(level) : GameLevel(g, t?.Shell == true))) return null;
         string game = g?.Name ?? t?.Name ?? "this game";
         if (Registry.Level(level) >= 2)
             return $"Not done: \"{game}\" calls code on the computer directly ({Inject.Native(g!)}), so while Computer access is off agents can only look and play in it. The owner can turn Computer access on in the UDriver panel.";
@@ -137,11 +137,12 @@ internal static partial class Program
             : $"\"{game}\" allows {level} only; ask the owner to raise access in the UDriver panel.";
     }
 
-    /// <summary>The game's access level, held at Play while Computer access is off when the game's own code could get past the in-process wall.</summary>
-    static int GameLevel(Registry.Game g)
+    /// <summary>The game's access level, held at Play while Computer access is off when the game's own code could get past the in-process wall,
+    /// unless this copy runs in the computer shell UDriver started it in.</summary>
+    static int GameLevel(Registry.Game g, bool shell = false)
     {
         int level = Registry.Level(g.Access);
-        return level >= 2 && LevelOff(3) != null && Inject.Native(g).Length > 0 ? 1 : level;
+        return level >= 2 && LevelOff(3) != null && !shell && Inject.Native(g).Length > 0 ? 1 : level;
     }
 
     static readonly HashSet<string> SafeGameArgs = new(StringComparer.OrdinalIgnoreCase)
@@ -471,6 +472,7 @@ internal static partial class Program
 
     static async Task Main(string[] args)
     {
+        if (args is ["shell-exec", _, _, _, ..]) { Environment.ExitCode = Shell.Exec(args); return; }
         // Installer hooks. On Windows the first start after Setup opens the terminal screen; updates install only when asked.
         Velopack.VelopackApp.Build().SetAutoApplyOnStartup(false)
             .OnFirstRun(_ => { if (OperatingSystem.IsWindows()) Environment.Exit(Cli.Run(["tui"]).GetAwaiter().GetResult()); }).Run();
@@ -715,7 +717,8 @@ internal static partial class Program
     {
         var tools = new JsonArray();
         var known = new HashSet<string>();
-        int top = Registry.Games.Select(GameLevel).Append(-1).Max();
+        var running = await Targets();
+        int top = Registry.Games.Select(g => GameLevel(g, running.Any(t => t.Shell && t.Game?.Id == g.Id))).Append(-1).Max();
         foreach (var d in LocalTools.Concat(ToolManifest.Tools))
         {
             known.Add(d.Name);
@@ -726,12 +729,12 @@ internal static partial class Program
         if (live == null)
         {
             live = new JsonArray();
-            foreach (var t in (await Targets()).Where(t => t.Kind == "game" && t.Up))
+            foreach (var t in running.Where(t => t.Kind == "game" && t.Up))
                 try
                 {
                     var (status, body) = await Http2(HttpMethod.Get, t.Port, "/tools", null, 1.5);
                     if (status == 200 && JsonNode.Parse(body)?["tools"] is JsonArray arr)
-                        foreach (var x in arr.OfType<JsonObject>()) { var c = (JsonObject)x.DeepClone(); c["game"] = t.Game?.Id; live.Add(c); }
+                        foreach (var x in arr.OfType<JsonObject>()) { var c = (JsonObject)x.DeepClone(); c["game"] = t.Game?.Id; c["shell"] = t.Shell; live.Add(c); }
                 }
                 catch { }
             _liveTools = live;
@@ -739,9 +742,10 @@ internal static partial class Program
         foreach (var t in live)
         {
             string n = (string?)t?["name"] ?? "";
-            if (t == null || Blocked(n, null) != null || Math.Min(Need(n, null), 2) > (Registry.Games.FirstOrDefault(g => g.Id == (string?)t["game"]) is { } lg ? GameLevel(lg) : -1) || !known.Add(n)) continue;
+            if (t == null || Blocked(n, null) != null || Math.Min(Need(n, null), 2) > (Registry.Games.FirstOrDefault(g => g.Id == (string?)t["game"]) is { } lg ? GameLevel(lg, (bool?)t["shell"] == true) : -1) || !known.Add(n)) continue;
             var copy = t.DeepClone();
             copy.AsObject().Remove("game");
+            copy.AsObject().Remove("shell");
             if (copy["inputSchema"]?["properties"] is JsonObject props) props["instance"] = TargetParam();
             tools.Add(copy);
         }
@@ -850,6 +854,7 @@ internal static partial class Program
                 t.Proc = l.Proc;
                 t.Launch = l.Launch;
                 t.Owner = l.Owner;
+                t.Shell = l.Shell;
                 if (l.Name.Length > 0) t.Name = l.Name;
             }
         var named = new HashSet<Target>();
@@ -872,7 +877,7 @@ internal static partial class Program
             t.Name = name;
             for (int i = 2; (!named.Contains(t) && saved.Any(g => g.Id != t.Game?.Id && g.Name.Equals(t.Name, StringComparison.OrdinalIgnoreCase))) || !taken.Add(t.Kind + "/" + t.Name); i++) t.Name = name + "-" + i;
         }
-        string sig = string.Join(",", list.Where(t => t.Kind == "game" && t.Up).Select(t => t.Port + ":" + t.Game?.Access));
+        string sig = string.Join(",", list.Where(t => t.Kind == "game" && t.Up).Select(t => t.Port + ":" + t.Game?.Access + (t.Shell ? ":shell" : "")));
         if (sig != _liveSig) { _liveSig = sig; _liveTools = null; }
         return list;
     }
@@ -1186,7 +1191,13 @@ internal static partial class Program
             psi.ArgumentList.Add(log);
         }
 
-        var proc = Process.Start(psi) ?? throw new InvalidOperationException("could not start the process");
+        // While Computer access is off the game starts inside the computer shell, if this computer can put it there.
+        bool wanted = LevelOff(3) != null;
+        var proc = wanted ? Shell.Start(psi, real, log, HomeDir) : null;
+        bool shell = proc != null;
+        proc ??= Process.Start(psi) ?? throw new InvalidOperationException("could not start the process");
+        // The game cannot write UDriver's folder from inside the shell, so its discovery file comes from here.
+        if (shell) WritePrivate(Path.Combine(HomeDir, lp + ".json"), new JsonObject { ["kind"] = "game", ["name"] = Path.GetFileNameWithoutExtension(real), ["project"] = OperatingSystem.IsMacOS() ? Path.GetFullPath(Path.Combine(real, "..", "..", "..")) : real, ["pid"] = proc.Id, ["port"] = lp }.ToJsonString());
         Registry.Started(real, proc);
         if (label.Length > 0) WritePrivate(NameFile(lp), new JsonObject { ["name"] = label, ["pid"] = proc.Id }.ToJsonString());
         lock (Launched)
@@ -1223,6 +1234,12 @@ internal static partial class Program
                 ToolsChanged();
                 var status = await TryCall(lp, "status", new JsonObject());
                 string text = (string?)status?["content"]?[0]?["text"] ?? "";
+                if (shell && text.Contains(Shell.Mark) && Shell.Active(proc.Id))
+                {
+                    lock (Launched) foreach (var l in Launched.Where(l => l.Proc == proc)) l.Shell = true;
+                    ToolsChanged();
+                }
+                else if (wanted && (g ?? Registry.ForPath(real)) is { } known && Inject.Native(known).Length > 0) text += "\nNot in the computer shell: " + (shell ? "the operating system did not confirm it" : "it cannot be set up on this computer") + ". If the game's own code could reach the computer, agents can only look and play in it while Computer access is off.";
                 string name = (await Targets()).FirstOrDefault(t => t.Port == lp)?.Name ?? "";
                 // Keeps the number of an unnamed copy when others start or stop.
                 if (name.Length > 0) WritePrivate(NameFile(lp), new JsonObject { ["name"] = name, ["pid"] = proc.Id }.ToJsonString());

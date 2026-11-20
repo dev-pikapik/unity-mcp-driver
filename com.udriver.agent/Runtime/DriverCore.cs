@@ -107,6 +107,9 @@ namespace UDriver
         /// <summary>True only if a human set UDRIVER_UNSAFE=1: state_set / state_call may then reach any type.</summary>
         public static bool AllowUnsafe { get; private set; }
 
+        /// <summary>The operating system keeps this game from the folder app_launch named in UDRIVER_SHELL (UDriver's own), so the shell around it is on.</summary>
+        static bool Shelled;
+
         static string FileFor(int port, string ext)
         {
             return Path.Combine(HomeDir(), port + ext);
@@ -146,6 +149,10 @@ namespace UDriver
             string t = Environment.GetEnvironmentVariable("UDRIVER_TOKEN");
             Environment.SetEnvironmentVariable("UDRIVER_TOKEN", null);
             if (!string.IsNullOrEmpty(t)) Pair(t);
+            string shell = Environment.GetEnvironmentVariable("UDRIVER_SHELL");
+            Environment.SetEnvironmentVariable("UDRIVER_SHELL", null);
+            if (!string.IsNullOrEmpty(shell))
+                try { Sandbox.Own(() => Directory.GetFileSystemEntries(shell)); } catch (UnauthorizedAccessException) { Shelled = true; } catch (Exception) { }
             try
             {
                 var info = new JObject
@@ -653,6 +660,7 @@ namespace UDriver
             r.Text("app: " + Application.productName + " " + Application.version + " | unity " + Application.unityVersion + " | " + Application.platform
                    + (Application.isEditor ? " (editor play mode)" : Debug.isDebugBuild ? " (development build)" : " (release build)"));
             r.Text("scenes: " + string.Join(", ", scenes));
+            if (Shelled) r.Text("computer: walled off by the operating system (files, programs and network outside the game are closed)");
             if (Slots.Slot > 0) r.Text("copy slot " + Slots.Slot + ": " + (Slots.Problem == null ? "saves and PlayerPrefs in " + Slots.Folder : "saves are shared with other copies (" + Slots.Problem + ")"));
             r.Text("input: " + InputTools.Controls(Current));
             r.Text("screen: " + Screen.width + "x" + Screen.height + " | focused: " + Application.isFocused + " | frame: " + Time.frameCount
