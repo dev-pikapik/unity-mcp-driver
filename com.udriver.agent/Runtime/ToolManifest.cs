@@ -37,7 +37,7 @@ namespace UDriver
             "app_status", "app_connect", "targets", "batch", "status", "ui_tree", "ui_find", "ui_inspect", "screenshot", "screen_pick", "locate", "scene_tree", "state_get",
             "state_query", "errors", "types_find", "type_members", "events_query", "wait_for", "input_actions", "frames_get", "probe_list",
             "profiler_get", "profiler_list", "profiler_capture", "leak_check", "rec_steps", "memory_top", "memory_summary", "memory_snapshot", "memory_watch", "memory_refs", "render_stats", "render_scene",
-            "editor_status", "editor_assets", "list_instances", "where_was_i", "team_read",
+            "editor_status", "editor_assets", "list_instances", "where_was_i", "team_read", "app_map", "query", "chart_data", "net_log", "code_read",
         };
         static readonly HashSet<string> Play = new HashSet<string>
         {

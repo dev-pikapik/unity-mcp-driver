@@ -16,6 +16,7 @@ internal static partial class Program
         "UDriver lets you see and operate a running Unity client. Typical flow: app_launch (or app_connect if the game/editor is already running) -> status -> " +
         "ui_tree / screenshot to see the screen -> act with ui_click, type_text, ui_set_value, ui_drag, ui_scroll, key -> wait_for to confirm the effect (pass sinceSeq from the action result). " +
         "To play the game itself (walk, jump, look around), learn the controls with input_actions and run a whole stretch in one play call. " +
+        "In an unfamiliar app (a tool, terminal, CRM): app_map first, then query / chart_data for data, form_fill for forms, net_capture + net_log for its network, code_read for its code. " +
         "Several games and editors, and several copies of one game, can run at once: list_instances lists them; pass instance=<name> or use_instance. Other agents may work alongside: where_was_i, take_controls, team_post / team_read, claim. " +
         "To investigate a bug without trusting the UI: events_query (logs, exceptions, UI events), types_find / type_members to discover the code, state_get to read any object, " +
         "watch_add / trace_add / trigger_add to set up your own probes, frames_record + frames_get for frame-by-frame, time_control to pause/step. Memory: memory_summary -> memory_snapshot take -> play -> memory_snapshot diff -> memory_refs (who holds it); memory_watch for slow growth. Slow frames: render_stats -> render_scene -> screenshot camera=... " +
@@ -370,6 +371,8 @@ internal static partial class Program
         new() { Name = "app_status", Desc = "Is the launched process alive and is its driver reachable?", Params = Array.Empty<ToolParam>() },
         new() { Name = "app_connect", Desc = "Attach to an already running game or editor Play Mode instead of launching one; waits for it to answer.",
             Params = new[] { P("port", "integer", "Game driver port of an instance missing from targets."), P("editorPort", "integer", "Editor bridge port of an instance missing from targets.") } },
+        new() { Name = "code_read", Desc = "Decompiled C# of a game type or one of its methods, read from the game's own assemblies (Mono builds and the editor). type takes a full or short name, * wildcards, or a stack frame like \"Ns.Type.Method (Double qty)\"; only assembly lists that assembly's types.",
+            Params = new[] { P("type", "string", "Type name, wildcard pattern or stack frame."), P("method", "string", "Only this method (all overloads)."), P("assembly", "string", "Assembly name, e.g. Assembly-CSharp.") } },
         new() { Name = "rec_steps", Desc = "What a recording holds, as numbered steps a person can follow: each agent action with the frame and time it happened and what the game answered, logs, errors and scene changes; then the path of the recording file.",
             Params = new[] { P("id", "string", "Recording id from rec_start or rec_stop (default: the newest recording).") } },
         new() { Name = "targets", Desc = "Running Unity games and editors, one line each: name, kind, port, state, Unity version, build or project path. Pass the name as instance to other tools.",
@@ -592,8 +595,22 @@ internal static partial class Program
         "claim" => await Claim(args, want, true),
         "release" => await Claim(args, want, false),
         "launch_game" => await LaunchCopies(args),
+        "code_read" => await ReadCode(args, want),
         _ => await CallUnity(name, args, want),
     };
+
+    /// <summary>Reads only assemblies under the game's own folder (the project folder for an editor).</summary>
+    static async Task<JsonNode> ReadCode(JsonObject args, string? want)
+    {
+        var map = await CallUnity("app_map", new JsonObject { ["section"] = "assemblies" }, want);
+        if ((bool?)map["isError"] == true) return map;
+        var t = (await Targets()).FirstOrDefault(x => x.Name == Me.LastTarget);
+        string path = t?.Game?.Path is { Length: > 0 } gp ? gp : t?.Path ?? "";
+        if (path.Length == 0) return Result("The game's folder is unknown, so its code cannot be read.", true);
+        string root = Directory.Exists(path) ? path : Path.GetDirectoryName(path)!;
+        string lines = string.Join("\n", (map["content"] as JsonArray ?? new()).Select(c => (string?)c?["text"]));
+        return Result(CodeRead.Read(lines, root, (string?)args["type"], (string?)args["method"], (string?)args["assembly"]));
+    }
 
     // ---------------- tool list ----------------
 

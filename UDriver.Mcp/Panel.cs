@@ -574,6 +574,8 @@ internal static partial class HttpMode
         ["editor_build"] = "Build the game", ["editor_scene"] = "Open or save scenes", ["editor_assets"] = "Find project assets", ["editor_menu"] = "Run an editor menu command",
         ["list_instances"] = "List running copies", ["use_instance"] = "Switch to a copy", ["where_was_i"] = "Recall earlier work", ["take_controls"] = "Take the controls",
         ["team_post"] = "Post to the team", ["team_read"] = "Read team posts", ["claim"] = "Claim a task", ["release"] = "Give back a task", ["launch_game"] = "Start game copies",
+        ["app_map"] = "Map the app", ["query"] = "Pick out data", ["chart_data"] = "Read charts", ["net_log"] = "Read network traffic",
+        ["code_read"] = "Read game code", ["net_capture"] = "Record network traffic", ["form_fill"] = "Fill in forms",
     };
 
     static readonly string[][] ToolFeatures =
@@ -585,6 +587,7 @@ internal static partial class HttpMode
         new[] { "Performance", "profiler_get", "profiler_list", "profiler_capture", "render_stats" },
         new[] { "Memory", "memory_summary", "memory_top", "memory_snapshot", "memory_watch", "memory_refs", "leak_check" },
         new[] { "Game code", "types_find", "type_members", "probe_list" },
+        new[] { "Understand apps", "app_map", "query", "chart_data", "net_log", "code_read" },
         new[] { "Editor checks and builds", "editor_status", "editor_compile", "editor_tests", "editor_build", "editor_assets" },
         new[] { "Press, tap and type", "ui_click", "key", "type_text", "ui_focus", "play", "take_controls" },
         new[] { "Switch game copies and share work with other agents", "use_instance", "team_post", "claim", "release" },
@@ -592,7 +595,7 @@ internal static partial class HttpMode
         new[] { "Start and stop games", "app_launch", "launch_game", "app_kill", "editor_play" },
         new[] { "Watch values and react", "watch_add", "trigger_add", "probe_remove", "events_config" },
         new[] { "Record, replay and save captures", "rec_start", "rec_stop", "rec_replay", "state_export", "memory_capture", "self_test" },
-        new[] { "Change values in the game", "state_set", "ui_set_value", "trace_add", "eval" },
+        new[] { "Change values in the game", "state_set", "ui_set_value", "form_fill", "trace_add", "net_capture", "eval" },
         new[] { "Run any game code, including code that writes files or uses the network", "state_call" },
         new[] { "Open and save scenes", "editor_scene" },
         new[] { "Run any editor menu command", "editor_menu" },
@@ -630,6 +633,11 @@ internal static partial class HttpMode
             t["title"] = ToolTitles.GetValueOrDefault(n, n);
             t["group"] = ToolGroups[(int)t["level"]!];
             t["feature"] = ToolFeature.TryGetValue(n, out var f) ? f.Feature : (string)t["title"]!;
+        }
+        foreach (var f in tools.OfType<JsonObject>().GroupBy(t => (string)t["feature"]!))
+        {
+            string g = f.Select(t => (string)t["group"]!).MinBy(x => Array.IndexOf(ToolGroups, x))!;
+            foreach (var t in f) t["group"] = g;
         }
         var sorted = tools.OfType<JsonObject>().OrderBy(t => Array.IndexOf(ToolGroups, (string)t["group"]!))
             .ThenBy(t => ToolFeature.TryGetValue((string)t["name"]!, out var f) ? f.Order : int.MaxValue).ToArray();
