@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# The development sandbox (.devcontainer/compose.yml, AGENTS.md). Needs OrbStack (started when not running) or Docker.
+#
+#   tools/dev                  a shell inside the sandbox
+#   tools/dev run CMD...       one command inside, e.g. tools/dev run dotnet build UDriver.Mcp
+#   tools/dev claude | codex   the AI agent itself inside the sandbox
+#   tools/dev stop             switch everything off (servers, builds, background processes)
+#   tools/dev reset            stop and forget the build caches and agent logins
+set -euo pipefail
+cd "$(dirname "$0")/.."
+c=(docker compose --progress quiet -f .devcontainer/compose.yml)
+if ! docker info >/dev/null 2>&1; then
+  [ "${1:-}" = stop ] && exit 0 # nothing is running, and OrbStack stays off
+  { command -v orbctl >/dev/null && orbctl start; } || true
+fi
+# A linked git worktree gets a sandbox of its own: same image, its own containers and volumes.
+# Its git data lives in the main checkout's .git, mounted at the same path (compose.yml).
+gd=$(git rev-parse --path-format=absolute --git-dir 2>/dev/null) || gd=
+cd_=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || cd_=
+if [ -n "$gd" ] && [ "$gd" != "$cd_" ]; then
+  export DEV_GIT_DIR=$cd_
+  p=$(basename "$(dirname "$cd_")")-$(basename "$PWD")-dev
+  c+=(-p "$(printf %s "$p" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_-' '-' | sed 's/^[-_]*//')")
+fi
+tty=(--no-tty=false); [ -t 0 ] && [ -t 1 ] || tty=(-T)
+git config --local core.hooksPath >/dev/null || git config core.hooksPath .githooks || true
+
+case "${1:-sh}" in
+  sh)            "${c[@]}" up -d --wait && exec "${c[@]}" exec "${tty[@]}" dev bash ;;
+  run)           shift; "${c[@]}" up -d --wait && exec "${c[@]}" exec "${tty[@]}" dev "$@" ;;
+  claude|codex)  "${c[@]}" up -d --wait && exec "${c[@]}" exec "${tty[@]}" dev "$@" ;;
+  build)         exec "${c[@]}" build dev ;;
+  stop)          exec "${c[@]}" stop ;;
+  reset)         exec "${c[@]}" down -v ;;
+  *)             sed -n '2,8p' "$0"; exit 1 ;;
+esac

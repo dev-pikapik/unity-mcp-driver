@@ -1,0 +1,42 @@
+# The development sandbox, driven by tools/dev (AGENTS.md). Everything an agent starts runs in `dev`:
+# `tools/dev stop` switches all of it off, `tools/dev reset` also forgets the build caches and logins.
+
+name: unity-mcp-driver-dev
+
+services:
+  dev:
+    build: .
+    image: unity-mcp-driver-dev:latest
+    init: true
+    # The volumes below start out owned by root; give them to the dev user, then idle until `exec`.
+    command: ["sh", "-c", "sudo chown dev:dev UDriver.Mcp/bin UDriver.Mcp/obj apps/linux/bin apps/linux/obj apps/windows/bin apps/windows/obj packaging/build /home/dev && exec sleep infinity"]
+    # A server started inside is reachable from the Mac at http://dev.unity-mcp-driver-dev.orb.local:<port>.
+    volumes:
+      - ..:/work
+      # In a linked worktree tools/dev sets DEV_GIT_DIR to the main checkout's .git; otherwise .git onto itself.
+      - ${DEV_GIT_DIR:-../.git}:${DEV_GIT_DIR:-/work/.git}
+      # Linux builds, kept apart from the Mac's own bin/ and obj/ (obj/ holds absolute restore paths).
+      - mcp-bin:/work/UDriver.Mcp/bin
+      - mcp-obj:/work/UDriver.Mcp/obj
+      - linux-bin:/work/apps/linux/bin
+      - linux-obj:/work/apps/linux/obj
+      - windows-bin:/work/apps/windows/bin
+      - windows-obj:/work/apps/windows/obj
+      - packaging-build:/work/packaging/build
+      # Claude and Codex logins, shell history, NuGet and npm caches.
+      - home:/home/dev
+      - ${HOME}/.gitconfig:/home/dev/.gitconfig:ro
+    # Ceiling for everything the agents run.
+    cpus: 6
+    mem_limit: 8g
+    pids_limit: 4096
+
+volumes:
+  mcp-bin:
+  mcp-obj:
+  linux-bin:
+  linux-obj:
+  windows-bin:
+  windows-obj:
+  packaging-build:
+  home:
