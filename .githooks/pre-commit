@@ -1,0 +1,57 @@
+#!/bin/sh
+public=1
+
+keys='AGE-SECRET-KEY-[0-9A-Z]|-----BEGIN [A-Z ]*PRIVATE KEY-----|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{20,}'
+keys="$keys"'|sk-ant-[A-Za-z0-9_-]{20,}|sk_live_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[bp]-[A-Za-z0-9-]{10,}'
+keys="$keys"'|[0-9]{8,10}:AA[A-Za-z0-9_-]{33}'
+if [ "$public" = 0 ] && [ -x tools/secrets ]; then
+    move='перенесите значение в secrets/dev/<файл> и зашифруйте: tools/secrets dev encrypt --in-place secrets/dev/<файл>'
+else
+    move='уберите значение из файла и храните его вне git'
+fi
+
+failed=0
+refuse() {
+    printf '%s\n  Почему: %s.\n  Что сделать: %s\n' "$1" "$2" "$3" >&2
+    failed=1
+}
+
+files=$(git diff --cached --name-only --diff-filter=ACMR -z | tr '\0' '\n')
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in
+        secrets/*)
+            if [ "$public" = 1 ]; then
+                refuse "$f" 'репозиторий публичный, а в нём папку secrets/ не хранят даже зашифрованной' \
+                    "уберите файл из коммита: git rm --cached \"$f\""
+                continue
+            fi
+            if [ "$f" != secrets/README.md ] &&
+                ! git cat-file blob ":$f" | grep -qE '^sops_mac=|^sops_version=|^sops:|^\[sops\]|"sops": *\{'; then
+                class=dev
+                case "$f" in secrets/prod/*) class=prod ;; esac
+                refuse "$f" 'файл в папке secrets/ не зашифрован' \
+                    "зашифруйте его: tools/secrets $class encrypt --in-place \"$f\", затем git add \"$f\""
+                continue
+            fi
+            ;;
+    esac
+    case "${f##*/}" in
+        .env*.example | .env*.sample | .env*.template | .env*.dist) ;;
+        .env | .env.* | id_rsa* | id_ed25519* | *.p12 | *.pfx)
+            refuse "$f" 'файлы с таким именем хранят пароли и закрытые ключи, в git их не кладут' \
+                "уберите файл из коммита: git rm --cached \"$f\""
+            continue
+            ;;
+    esac
+    if git diff --cached -U0 --no-color --no-ext-diff -- "$f" | grep '^+' | grep -v '^+++ ' | grep -qE -e "$keys"; then
+        refuse "$f" 'в добавленных строках есть закрытый ключ или токен доступа' "$move"
+    fi
+done <<EOF
+$files
+EOF
+
+if [ "$failed" = 1 ]; then
+    printf '\nКоммит не сделан: исправьте файлы выше и повторите git commit.\n' >&2
+    exit 1
+fi
